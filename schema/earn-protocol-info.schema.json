@@ -1,0 +1,203 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "earn-protocol-info.schema.json",
+  "title": "EarnProtocolInfo (crawler output)",
+  "description": "Superset of IEarnProtocolInfo from server-service-dashboard + Figma provider links. Entity currently has no providerWebsite/providerXLink/providerDiscordLink — they are emitted here so JSON is future-proof when the entity is extended.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "slug",
+    "provider",
+    "displayName",
+    "type",
+    "description",
+    "tags",
+    "establishment",
+    "members",
+    "providerWebsite",
+    "providerXLink",
+    "providerDiscordLink",
+    "underlyingAssetSlug",
+    "status",
+    "fundingRounds",
+    "audits"
+  ],
+  "properties": {
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Business unique key. Per decision: equal to provider code, one per provider."
+    },
+    "provider": {
+      "type": "string",
+      "enum": [
+        "everstake",
+        "lido",
+        "babylon",
+        "morpho",
+        "falcon",
+        "ethena",
+        "momentum",
+        "stakefish",
+        "lista",
+        "pendle",
+        "kamino"
+      ],
+      "description": "Must match EProvider enum in server-service-earn/src/common/index.ts"
+    },
+    "displayName": { "type": "string", "minLength": 1 },
+    "type": {
+      "type": "string",
+      "enum": ["fixed_rate", "simple_earn", "staking"]
+    },
+    "description": { "type": ["string", "null"] },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "maxItems": 3
+    },
+    "establishment": {
+      "type": "integer",
+      "minimum": 2008,
+      "maximum": 2100,
+      "description": "Founding year. Required — crawler must find it."
+    },
+    "members": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "memberName",
+          "memberPosition",
+          "oneLiner",
+          "avatarUrl",
+          "memberLink"
+        ],
+        "properties": {
+          "memberName": { "type": "string", "minLength": 1 },
+          "memberPosition": { "type": "string", "minLength": 1 },
+          "oneLiner": {
+            "type": ["string", "null"],
+            "maxLength": 140,
+            "description": "One sentence (≤ 140 chars) on notable prior experience. Null only when nothing verifiable can be found."
+          },
+          "avatarUrl": { "type": ["string", "null"], "format": "uri" },
+          "memberLink": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["xLink", "linkedinLink"],
+            "properties": {
+              "xLink": { "type": ["string", "null"], "format": "uri" },
+              "linkedinLink": { "type": ["string", "null"], "format": "uri" }
+            }
+          }
+        }
+      }
+    },
+    "providerWebsite": { "type": "string", "format": "uri" },
+    "providerXLink": { "type": "string", "format": "uri" },
+    "providerDiscordLink": { "type": ["string", "null"], "format": "uri" },
+    "underlyingAssetSlug": {
+      "type": ["string", "null"],
+      "description": "Self-reference to another EarnProtocolInfos.slug."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["draft"],
+      "description": "Crawler output is always 'draft'. Human promotes to 'active'/'archived' via dashboard after import — those lifecycle states are NOT valid here."
+    },
+    "fundingRounds": {
+      "type": "array",
+      "description": "Full funding history, newest round first. If the protocol has raised Series B, Seed and Series A MUST also be present — never emit only the latest round.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["round", "date", "amount", "valuation", "investors"],
+        "properties": {
+          "round": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Free-form label: 'Seed', 'Pre-Seed', 'Series A', 'Series B', 'Strategic', 'Private', 'Public', 'Grant', etc."
+          },
+          "date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}(-\\d{2})?$",
+            "description": "ISO date YYYY-MM-DD when the exact day is known, otherwise YYYY-MM."
+          },
+          "amount": {
+            "type": ["string", "null"],
+            "description": "Figma display string with currency, e.g. '$165M', '$11M'. Null when undisclosed."
+          },
+          "valuation": {
+            "type": ["string", "null"],
+            "description": "Figma display string, e.g. '$1.66B'. Null when undisclosed."
+          },
+          "investors": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "description": "Participating firms/angels for this round. Empty array when undisclosed."
+          }
+        }
+      }
+    },
+    "audits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["items", "lastScannedAt"],
+      "description": "Security audit history plus the crawler's own scan timestamp (document-level updatedAt is not granular enough).",
+      "properties": {
+        "items": {
+          "type": "array",
+          "description": "One entry per audit report, newest first.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "auditor",
+              "auditorLogoUrl",
+              "date",
+              "scope",
+              "reportUrl"
+            ],
+            "properties": {
+              "auditor": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Audit firm name, e.g. 'Certora', 'Trail of Bits', 'OpenZeppelin', 'Spearbit'."
+              },
+              "auditorLogoUrl": { "type": ["string", "null"], "format": "uri" },
+              "date": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}(-\\d{2})?$",
+                "description": "YYYY-MM (Figma precision) or YYYY-MM-DD when the exact date is known."
+              },
+              "scope": {
+                "type": ["string", "null"],
+                "description": "What was audited — used to disambiguate when the same firm audited multiple times. Null if unknown."
+              },
+              "reportUrl": {
+                "type": ["string", "null"],
+                "format": "uri",
+                "description": "Link to the audit report PDF/blog post."
+              }
+            }
+          }
+        },
+        "lastScannedAt": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "UTC date the audits block was scanned. Claude may leave any YYYY-MM-DD value; run.sh overwrites this with `date -u +%Y-%m-%d` before validation."
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "description": "Non-DB audit trail: URLs Claude cited. Stripped before DB import.",
+      "items": { "type": "string", "format": "uri" }
+    }
+  }
+}

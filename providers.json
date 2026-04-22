@@ -1,0 +1,82 @@
+{
+  "$comment": "Driver registry. slug == provider (per decision). type is editable best-guess. Remove/rename freely before running run.sh.",
+  "providers": [
+    {
+      "slug": "pendle",
+      "provider": "pendle",
+      "displayName": "Pendle",
+      "type": "fixed_rate",
+      "hints": "Yield trading protocol (PT/YT). Ethereum mainnet + multiple L2s."
+    },
+    {
+      "slug": "morpho",
+      "provider": "morpho",
+      "displayName": "Morpho",
+      "type": "simple_earn",
+      "hints": "Peer-to-peer lending optimizer on top of Aave/Compound; also Morpho Blue."
+    },
+    {
+      "slug": "ethena",
+      "provider": "ethena",
+      "displayName": "Ethena",
+      "type": "simple_earn",
+      "hints": "USDe / sUSDe synthetic dollar. Underlying asset for multiple yield strategies."
+    },
+    {
+      "slug": "lido",
+      "provider": "lido",
+      "displayName": "Lido",
+      "type": "staking",
+      "hints": "Liquid staking for ETH (stETH/wstETH)."
+    },
+    {
+      "slug": "everstake",
+      "provider": "everstake",
+      "displayName": "Everstake",
+      "type": "staking",
+      "hints": "Validator-as-a-service across many chains (ETH, SOL, ADA, ATOM, etc.)."
+    },
+    {
+      "slug": "stakefish",
+      "provider": "stakefish",
+      "displayName": "stakefish",
+      "type": "staking",
+      "hints": "ETH / multi-chain validator operator."
+    },
+    {
+      "slug": "babylon",
+      "provider": "babylon",
+      "displayName": "Babylon",
+      "type": "staking",
+      "hints": "Native BTC staking protocol (no wrapping)."
+    },
+    {
+      "slug": "falcon",
+      "provider": "falcon",
+      "displayName": "Falcon Finance",
+      "type": "simple_earn",
+      "hints": "USDf synthetic dollar / yield-bearing stablecoin."
+    },
+    {
+      "slug": "lista",
+      "provider": "lista",
+      "displayName": "Lista DAO",
+      "type": "simple_earn",
+      "hints": "BNB Chain LST + over-collateralized stablecoin (lisUSD)."
+    },
+    {
+      "slug": "momentum",
+      "provider": "momentum",
+      "displayName": "Momentum",
+      "type": "simple_earn",
+      "hints": "Sui DEX / CLMM; yield source for LP strategies."
+    },
+    {
+      "slug": "kamino",
+      "provider": "kamino",
+      "displayName": "Kamino",
+      "type": "simple_earn",
+      "hints": "Solana lending + automated liquidity."
+    }
+  ]
+}
