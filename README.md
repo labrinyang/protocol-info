@@ -1,119 +1,119 @@
 # protocol-info crawler
 
-Local batch tool that produces `EarnProtocolInfo` JSON records via `claude -p`
-headless mode with WebFetch + WebSearch. Outputs are hand-reviewed and then
-imported into the dashboard MongoDB via the existing
-`earn-protocol-info.controller.ts` CRUD endpoints. The `earn` service itself is
-untouched — it will just read the collection once records land.
+通过 `claude -p` 无头模式抓取 `EarnProtocolInfo` JSON 记录。配置 RootData API 密钥后，
+管线会运行第二轮对账（Round 2），使用结构化 API 数据提升准确性。输出经人工审核后通过
+`earn-protocol-info.controller.ts` CRUD 端点导入 dashboard MongoDB。
 
-## Directory layout
+## 目录结构
 
 ```
 script/protocol-info/
-├── README.md                              # this file
-├── run.sh                                 # batch driver
-├── validate.mjs                           # zero-dep schema validator
-├── providers.json                         # provider registry (edit freely)
+├── run.sh                                 # 主驱动脚本（Round 1 + 可选 Round 2）
+├── preprocess-rootdata.mjs                # RootData API 客户端 + 成员评分
+├── extract-json.mjs                       # 从文本中提取 JSON
+├── validate.mjs                           # 零依赖 schema 校验器
+├── .env.example                           # API 密钥模板
 ├── prompts/
-│   ├── system.md                          # research rules + output contract
-│   └── user.md.tmpl                       # per-provider template
+│   ├── system.md                          # Round 1 系统提示词
+│   ├── user.md.tmpl                       # Round 1 每个 provider 的模板
+│   └── reconcile.md.tmpl                  # Round 2 对账模板
 ├── schema/
-│   └── earn-protocol-info.schema.json     # JSON Schema (superset of entity)
-└── out/                                   # generated records + debug logs
-    └── <YYYYMMDDTHHMMSSZ>/                # timestamped run directory
-        ├── <slug>.json
-        ├── <slug>.raw.json
+│   └── earn-protocol-info.schema.json     # JSON Schema
+└── out/
+    └── <YYYYMMDDTHHMMSSZ>/
+        ├── <slug>.json                    # 最终校验通过的记录
+        ├── <slug>.raw.json                # Round 1 原始信封
+        ├── <slug>.r2.raw.json             # Round 2 原始信封（如适用）
+        ├── <slug>.rootdata-packet.json    # API 证据包（如适用）
+        ├── <slug>.sidecar.json            # 对账元数据（如适用）
         ├── <slug>.stderr.log
         └── summary.tsv
 ```
 
-## Prerequisites
+## 前置依赖
 
-| Tool                       | Use                         |
-| -------------------------- | --------------------------- |
-| `claude` CLI (Claude Code) | Headless LLM invocation     |
-| `jq`                       | JSON templating in `run.sh` |
-| `node` (≥ 18)              | `validate.mjs`              |
+| 工具                       | 用途                                     |
+| -------------------------- | ---------------------------------------- |
+| `claude` CLI (Claude Code) | 无头 LLM 调用                            |
+| `jq`                       | `run.sh` 中的 JSON 模板渲染              |
+| `node` (≥ 18)              | `validate.mjs`, `preprocess-rootdata.mjs` |
 
-`WebFetch` + `WebSearch` must be available in your Claude Code install — they
-are on by default.
-
-## Quick start
+## 初始设置
 
 ```bash
-git clone <repo-url>
-cd protocol-info
+# 1. 配置 RootData API 密钥（可选，启用 Round 2 对账）
+cp .env.example .env
+# 编辑 .env，填入 ROOTDATA_API_KEY
 
-# One provider (fastest way to eyeball quality)
-./run.sh pendle
-
-# Print the rendered prompt without calling Claude
-./run.sh --dry-run pendle
-
-# Full batch over providers.json
-./run.sh
-
-# Pin a specific model / raise turn budget / cap per-provider spend
-./run.sh --model sonnet --max-turns 40 --max-budget 2.00 pendle morpho ethena
+# 2. 运行
+./run.sh --display-name "Pendle" --type fixed_rate
 ```
 
-Outputs land in `out/<YYYYMMDDTHHMMSSZ>/` (a new timestamped subdirectory per
-run, so previous results are never overwritten). The last printed block is a
-summary table:
+未配置 `.env` 或 `ROOTDATA_API_KEY` 时，管线以单轮模式运行。
 
-```
-slug    status       members  funding  audits  schema
-pendle  OK           3        2        4       pass
-morpho  OK           3        3        17      pass
-lista   SCHEMA_FAIL  2        1        15      fail
-```
+## 用法
 
-## Schema contract
+```bash
+# 单个 provider（最少需要 --display-name 和 --type）
+./run.sh --display-name "f(x)Protocol" --type simple_earn
 
-`schema/earn-protocol-info.schema.json`
+# 可选参数：指定 slug、hints、rootdata-id
+./run.sh --display-name "Pendle" --type fixed_rate \
+         --slug pendle --hints "Yield trading protocol" --rootdata-id 874
 
-Per decision:
+# 批量模式（用 --batch 分隔多组 provider）
+./run.sh \
+  --batch --display-name "Pendle" --type fixed_rate --slug pendle \
+  --batch --display-name "Morpho" --type simple_earn --slug morpho
 
-- **`slug` == `provider`** (one record per provider).
-- **`status`** is always `"draft"` on crawl. Promote to `"active"` via the
-  dashboard after human review.
-
-## Review → import workflow
-
-1. `./run.sh` → inspect `out/<run>/summary.tsv` (the exact path is printed at the end).
-2. For each `out/<run>/<slug>.json`:
-   - Sanity-check the description, members, funding rounds, and audits.
-   - Verify every member is a real person — LinkedIn / Crunchbase / verified X.
-     Remove fabricated entries; prefer `members: []` over fiction.
-   - Patch any missing links by hand; re-run `node validate.mjs out/<run>/<slug>.json`
-     to confirm.
-3. Before DB insert:
-   - Remove `providerWebsite`, `providerXLink`, `providerDiscordLink`, `sources`
-     (the current entity doesn't accept them). A follow-up task will extend the
-     entity.
-   - `jq 'del(.providerWebsite, .providerXLink, .providerDiscordLink, .sources)'`
-4. `POST` each cleaned record to the dashboard's
-   `earn-protocol-info.controller.ts` create endpoint.
-
-## Editing `providers.json`
-
-Add, remove, or rename entries freely. Each entry:
-
-```jsonc
-{
-  "slug": "pendle", // must be unique, kebab-case, equal to provider
-  "provider": "pendle", // must match EProvider enum in server-service-earn/src/common/index.ts
-  "displayName": "Pendle",
-  "type": "fixed_rate", // fixed_rate | simple_earn | staking
-  "hints": "Free-form note fed into the prompt. Optional."
-}
+# 通用选项
+./run.sh --model sonnet --display-name "Pendle" --type fixed_rate
+./run.sh --max-turns 40 --display-name "Pendle" --type fixed_rate
+./run.sh --max-budget 2.00 --display-name "Pendle" --type fixed_rate
+./run.sh --dry-run --display-name "Pendle" --type fixed_rate
 ```
 
-## Why claude -p and not a pure curl pipeline?
+### 参数说明
 
-Team/member data lives across dozens of pages (official about page, governance
-forum, LinkedIn, Crunchbase, podcast bios). Hand-rolling extractors per
-provider is high-maintenance and brittle. Delegating discovery + extraction to
-Claude with explicit citation requirements gives us a 1-script solution that
-survives website redesigns. The trade-off is non-determinism across runs —
-mitigated by mandatory human review before DB import.
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--display-name` | 是 | Provider 显示名称 |
+| `--type` | 是 | 类型：`fixed_rate` / `simple_earn` / `staking` |
+| `--slug` | 否 | 自定义 slug，不传则从 display-name 自动生成 |
+| `--hints` | 否 | 给 Claude 的额外上下文提示 |
+| `--rootdata-id` | 否 | RootData 项目 ID，不传则自动通过 API 按名称搜索 |
+| `--batch` | 否 | 批量分隔符，每个 `--batch` 开始一组新的 provider 参数 |
+| `--model` | 否 | 指定 Claude 模型 |
+| `--max-turns` | 否 | 最大轮数（默认 40） |
+| `--max-budget` | 否 | 每个 provider 的 API 预算上限（默认 $2.00） |
+| `--dry-run` | 否 | 只打印 prompt，不调用 Claude |
+
+## 管线概览
+
+```
+Round 1（Claude 网页抓取） ──┐
+                             ├── 等待 ── Round 2（对账） ── 后处理 ── 校验
+RootData API（并行）       ──┘
+```
+
+- **Round 1**: Claude 搜索网页，产出 protocol-info JSON。
+- **RootData API**（并行）: 获取结构化数据——团队、投资方、链接、成立年份——并评分候选成员。
+- **Round 2**: 恢复同一 Claude 会话，注入 API 证据。Claude 交叉验证并改进输出。
+- **后处理**: 应用已校验的 URL 覆盖，标准化日期。
+- 如果 API 不可用或无匹配结果，管线自动回退到 Round 1 输出。
+
+## 审核与导入
+
+1. 检查 `out/<run>/summary.tsv`。
+2. 对每个 `<slug>.json`: 验证成员、融资、审计信息。
+3. 导入 DB 前，移除实体暂不支持的字段：
+   ```bash
+   jq 'del(.providerWebsite, .providerXLink, .providerDiscordLink, .sources)' <slug>.json
+   ```
+4. POST 到 `earn-protocol-info.controller.ts` 的创建端点。
+
+## Schema 约定
+
+- **`slug` == `provider`**（每个 provider 一条记录）。
+- **`status`** 始终为 `"draft"`，审核后通过 dashboard 提升状态。
+- **`provider`** 字段不再在脚本层面做 enum 硬编码校验，格式要求为 `^[a-z][a-z0-9-]*$`。

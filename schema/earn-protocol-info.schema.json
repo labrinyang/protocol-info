@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "earn-protocol-info.schema.json",
   "title": "EarnProtocolInfo (crawler output)",
-  "description": "Superset of IEarnProtocolInfo from server-service-dashboard + Figma provider links. Entity currently has no providerWebsite/providerXLink/providerDiscordLink — they are emitted here so JSON is future-proof when the entity is extended.",
+  "description": "Aligned with IEarnProtocolInfo from server-service-dashboard (entity + Create/Update/Import DTOs). `establishment` is required here (crawler must find founding year) and `sources` is a non-DB audit trail stripped before DB import.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,7 +17,6 @@
     "providerWebsite",
     "providerXLink",
     "providerDiscordLink",
-    "underlyingAssetSlug",
     "status",
     "fundingRounds",
     "audits"
@@ -25,48 +24,36 @@
   "properties": {
     "slug": {
       "type": "string",
-      "pattern": "^[a-z][a-z0-9-]*$",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,63}$",
       "description": "Business unique key. Per decision: equal to provider code, one per provider."
     },
     "provider": {
       "type": "string",
-      "enum": [
-        "everstake",
-        "lido",
-        "babylon",
-        "morpho",
-        "falcon",
-        "ethena",
-        "momentum",
-        "stakefish",
-        "lista",
-        "pendle",
-        "kamino"
-      ],
-      "description": "Must match EProvider enum in server-service-earn/src/common/index.ts"
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+      "description": "Provider code. Should match EProvider enum in server-service-earn/src/common/index.ts (no longer enforced at script level)."
     },
-    "displayName": { "type": "string", "minLength": 1 },
+    "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
     "type": {
       "type": "string",
       "enum": ["fixed_rate", "simple_earn", "staking"]
     },
-    "description": { "type": ["string", "null"] },
+    "description": { "type": ["string", "null"], "maxLength": 1000 },
     "tags": {
       "type": "array",
-      "items": { "type": "string", "minLength": 1 },
+      "items": { "type": "string", "minLength": 1, "maxLength": 32 },
       "minItems": 1,
-      "maxItems": 3
+      "maxItems": 20
     },
     "establishment": {
       "type": "integer",
       "minimum": 2008,
       "maximum": 2100,
-      "description": "Founding year. Required — crawler must find it."
+      "description": "Founding year. Required — crawler must find it (stricter than dashboard DTO which treats it as optional)."
     },
     "members": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 5,
+      "maxItems": 30,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -78,40 +65,61 @@
           "memberLink"
         ],
         "properties": {
-          "memberName": { "type": "string", "minLength": 1 },
-          "memberPosition": { "type": "string", "minLength": 1 },
+          "memberName": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "memberPosition": { "type": "string", "maxLength": 80 },
           "oneLiner": {
             "type": ["string", "null"],
             "maxLength": 140,
             "description": "One sentence (≤ 140 chars) on notable prior experience. Null only when nothing verifiable can be found."
           },
-          "avatarUrl": { "type": ["string", "null"], "format": "uri" },
+          "avatarUrl": {
+            "type": ["string", "null"],
+            "format": "uri",
+            "maxLength": 500
+          },
           "memberLink": {
             "type": "object",
             "additionalProperties": false,
             "required": ["xLink", "linkedinLink"],
             "properties": {
-              "xLink": { "type": ["string", "null"], "format": "uri" },
-              "linkedinLink": { "type": ["string", "null"], "format": "uri" }
+              "xLink": {
+                "type": ["string", "null"],
+                "format": "uri",
+                "maxLength": 500
+              },
+              "linkedinLink": {
+                "type": ["string", "null"],
+                "format": "uri",
+                "maxLength": 500
+              }
             }
           }
         }
       }
     },
-    "providerWebsite": { "type": "string", "format": "uri" },
-    "providerXLink": { "type": "string", "format": "uri" },
-    "providerDiscordLink": { "type": ["string", "null"], "format": "uri" },
-    "underlyingAssetSlug": {
+    "providerWebsite": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 500
+    },
+    "providerXLink": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 500
+    },
+    "providerDiscordLink": {
       "type": ["string", "null"],
-      "description": "Self-reference to another EarnProtocolInfos.slug."
+      "format": "uri",
+      "maxLength": 500
     },
     "status": {
       "type": "string",
-      "enum": ["draft"],
-      "description": "Crawler output is always 'draft'. Human promotes to 'active'/'archived' via dashboard after import — those lifecycle states are NOT valid here."
+      "enum": ["draft", "active", "archived"],
+      "description": "Lifecycle state (aligned with EProtocolInfoStatus). Crawler output should be 'draft'; human promotes to 'active'/'archived' via dashboard."
     },
     "fundingRounds": {
       "type": "array",
+      "maxItems": 20,
       "description": "Full funding history, newest round first. If the protocol has raised Series B, Seed and Series A MUST also be present — never emit only the latest round.",
       "items": {
         "type": "object",
@@ -121,6 +129,7 @@
           "round": {
             "type": "string",
             "minLength": 1,
+            "maxLength": 80,
             "description": "Free-form label: 'Seed', 'Pre-Seed', 'Series A', 'Series B', 'Strategic', 'Private', 'Public', 'Grant', etc."
           },
           "date": {
@@ -130,15 +139,18 @@
           },
           "amount": {
             "type": ["string", "null"],
+            "maxLength": 32,
             "description": "Figma display string with currency, e.g. '$165M', '$11M'. Null when undisclosed."
           },
           "valuation": {
             "type": ["string", "null"],
+            "maxLength": 32,
             "description": "Figma display string, e.g. '$1.66B'. Null when undisclosed."
           },
           "investors": {
             "type": "array",
-            "items": { "type": "string", "minLength": 1 },
+            "maxItems": 50,
+            "items": { "type": "string", "minLength": 1, "maxLength": 120 },
             "description": "Participating firms/angels for this round. Empty array when undisclosed."
           }
         }
@@ -152,6 +164,7 @@
       "properties": {
         "items": {
           "type": "array",
+          "maxItems": 30,
           "description": "One entry per audit report, newest first.",
           "items": {
             "type": "object",
@@ -167,9 +180,14 @@
               "auditor": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 120,
                 "description": "Audit firm name, e.g. 'Certora', 'Trail of Bits', 'OpenZeppelin', 'Spearbit'."
               },
-              "auditorLogoUrl": { "type": ["string", "null"], "format": "uri" },
+              "auditorLogoUrl": {
+                "type": ["string", "null"],
+                "format": "uri",
+                "maxLength": 500
+              },
               "date": {
                 "type": "string",
                 "pattern": "^\\d{4}-\\d{2}(-\\d{2})?$",
@@ -177,11 +195,13 @@
               },
               "scope": {
                 "type": ["string", "null"],
+                "maxLength": 200,
                 "description": "What was audited — used to disambiguate when the same firm audited multiple times. Null if unknown."
               },
               "reportUrl": {
                 "type": ["string", "null"],
                 "format": "uri",
+                "maxLength": 500,
                 "description": "Link to the audit report PDF/blog post."
               }
             }

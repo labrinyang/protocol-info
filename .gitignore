@@ -2,4 +2,4 @@ out/
 .DS_Store
 .claude_review_state.json
 .claude/
-.claude/
+.env

@@ -70,7 +70,6 @@ The schema is the contract. The rules below cover only format conventions the sc
   - `reportUrl`: link to PDF / blog, else `null`.
   - `scope`: what was audited (e.g., `"Morpho Blue core contracts"`), else `null`.
   - `lastScannedAt`: emit any valid `YYYY-MM-DD` — the crawler shell overwrites this field with `date -u +%Y-%m-%d` before schema validation, so your value is a placeholder.
-- `underlyingAssetSlug`: `null` unless the user prompt supplies a specific target slug.
 
 ## Workflow you must follow
 
