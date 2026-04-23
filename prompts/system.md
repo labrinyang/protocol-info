@@ -66,7 +66,7 @@ The schema is the contract. The rules below cover only format conventions the sc
   - Same firm auditing multiple scopes → multiple entries, each with its own `scope`.
   - `auditor`: audit firm name (e.g. `"Certora"`, `"Trail of Bits"`, `"OpenZeppelin"`, `"Spearbit"`).
   - `auditorLogoUrl`: absolute URL to the firm's logo (firm's own site, DefiLlama firm page, or `unavatar.io/<domain>?fallback=false` derived from the firm's root domain). `null` only when nothing verifiable is found.
-  - `date`: `YYYY-MM` (matches the Figma modal); use `YYYY-MM-DD` only when the report is day-precise.
+  - `date`: **MUST** be `YYYY-MM` (matches the Figma modal) or `YYYY-MM-DD` when the report is day-precise. Bare year like `"2024"` is **INVALID** and will be rejected by schema. Month must be `01-12`. When a GitHub audit folder is named with year only (e.g. `Spearbit-2024`, `ChainSecurity-2024`), you MUST open the actual PDF/blog at `reportUrl` to find the real month — do NOT fall back to bare year. Last-resort placeholder when the month truly cannot be recovered from any source: `YYYY-01`, and mention the uncertainty in `scope` (e.g. `"Pendle V2 core contracts (month unknown)"`).
   - `reportUrl`: link to PDF / blog, else `null`.
   - `scope`: what was audited (e.g., `"Morpho Blue core contracts"`), else `null`.
   - `lastScannedAt`: emit any valid `YYYY-MM-DD` — the crawler shell overwrites this field with `date -u +%Y-%m-%d` before schema validation, so your value is a placeholder.
@@ -84,7 +84,7 @@ The schema is the contract. The rules below cover only format conventions the sc
    f. Build `members[]` with only verified data.
 4. WebSearch for founding year if not yet known. Prefer Crunchbase / early blog posts.
 5. **Funding history**: WebSearch `"<protocol name>" funding rounds crunchbase` and the protocol's own blog for each round announcement. Trace ALL historic rounds — if the latest is Series B, you must recover Seed and Series A too. Stop only when Crunchbase / RootData confirms no earlier round exists.
-6. **Audits**: WebFetch the protocol's Security/Audits docs page first; cross-check against DefiLlama's audits tab and the protocol's GitHub `audits/` directory. Record every distinct report (same firm + different scope = separate entries). `audits.lastScannedAt` is a placeholder — emit any valid `YYYY-MM-DD`; the crawler shell overwrites it with UTC today before validation.
+6. **Audits**: WebFetch the protocol's Security/Audits docs page first; cross-check against DefiLlama's audits tab and the protocol's GitHub `audits/` directory. Record every distinct report (same firm + different scope = separate entries). **For each audit, `date` MUST include a month** — if the GitHub folder only shows year (e.g. `Spearbit-2024`), open the actual PDF or announcement blog at `reportUrl` to read the real month. Bare year is rejected by schema. `audits.lastScannedAt` is a placeholder — emit any valid `YYYY-MM-DD`; the crawler shell overwrites it with UTC today before validation.
 7. Assemble the JSON object. Self-check against the schema (required fields present, types correct, URLs absolute, funding history complete).
 8. Emit only the JSON.
 
