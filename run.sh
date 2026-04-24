@@ -57,12 +57,21 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Auto-load .env if present (never committed — see .gitignore)
-if [[ -f "$SCRIPT_DIR/.env" ]]; then
-  set -a
-  source "$SCRIPT_DIR/.env"
-  set +a
-fi
+# Auto-load .env. Lookup order:
+#   1. $SCRIPT_DIR/.env               (standalone CLI use — never committed)
+#   2. $HOME/.config/protocol-info/.env  (user config, works for plugin install where
+#                                         $SCRIPT_DIR is the read-only plugin cache)
+# 已设置的 env 变量(export ROOTDATA_API_KEY=...)优先于文件,因为 set +a 不会覆盖。
+for _env_candidate in "$SCRIPT_DIR/.env" "$HOME/.config/protocol-info/.env"; do
+  if [[ -f "$_env_candidate" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$_env_candidate"
+    set +a
+    break
+  fi
+done
+unset _env_candidate
 SCHEMA_FILE="$SCRIPT_DIR/schema/earn-protocol-info.schema.json"
 SYSTEM_PROMPT_FILE="$SCRIPT_DIR/prompts/system.md"
 USER_TMPL_FILE="$SCRIPT_DIR/prompts/user.md.tmpl"
@@ -600,12 +609,9 @@ run_one() {
 
 # ── i18n: 用 Haiku 把主记录翻译成目标语言 ───────────────────────────────
 
-# 交互挑语言（无 --i18n flag 时触发）。每行一个 code 写到 stdout；提示 UI 走 stderr。
+# 交互挑语言（无 --i18n flag + tty 时触发）。每行一个 code 写到 stdout；提示 UI 走 stderr。
+# 调用前已经确认 stdin 是 tty,这里不再自行检测。
 i18n_pick_interactive() {
-  local has_tty=0
-  if [[ -t 0 ]] || [[ -r /dev/tty ]]; then has_tty=1; fi
-  [[ $has_tty -eq 0 ]] && return 0
-
   {
     echo ""
     echo "Translate successful records to i18n? (Haiku: $I18N_MODEL)"
@@ -616,7 +622,7 @@ i18n_pick_interactive() {
   } >&2
 
   local choice=""
-  if [[ -t 0 ]]; then read -r choice; else read -r choice < /dev/tty; fi
+  read -r choice
   choice="${choice:-n}"
 
   local entry code rest cn_name
@@ -635,7 +641,7 @@ i18n_pick_interactive() {
       done
       printf "Codes (comma-separated, e.g. zh_CN,ja_JP,en_US): " >&2
       local codes_input=""
-      if [[ -t 0 ]]; then read -r codes_input; else read -r codes_input < /dev/tty; fi
+      read -r codes_input
       echo "$codes_input" | tr ',' '\n' | awk 'NF' | sed 's/[[:space:]]//g'
       ;;
     *) ;;
@@ -649,6 +655,11 @@ i18n_resolve_selection() {
   local entry
 
   if [[ -z "$I18N_ARG" ]]; then
+    # tty 下交互问;headless(plugin / CI / </dev/null)下告知并静默跳过
+    if [[ ! -t 0 ]]; then
+      echo "i18n: stdin is not a tty — skipping translation. Pass --i18n all | zh_CN,ja_JP,... | none to control explicitly." >&2
+      return 0
+    fi
     while IFS= read -r code; do
       [[ -n "$code" ]] && raw+=("$code")
     done < <(i18n_pick_interactive)

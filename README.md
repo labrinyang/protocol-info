@@ -1,18 +1,72 @@
-# protocol-info crawler
+# protocol-info
 
-通过 `claude -p` 无头模式抓取 `EarnProtocolInfo` JSON 记录。配置 RootData API 密钥后，
-管线会运行第二轮对账（Round 2），使用结构化 API 数据提升准确性。输出经人工审核后通过
-`earn-protocol-info.controller.ts` CRUD 端点导入 dashboard MongoDB。
+Claude Code plugin + standalone CLI — 通过 `claude -p` 无头模式抓取 `EarnProtocolInfo` JSON
+记录。配置 RootData API 密钥后管线会运行第二轮对账（Round 2），使用结构化 API 数据提升准确性。
+可选用 Haiku 翻译成 19 种语言。输出经人工审核后通过 `earn-protocol-info.controller.ts` CRUD
+端点导入 dashboard MongoDB。
+
+## 作为 Claude Code plugin 安装(推荐)
+
+```
+/plugin marketplace add labrinyang/protocol-info
+/plugin install protocol-info@labrinyang
+```
+
+**可选:启用 Round 2 对账**(需要 RootData API key):
+
+```bash
+mkdir -p ~/.config/protocol-info
+echo "ROOTDATA_API_KEY=sk-..." > ~/.config/protocol-info/.env
+chmod 600 ~/.config/protocol-info/.env
+```
+
+这个路径在 plugin 更新时不会被覆盖。不配置时管线单轮运行,仍然可用。
+
+安装后你有两种调用方式:
+
+### 方式 A:显式 slash command
+
+```
+/protocol-info --display-name "Pendle" --type fixed_rate
+/protocol-info --display-name "Pendle" --type fixed_rate --i18n all
+/protocol-info --parallel 4 --i18n zh_CN,ja_JP \
+  --batch --display-name "Pendle" --type fixed_rate \
+  --batch --display-name "Morpho" --type simple_earn
+```
+
+### 方式 B:自然语言(skill 自动触发)
+
+直接在对话里说出意图,Claude 会识别并自动派发 `/protocol-info`:
+
+- "调研 Pendle 的项目概述,翻成中日英"
+- "批量爬 Morpho 和 Aave 的 earn 信息,不用翻译"
+- "给我做一份 Lido 的 protocol-info"(会先问类型)
+- "crawl protocol info for Morpho, translate to all 19 locales"
+
+skill 定义在 `skills/protocol-info-crawler/SKILL.md`,触发词覆盖调研/抓取/批量/翻译等意图。类型不明时会问一句再跑。
+
+## 作为独立 CLI 使用
+
+克隆仓库后直接跑 `./run.sh`(plugin 内部也是调它)。下文的所有说明对两种模式都适用。
 
 ## 目录结构
 
 ```
-script/protocol-info/
-├── run.sh                                 # 主驱动（Round 1 + Round 2 + i18n）
+protocol-info/
+├── .claude-plugin/
+│   ├── plugin.json                        # plugin 清单
+│   └── marketplace.json                   # 公开市场条目(单 plugin 仓库)
+├── commands/
+│   └── protocol-info.md                   # /protocol-info slash command
+├── skills/
+│   └── protocol-info-crawler/
+│       └── SKILL.md                       # 自然语言触发 → 派发 /protocol-info
+├── run.sh                                 # 主驱动(Round 1 + Round 2 + i18n)
 ├── preprocess-rootdata.mjs                # RootData API 客户端 + 成员评分
 ├── extract-json.mjs                       # 从文本中提取 JSON
 ├── validate.mjs                           # 零依赖 schema 校验器
 ├── .env.example                           # API 密钥模板
+├── LICENSE                                # MIT
 ├── prompts/
 │   ├── system.md                          # Round 1 系统提示词
 │   ├── user.md.tmpl                       # Round 1 provider 模板
