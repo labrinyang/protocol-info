@@ -215,6 +215,15 @@
         }
       }
     },
+    "locale": {
+      "type": "string",
+      "enum": [
+        "en", "en-us", "zh-cn", "zh-tw", "zh-hk", "ja-jp", "ko-kr",
+        "fr-fr", "de", "es", "it-it", "pt-br", "pt", "ru", "uk-ua",
+        "ar", "hi-in", "bn", "vi", "th-th", "id"
+      ],
+      "description": "BCP-47-like locale code. Optional for English source records; set by translate.mjs for localized variants."
+    },
     "sources": {
       "type": "array",
       "description": "Non-DB audit trail: URLs Claude cited. Stripped before DB import.",

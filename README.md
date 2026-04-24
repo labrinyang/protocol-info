@@ -8,7 +8,8 @@
 
 ```
 script/protocol-info/
-├── run.sh                                 # 主驱动脚本（Round 1 + 可选 Round 2）
+├── run.sh                                 # 主驱动脚本（Round 1 + 可选 Round 2 + 可选翻译）
+├── translate.mjs                          # i18n 翻译（并发 claude -p haiku）
 ├── preprocess-rootdata.mjs                # RootData API 客户端 + 成员评分
 ├── extract-json.mjs                       # 从文本中提取 JSON
 ├── validate.mjs                           # 零依赖 schema 校验器
@@ -16,18 +17,25 @@ script/protocol-info/
 ├── prompts/
 │   ├── system.md                          # Round 1 系统提示词
 │   ├── user.md.tmpl                       # Round 1 每个 provider 的模板
-│   └── reconcile.md.tmpl                  # Round 2 对账模板
+│   ├── reconcile.md.tmpl                  # Round 2 对账模板
+│   └── translate-system.md                # 翻译系统提示词模板
 ├── schema/
-│   └── earn-protocol-info.schema.json     # JSON Schema
+│   └── earn-protocol-info.schema.json     # JSON Schema（含可选 locale 字段）
+├── test/                                  # 单元测试 + 集成测试
+│   ├── run-tests.sh                       # 测试运行器
+│   └── test-*.mjs                         # 各项测试用例
 └── out/
     └── <YYYYMMDDTHHMMSSZ>/
-        ├── <slug>.json                    # 最终校验通过的记录
-        ├── <slug>.raw.json                # Round 1 原始信封
-        ├── <slug>.r2.raw.json             # Round 2 原始信封（如适用）
-        ├── <slug>.rootdata-packet.json    # API 证据包（如适用）
-        ├── <slug>.sidecar.json            # 对账元数据（如适用）
-        ├── <slug>.stderr.log
-        └── summary.tsv
+        ├── <slug>.json                    # 英文源记录（含 locale:"en"）
+        ├── <slug>.<locale>.json           # 翻译后的记录（如 slug.zh-cn.json）
+        └── .logs/                         # 调试日志（不需要导入）
+            ├── summary.tsv
+            ├── <slug>.raw.json
+            ├── <slug>.r2.raw.json
+            ├── <slug>.rootdata-packet.json
+            ├── <slug>.sidecar.json
+            ├── <slug>.stderr.log
+            └── <slug>.translate-summary.tsv
 ```
 
 ## 前置依赖
@@ -87,12 +95,15 @@ cp .env.example .env
 | `--max-turns` | 否 | 最大轮数（默认 40） |
 | `--max-budget` | 否 | 每个 provider 的 API 预算上限（默认 $2.00） |
 | `--dry-run` | 否 | 只打印 prompt，不调用 Claude |
+| `--translate` | 否 | 启用 i18n 翻译（schema 校验通过后，用 Haiku 翻译为 20 个 locale） |
+| `--translate-concurrency` | 否 | 翻译并发数（默认 6） |
+| `--translate-locales` | 否 | 逗号分隔的 locale 子集（默认全部 20 个） |
 
 ## 管线概览
 
 ```
 Round 1（Claude 网页抓取） ──┐
-                             ├── 等待 ── Round 2（对账） ── 后处理 ── 校验
+                             ├── 等待 ── Round 2（对账） ── 后处理 ── 校验 ── [翻译]
 RootData API（并行）       ──┘
 ```
 
@@ -100,17 +111,39 @@ RootData API（并行）       ──┘
 - **RootData API**（并行）: 获取结构化数据——团队、投资方、链接、成立年份——并评分候选成员。
 - **Round 2**: 恢复同一 Claude 会话，注入 API 证据。Claude 交叉验证并改进输出。
 - **后处理**: 应用已校验的 URL 覆盖，标准化日期。
+- **翻译**（`--translate`）: 将 `description`、`tags`、`memberPosition`、`oneLiner`、`fundingRounds[].round` 翻译为 20 个 locale。
 - 如果 API 不可用或无匹配结果，管线自动回退到 Round 1 输出。
+
+## 翻译已有 out 文件
+
+无需重跑 Round 1/2，可直接对已有 JSON 文件翻译：
+
+```bash
+# 单个文件
+node translate.mjs out/<ts>/pendle.json
+
+# 指定 locale 子集
+node translate.mjs out/<ts>/pendle.json --locales zh-cn,ja-jp,ko-kr
+
+# 批量翻译所有已有文件
+for f in out/*/[a-z]*.json; do
+  node translate.mjs "$f" --concurrency 3
+done
+```
+
+## 测试
+
+```bash
+./test/run-tests.sh                        # 单元测试（免费、快速）
+INTEGRATION=1 ./test/run-tests.sh          # 含真实 Haiku 调用（~$0.01）
+```
 
 ## 审核与导入
 
-1. 检查 `out/<run>/summary.tsv`。
+1. 检查 `out/<run>/.logs/summary.tsv`。
 2. 对每个 `<slug>.json`: 验证成员、融资、审计信息。
-3. 导入 DB 前，移除实体暂不支持的字段：
-   ```bash
-   jq 'del(.providerWebsite, .providerXLink, .providerDiscordLink, .sources)' <slug>.json
-   ```
-4. POST 到 `earn-protocol-info.controller.ts` 的创建端点。
+3. `out/<run>/` 下所有 `.json` 文件即为可导入数据（日志在 `.logs/` 子目录）。
+4. POST 到 `dashboard/v1/earn/protocol-info/import` 端点。
 
 ## Schema 约定
 

@@ -55,9 +55,9 @@ SYSTEM_PROMPT_FILE="$SCRIPT_DIR/prompts/system.md"
 USER_TMPL_FILE="$SCRIPT_DIR/prompts/user.md.tmpl"
 RECONCILE_TMPL_FILE="$SCRIPT_DIR/prompts/reconcile.md.tmpl"
 PREPROCESS_SCRIPT="$SCRIPT_DIR/preprocess-rootdata.mjs"
+TRANSLATE_SCRIPT="$SCRIPT_DIR/translate.mjs"
 RUN_TS="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_DIR="$SCRIPT_DIR/out/$RUN_TS"
-SUMMARY_FILE="$OUT_DIR/summary.tsv"
 
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 MODEL=""
@@ -66,6 +66,9 @@ MAX_TURNS_R2=10
 MAX_BUDGET_USD="2.00"
 MAX_BUDGET_R2="0.50"
 DRY_RUN=0
+TRANSLATE="${TRANSLATE:-0}"
+TRANSLATE_CONCURRENCY="${TRANSLATE_CONCURRENCY:-6}"
+TRANSLATE_LOCALES="${TRANSLATE_LOCALES:-}"
 
 # ── slugify: displayName -> slug ──────────────────────────────────────
 slugify() {
@@ -106,6 +109,9 @@ while [[ $# -gt 0 ]]; do
     --max-turns)    MAX_TURNS="$2"; shift 2 ;;
     --max-budget)   MAX_BUDGET_USD="$2"; shift 2 ;;
     --dry-run)      DRY_RUN=1; shift ;;
+    --translate)    TRANSLATE=1; shift ;;
+    --translate-concurrency) TRANSLATE_CONCURRENCY="$2"; shift 2 ;;
+    --translate-locales)     TRANSLATE_LOCALES="$2"; shift 2 ;;
     --display-name) _dn="$2"; shift 2 ;;
     --type)         _type="$2"; shift 2 ;;
     --slug)         _slug="$2"; shift 2 ;;
@@ -139,8 +145,9 @@ if [[ -n "${ROOTDATA_API_KEY:-}" ]]; then
   ROOTDATA_ENABLED=1
 fi
 
-mkdir -p "$OUT_DIR"
-printf "slug\tstatus\tmembers\tfunding\taudits\tschema\tsource\tapi_status\n" > "$SUMMARY_FILE"
+LOG_DIR="$OUT_DIR/.logs"
+mkdir -p "$OUT_DIR" "$LOG_DIR"
+printf "slug\tstatus\tmembers\tfunding\taudits\tschema\tsource\tapi_status\n" > "$LOG_DIR/summary.tsv"
 
 MODEL_FLAG=()
 [[ -n "$MODEL" ]] && MODEL_FLAG=(--model "$MODEL")
@@ -154,6 +161,7 @@ echo "Model:       ${MODEL:-default}"
 echo "Max turns:   $MAX_TURNS"
 echo "Max budget:  \$${MAX_BUDGET_USD} / provider"
 echo "RootData:    $(if [[ $ROOTDATA_ENABLED -eq 1 ]]; then echo "enabled (Round 2)"; else echo "disabled (single-round)"; fi)"
+echo "Translate:   $(if [[ $TRANSLATE -eq 1 ]]; then echo "enabled (concurrency=$TRANSLATE_CONCURRENCY${TRANSLATE_LOCALES:+, locales=$TRANSLATE_LOCALES})"; else echo "disabled"; fi)"
 echo "Out dir:     $OUT_DIR"
 echo ""
 
@@ -196,12 +204,12 @@ while IFS= read -r provider_json; do
     continue
   fi
 
-  raw_file="$OUT_DIR/$slug.raw.json"
-  err_file="$OUT_DIR/$slug.stderr.log"
+  raw_file="$LOG_DIR/$slug.raw.json"
+  err_file="$LOG_DIR/$slug.stderr.log"
   out_file="$OUT_DIR/$slug.json"
-  api_packet="$OUT_DIR/$slug.rootdata-packet.json"
-  r2_raw="$OUT_DIR/$slug.r2.raw.json"
-  sidecar_file="$OUT_DIR/$slug.sidecar.json"
+  api_packet="$LOG_DIR/$slug.rootdata-packet.json"
+  r2_raw="$LOG_DIR/$slug.r2.raw.json"
+  sidecar_file="$LOG_DIR/$slug.sidecar.json"
 
   # ── Phase 1: Parallel execution (Claude Round 1 + RootData API) ──
 
@@ -244,7 +252,7 @@ while IFS= read -r provider_json; do
 
   if [[ $r1_exit -ne 0 ]]; then
     echo "  -> CRAWL_FAIL (exit $r1_exit); see $err_file"
-    printf "%s\tCRAWL_FAIL\t-\t-\t-\t-\tr1\t$(if [[ $ROOTDATA_ENABLED -eq 1 ]]; then echo "exit_$api_exit"; else echo "disabled"; fi)\n" "$slug" >> "$SUMMARY_FILE"
+    printf "%s\tCRAWL_FAIL\t-\t-\t-\t-\tr1\t$(if [[ $ROOTDATA_ENABLED -eq 1 ]]; then echo "exit_$api_exit"; else echo "disabled"; fi)\n" "$slug" >> "$LOG_DIR/summary.tsv"
     continue
   fi
 
@@ -259,7 +267,7 @@ while IFS= read -r provider_json; do
     payload=$(jq -r '.result // empty' "$raw_file")
     if [[ -z "$payload" ]]; then
       echo "  -> CRAWL_FAIL (no structured_output, empty .result); see $raw_file"
-      printf "%s\tCRAWL_FAIL\t-\t-\t-\t-\tr1\t-\n" "$slug" >> "$SUMMARY_FILE"
+      printf "%s\tCRAWL_FAIL\t-\t-\t-\t-\tr1\t-\n" "$slug" >> "$LOG_DIR/summary.tsv"
       set -e
       continue
     fi
@@ -270,7 +278,7 @@ while IFS= read -r provider_json; do
 
   if [[ $parse_exit -ne 0 ]]; then
     echo "  -> PARSE_FAIL (no JSON object recoverable); see $err_file.parse"
-    printf "%s\tPARSE_FAIL\t-\t-\t-\t-\tr1\t-\n" "$slug" >> "$SUMMARY_FILE"
+    printf "%s\tPARSE_FAIL\t-\t-\t-\t-\tr1\t-\n" "$slug" >> "$LOG_DIR/summary.tsv"
     continue
   fi
 
@@ -460,16 +468,30 @@ while IFS= read -r provider_json; do
 
   if [[ $schema_exit -eq 0 ]]; then
     echo "  -> OK  members=$members funding=$funding audits=$audits_n source=$final_source"
-    printf "%s\tOK\t%s\t%s\t%s\tpass\t%s\t%s\n" "$slug" "$members" "$funding" "$audits_n" "$final_source" "$api_status" >> "$SUMMARY_FILE"
+    printf "%s\tOK\t%s\t%s\t%s\tpass\t%s\t%s\n" "$slug" "$members" "$funding" "$audits_n" "$final_source" "$api_status" >> "$LOG_DIR/summary.tsv"
+
+    # ── Phase 5: Translation (optional) ──
+    if [[ "${TRANSLATE}" -eq 1 ]]; then
+      echo "  -> Translating to ${TRANSLATE_LOCALES:-all locales}..."
+      translate_args=("$out_file" --concurrency "$TRANSLATE_CONCURRENCY")
+      [[ -n "$TRANSLATE_LOCALES" ]] && translate_args+=(--locales "$TRANSLATE_LOCALES")
+      set +e
+      node "$TRANSLATE_SCRIPT" "${translate_args[@]}" 2> "$err_file.translate"
+      translate_exit=$?
+      set -e
+      if [[ $translate_exit -ne 0 ]]; then
+        echo "  -> Translation PARTIAL_FAIL (see $err_file.translate)"
+      fi
+    fi
   else
     echo "  -> SCHEMA_FAIL  members=$members funding=$funding audits=$audits_n source=$final_source"
     sed 's/^/        /' "$err_file.schema"
-    printf "%s\tSCHEMA_FAIL\t%s\t%s\t%s\tfail\t%s\t%s\n" "$slug" "$members" "$funding" "$audits_n" "$final_source" "$api_status" >> "$SUMMARY_FILE"
+    printf "%s\tSCHEMA_FAIL\t%s\t%s\t%s\tfail\t%s\t%s\n" "$slug" "$members" "$funding" "$audits_n" "$final_source" "$api_status" >> "$LOG_DIR/summary.tsv"
   fi
 done < <(echo "$SELECTED_JSON" | jq -c '.[]')
 
 echo ""
 echo "=== Summary ==="
-column -t -s "$(printf '\t')" "$SUMMARY_FILE"
+column -t -s "$(printf '\t')" "$LOG_DIR/summary.tsv"
 echo ""
 echo "Next: review $OUT_DIR/*.json, edit by hand as needed, then import via dashboard CRUD."

@@ -1,0 +1,5 @@
+#!/bin/bash
+# Wrapper that acts as a fake `claude` binary for testing.
+# Ignores all claude-p flags and pipes stdin to mock-claude.mjs.
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec node "$DIR/mock-claude.mjs"
