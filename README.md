@@ -63,7 +63,7 @@ protocol-info/
 │       └── SKILL.md                       # 自然语言触发 → 派发 /protocol-info
 ├── run.sh                                 # 主驱动(Round 1 + Round 2 + i18n)
 ├── preprocess-rootdata.mjs                # RootData API 客户端 + 成员评分
-├── extract-json.mjs                       # 从文本中提取 JSON
+├── framework/json-extract.mjs             # 从文本中提取 JSON
 ├── framework/schema-validator.mjs         # 零依赖 schema 校验器
 ├── .env.example                           # API 密钥模板
 ├── LICENSE                                # MIT

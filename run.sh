@@ -401,7 +401,7 @@ run_one() {
       set -e
       return 0
     fi
-    echo "$payload" | node "$SCRIPT_DIR/extract-json.mjs" | jq . > "$rec" 2> "$parse_err"
+    echo "$payload" | node "$SCRIPT_DIR/framework/json-extract.mjs" | jq . > "$rec" 2> "$parse_err"
     parse_exit=$?
   fi
   set -e
@@ -530,7 +530,7 @@ run_one() {
       else
         r2_result=$(jq -r '.result // empty' "$r2_env")
         if [[ -n "$r2_result" ]]; then
-          echo "$r2_result" | node "$SCRIPT_DIR/extract-json.mjs" | jq . > "$r2_tmp" 2>/dev/null
+          echo "$r2_result" | node "$SCRIPT_DIR/framework/json-extract.mjs" | jq . > "$r2_tmp" 2>/dev/null
           r2_parsed=$?
         else
           r2_parsed=1
