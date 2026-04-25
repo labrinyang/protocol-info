@@ -75,7 +75,6 @@ unset _env_candidate
 SCHEMA_FILE="$SCRIPT_DIR/consumers/protocol-info/schemas/full.json"
 SYSTEM_PROMPT_FILE="$SCRIPT_DIR/consumers/protocol-info/prompts/system.md"
 USER_TMPL_FILE="$SCRIPT_DIR/consumers/protocol-info/prompts/user.md.tmpl"
-RECONCILE_TMPL_FILE="$SCRIPT_DIR/consumers/protocol-info/prompts/reconcile.user.md.tmpl"
 I18N_SYSTEM_FILE="$SCRIPT_DIR/consumers/protocol-info/prompts/i18n.system.md"
 I18N_TMPL_FILE="$SCRIPT_DIR/consumers/protocol-info/prompts/i18n.user.md.tmpl"
 I18N_SCHEMA_FILE="$SCRIPT_DIR/consumers/protocol-info/schemas/i18n.json"
@@ -400,134 +399,12 @@ run_one() {
   member_candidates_fed=0
   funding_severity="none"
 
-  # ── Phase 3: Round 2 reconciliation (legacy — gated off in Phase 4 per fan-out incompatibility;
-  #     Phase 6 will replace with Node-based synthesis that operates on the merged record) ──
-  # When R2_LEGACY_ENABLED is unset or "0", the R2 reconcile block is skipped entirely.
-  # Set R2_LEGACY_ENABLED=1 to opt back into the legacy single-session resume behavior
-  # (only useful for debugging or running Phase-3-style single-prompt R1).
-
-  if [[ "${R2_LEGACY_ENABLED:-0}" != "1" ]]; then
-    api_status=$(if [[ $ROOTDATA_ENABLED -eq 1 && $api_exit -eq 0 ]]; then echo "ok"; elif [[ $ROOTDATA_ENABLED -eq 1 ]]; then echo "exit_$api_exit"; else echo "disabled"; fi)
-    # final_source stays "r1" (the merged fan-out record is the final record)
-  elif [[ -z "$SESSION_ID" ]]; then
-    echo "  -> No session_id in Round 1 response, skipping Round 2"
-  elif [[ $ROOTDATA_ENABLED -eq 1 && $api_exit -eq 0 && -f "$rootdata_pkt" ]]; then
-    api_status="ok"
-    echo "  -> API packet ready, building Round 2 prompt..."
-
-    # Read API packet sections (under .rootdata subtree from the dispatcher)
-    establishment_value=$(jq -r '.rootdata.anchors.establishment.value // "unknown"' "$rootdata_pkt")
-    member_candidates_json=$(jq -c '.rootdata.member_candidates' "$rootdata_pkt")
-    member_candidates_fed=$(jq '.rootdata.member_candidates | length' "$rootdata_pkt")
-
-    # Compute investor diff (Step B from §3.4.3)
-    # Extract Round 1 investors (normalized: lowercase, strip common suffixes)
-    r1_investors=$(jq -r '[.fundingRounds[]?.investors[]?] | map(ascii_downcase | gsub("[[:space:]]+(capital|ventures|labs|fund|partners|investments|group|network)[[:space:]]*$"; "")) | unique | .[]' "$rec" 2>/dev/null || echo "")
-    # Use pre-normalized investor names from the API packet (normalized in JS)
-    api_org_investors=$(jq -r '.rootdata.api_funding.investors_orgs_normalized[]?' "$rootdata_pkt" 2>/dev/null || echo "")
-
-    # Compute missing org investors (full-line match to avoid substring false positives)
-    missing_orgs=()
-    while IFS= read -r api_inv; do
-      [[ -z "$api_inv" ]] && continue
-      if ! echo "$r1_investors" | grep -qxiF "$api_inv"; then
-        missing_orgs+=("$api_inv")
-      fi
-    done <<< "$api_org_investors"
-
-    missing_org_count=${#missing_orgs[@]}
-    api_people=$(jq -r '.rootdata.api_funding.investors_people // []' "$rootdata_pkt")
-    api_total_funding=$(jq -r '.rootdata.api_funding.total_funding // "unknown"' "$rootdata_pkt")
-
-    # Severity classification
-    if [[ $missing_org_count -gt 5 ]]; then
-      funding_severity="high"
-    elif [[ $missing_org_count -ge 2 ]]; then
-      funding_severity="medium"
-    else
-      funding_severity="low"
-    fi
-
-    # Build funding discrepancy JSON
-    funding_discrepancy=$(jq -n \
-      --arg severity "$funding_severity" \
-      --arg total "$api_total_funding" \
-      --argjson missing "$(if [[ ${#missing_orgs[@]} -gt 0 ]]; then printf '%s\n' "${missing_orgs[@]}" | jq -R . | jq -s .; else echo '[]'; fi)" \
-      --argjson people "$api_people" \
-      '{
-        severity: $severity,
-        api_total_funding: $total,
-        missing_org_investors: $missing,
-        api_angel_investors: $people
-      }')
-
-    # Render reconcile.md.tmpl
-    r2_prompt=$(jq -rn \
-      --arg est "$establishment_value" \
-      --arg members "$member_candidates_json" \
-      --arg funding "$funding_discrepancy" \
-      --rawfile tmpl "$RECONCILE_TMPL_FILE" \
-      '$tmpl
-        | gsub("{{ESTABLISHMENT_VALUE}}"; $est)
-        | gsub("{{MEMBER_CANDIDATES_JSON}}"; $members)
-        | gsub("{{FUNDING_DISCREPANCY_JSON}}"; $funding)')
-
-    # Run Round 2
-    echo "  -> Round 2: resuming session $SESSION_ID..."
-    set +e
-    echo "$r2_prompt" | "$CLAUDE_BIN" -p - \
-      --resume "$SESSION_ID" \
-      --output-format json \
-      --json-schema "$SCHEMA_INLINE" \
-      --max-turns "$MAX_TURNS_R2" \
-      --max-budget-usd "$MAX_BUDGET_R2" \
-      --permission-mode bypassPermissions \
-      --allowed-tools "WebFetch,WebSearch" \
-      ${MODEL_FLAG[@]+"${MODEL_FLAG[@]}"} \
-      > "$r2_env" 2> "$r2_err"
-    r2_exit=$?
-    set -e
-
-    if [[ $r2_exit -eq 0 ]]; then
-      # Extract Round 2 structured output to a temp file (preserve Round 1 output on failure)
-      r2_tmp="$rec.r2.tmp"
-      r2_parsed=0
-      set +e
-      if jq -e '.structured_output | type == "object"' "$r2_env" >/dev/null 2>&1; then
-        jq '.structured_output' "$r2_env" > "$r2_tmp" 2>/dev/null
-        r2_parsed=$?
-      elif jq -e '.structured_output | type == "string"' "$r2_env" >/dev/null 2>&1; then
-        jq -r '.structured_output' "$r2_env" | jq . > "$r2_tmp" 2>/dev/null
-        r2_parsed=$?
-      else
-        r2_result=$(jq -r '.result // empty' "$r2_env")
-        if [[ -n "$r2_result" ]]; then
-          echo "$r2_result" | node "$SCRIPT_DIR/framework/json-extract.mjs" | jq . > "$r2_tmp" 2>/dev/null
-          r2_parsed=$?
-        else
-          r2_parsed=1
-        fi
-      fi
-      set -e
-
-      if [[ $r2_parsed -eq 0 ]]; then
-        mv "$r2_tmp" "$rec"
-        final_source="r2"
-        r2_cost=$(jq -r '.total_cost_usd // 0' "$r2_env" 2>/dev/null || echo 0)
-        [[ "$r2_cost" =~ ^[0-9]+(\.[0-9]+)?$ ]] || r2_cost=0
-        echo "  -> Round 2 OK (\$$r2_cost)"
-      else
-        rm -f "$r2_tmp"
-        echo "  -> Round 2 PARSE_FAIL — falling back to Round 1 output"
-      fi
-    else
-      echo "  -> Round 2 CRAWL_FAIL (exit $r2_exit) — using Round 1 output"
-    fi
-
-  elif [[ $ROOTDATA_ENABLED -eq 1 && $api_exit -ne 0 ]]; then
-    api_status="exit_$api_exit"
-    echo "  -> API_SKIP (exit $api_exit); using Round 1 output only"
-  fi
+  # ── Phase 3: Round 2 reconciliation ──
+  # Phase 6.3 will reintroduce a clean Node-based R2 invocation
+  # (framework/cli/r2.mjs) operating on the merged fan-out record.
+  # Until then, the merged R1 record is the final record.
+  api_status=$(if [[ $ROOTDATA_ENABLED -eq 1 && $api_exit -eq 0 ]]; then echo "ok"; elif [[ $ROOTDATA_ENABLED -eq 1 ]]; then echo "exit_$api_exit"; else echo "disabled"; fi)
+  # final_source stays "r1" (the merged fan-out record is the final record)
 
   # Apply validated_overrides via jq patch (independent of R2 — runs whenever rootdata
   # produced a packet; preserves Phase-2/3 behavior. Will be re-evaluated in Phase 6.)

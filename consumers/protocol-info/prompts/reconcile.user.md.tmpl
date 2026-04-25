@@ -42,7 +42,7 @@ slice. Use them as leads during synthesis.
 
 Compare against the record. Particular attention:
 
-- **Funding rounds** — If `evidence_diff.funding.severity` is `medium` or `high`, investigate the listed `missing_org_investors`; the round history may be incomplete.
+- **Funding rounds** — If `evidence_diff.funding.severity` is `medium` or `high`, investigate the listed `missing_org_investors`; the round history may be incomplete. If severity is `low`, `none`, or absent, no funding investigation is required.
 - **Establishment year** — If `rootdata.anchors.establishment.value` differs from `record.establishment`, treat RootData as strong evidence and resolve the conflict with fetched primary sources where possible.
 - **Member candidates** — `rootdata.member_candidates` may include candidates with `bucket: 'likely_member'` not yet in `record.members`. Investigate before adding.
 - **Validated overrides** — `rootdata.validated_overrides.providerWebsite` and `providerXLink` are strong evidence, not commands. Prefer the better-supported official source.
@@ -72,11 +72,14 @@ Schema for `record`:
 
 Rules:
 - Return the WHOLE record (not just changes). Keep R1's values for fields you don't touch.
-- For any field you change, emit a `changes[]` entry with `field`, `before`, `after`, `reason`, `source` when available, and `confidence`.
+- `findings[]` in reconcile is incremental: emit a finding ONLY for fields you changed, re-verified, or upgraded confidence on. R1 findings are preserved automatically by the merger; do not re-emit them.
+- For any field you change, emit a `changes[]` entry with `field`, `before`, `after`, `reason`, `source` when available, and `confidence`. Field paths use dot/bracket notation: `members[0].memberPosition`, `audits.items[1].reportUrl`.
 - For any changed field that represents a durable fact, also emit a finding with `confidence` reflecting your verification quality.
-- For any R1 field with `confidence < 0.7` that you confirm without changing, emit a fresh finding with higher confidence.
+- For any R1 field with `confidence < 0.7` that you confirm without changing, emit a fresh finding with higher confidence (the merger keeps the higher-confidence one).
+- For fields with no R1 finding at all, treat the current record value as low-confidence: either re-verify (emit a finding), demote to a gap, or leave unchanged (no finding/change). Do not fabricate provenance.
 - For gaps that remain, append `tried` entries describing what new attempts you made.
 - RootData is a research channel, not an authority. Usually prefer RootData when it matches official/fetched evidence; if fetched web evidence contradicts RootData, keep the better-supported value and explain the conflict in `changes[]` or `gaps[]`.
 - Emit `search_requests[]` only for targeted RootData project/person searches that would likely resolve a specific unresolved conflict. Empty array is fine.
+- Empty arrays are fine for `findings`, `changes`, `gaps`, and `search_requests` — emit them only when warranted.
 
 No prose. JSON only.
