@@ -10,6 +10,39 @@
 
 **Spec:** `docs/superpowers/specs/2026-04-25-deep-search-framework-design.md` (commit `4b834da`).
 
+## Deep Search Philosophy And Review Corrections
+
+These are hard requirements for implementers. The model gets broad freedom to
+research, compare conflicting sources, and overrule structured evidence when it
+has better fetched evidence. The framework still owns deterministic contracts:
+
+- Final records are `OK` only after normalization and schema validation.
+- i18n and dashboard export run only from the final schema-passing `record.json`.
+- `--rootdata-id`, `--model`, `--max-turns`, `--max-budget`, `--i18n`,
+  `--i18n-parallel`, and `--i18n-model` must pass through to the stage that
+  uses them; no parsed flag may be silently ignored.
+- `--max-budget` is a single-provider total LLM hard cap. Manifest budgets are
+  defaults; the orchestrator computes effective per-stage caps and records them
+  in `meta.json`.
+- R2 emits `changes[]` in addition to findings/gaps. Missing change provenance
+  is an audit warning or high-confidence suppression, not a blanket ban on model
+  judgment.
+- RootData `validated_overrides` are evidence, not unconditional post-R2
+  overwrites. `audits.lastScannedAt` is crawler metadata and is overwritten
+  deterministically before validation.
+- Slice coherence checks validation semantics, not annotation text. Ignore
+  `$schema`, `$id`, `title`, and `description`.
+- Deep Search means default-on whole-record synthesis plus bounded iterative
+  deepening. R2 is not a repair-only pass; it reviews the complete R1 result,
+  may request structured searches, and stops only at `max_research_rounds` or
+  budget/gap exhaustion.
+- RootData is both an initial evidence fetcher and a structured search channel.
+  Its `/open/ser_inv` project/person search results are evidence for the model,
+  not commands for the framework.
+- Guardrails are acceptance gates after model judgment, not prompt-level
+  shackles that prevent useful exploration. Rejections must be logged as
+  `changes[]`/gaps/meta so future rounds or humans can inspect them.
+
 ---
 
 ## File Structure (post-migration)
@@ -17,18 +50,22 @@
 ```
 framework/
 ├── cli.mjs                         # entry called by run.sh
-├── orchestrator.mjs                # R0→R1→R2→i18n→export pipeline
+├── orchestrator.mjs                # R0→R1→R2+→normalize→validate→i18n→export pipeline
 ├── claude-wrapper.mjs              # spawn `claude -p`, schema-forced, retry, cost cap
 ├── parallel-runner.mjs             # bounded promise queue
 ├── fetcher-dispatcher.mjs          # parallel-call manifest fetchers
-├── subtask-runner.mjs              # render prompt → claude → parse {slice,findings,gaps}
-├── merger.mjs                      # N slices → record + findings + gaps + no-regression guard
+├── search-channel.mjs              # execute model-requested structured searches
+├── subtask-runner.mjs              # render prompt → claude → parse {slice,findings,gaps,handoff_notes}
+├── merger.mjs                      # N slices → record + findings + gaps + handoffs + audit-first R2 guard
+├── evidence-diff.mjs               # deterministic post-R1 evidence comparisons
 ├── i18n-stage.mjs                  # generic Haiku translation
+├── normalizer-stage.mjs            # deterministic pre-validation normalizers
 ├── schema-validator.mjs            # ← from validate.mjs
 ├── json-extract.mjs                # ← from extract-json.mjs
 ├── manifest-loader.mjs             # read+validate consumer manifest, resolve paths
 └── schemas/
     ├── findings.schema.json
+    ├── changes.schema.json
     ├── gaps.schema.json
     └── consumer-manifest.schema.json
 
@@ -53,6 +90,8 @@ consumers/protocol-info/
 ├── fetchers/
 │   ├── rootdata.mjs
 │   └── defillama.mjs
+├── normalizers/
+│   └── final.mjs
 └── post/
     ├── locale-map.mjs
     └── dashboard-export.mjs
@@ -65,8 +104,10 @@ tests/
 │   ├── parallel-runner.test.mjs
 │   ├── claude-wrapper.test.mjs
 │   ├── fetcher-dispatcher.test.mjs
+│   ├── search-channel.test.mjs
 │   ├── subtask-runner.test.mjs
 │   ├── merger.test.mjs
+│   ├── evidence-diff.test.mjs
 │   ├── i18n-stage.test.mjs
 │   └── manifest-loader.test.mjs
 └── consumers/protocol-info/
@@ -99,7 +140,7 @@ Run one: `node tests/run.mjs framework/merger`
 
 # Phase 1 — Bootstrap framework + test runner
 
-**Deliverable:** `framework/` directory with the 4 utility modules + `extract-json` + `validate` migrated. Custom test runner. Pre-push script. Old `run.sh` and `*.mjs` helpers continue to work unchanged at this point — phase 1 only ADDS files.
+**Deliverable:** `framework/` directory with the 4 utility modules + `extract-json` + `validate` migrated. Custom test runner. Pre-push script. `run.sh` continues to work; root helper filenames move and caller paths are updated in the same phase.
 
 **Smoke test:** `node tests/run.mjs` exits 0; all unit tests green; `bash -n run.sh` still passes.
 
@@ -572,7 +613,7 @@ git commit -m "feat(framework): add parallel-runner with bounded concurrency"
 Create `tests/framework/claude-wrapper.test.mjs`:
 ```js
 import { strict as assert } from 'node:assert';
-import { writeFile, mkdtemp, rm, chmod } from 'node:fs/promises';
+import { writeFile, readFile, mkdtemp, rm, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runClaude } from '../../framework/claude-wrapper.mjs';
@@ -649,6 +690,38 @@ echo '{"session_id":"s","total_cost_usd":0.01,"num_turns":1,"structured_output":
       }
     },
   },
+  {
+    name: 'does not retry a transient failure more than once',
+    fn: async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'claude-one-retry-'));
+      const counterPath = join(dir, 'count');
+      const claudePath = join(dir, 'claude');
+      await writeFile(counterPath, '0');
+      const script = `#!/bin/bash
+cat > /dev/null
+n=$(cat ${counterPath})
+echo $((n+1)) > ${counterPath}
+echo "529 overloaded" >&2
+exit 1
+`;
+      await writeFile(claudePath, script);
+      await chmod(claudePath, 0o755);
+      try {
+        await assert.rejects(() => runClaude({
+          claudeBin: claudePath,
+          userPrompt: 'x',
+          schemaJson: {},
+          maxTurns: 1,
+          maxBudgetUsd: 0.01,
+          retryOnTransient: true,
+        }), /529|overloaded|claude exit/);
+        const count = Number(await readFile(counterPath, 'utf8'));
+        assert.equal(count, 2);
+      } finally {
+        await rm(dir, { recursive: true });
+      }
+    },
+  },
 ];
 ```
 
@@ -663,9 +736,9 @@ Expected: LOAD FAIL.
 - [ ] **Step 3: Implement `framework/claude-wrapper.mjs`**
 
 ```js
-// Spawns `claude -p` with schema-forced output. Handles retry on transient
-// failures, parses the envelope, returns it. Higher-level extraction of
-// structured_output happens in subtask-runner.
+// Spawns `claude -p` with schema-forced output. Handles at most one retry on
+// transient failures, parses the envelope, returns it. Higher-level extraction
+// of structured_output happens in subtask-runner.
 
 import { spawn } from 'node:child_process';
 
@@ -691,27 +764,28 @@ export async function runClaude({
   model = null,
   retryOnTransient = true,
   retryDelayMs = 2000,
+  budgetLedger = null,
 }) {
   if (!userPrompt) throw new Error('runClaude: userPrompt is required');
   if (!schemaJson) throw new Error('runClaude: schemaJson is required');
 
-  const attempt = async () => spawnAndCollect({
-    claudeBin, systemPrompt, userPrompt, schemaJson,
-    maxTurns, maxBudgetUsd, permissionMode, allowedTools, resumeSession, model,
-  });
+  const attempt = async () => {
+    const attemptBudget = budgetLedger ? Math.min(maxBudgetUsd, budgetLedger.remaining()) : maxBudgetUsd;
+    if (!(attemptBudget > 0)) throw new Error('max-budget exhausted before claude attempt');
+    const env = await spawnAndCollect({
+      claudeBin, systemPrompt, userPrompt, schemaJson,
+      maxTurns, maxBudgetUsd: attemptBudget, permissionMode, allowedTools, resumeSession, model,
+    });
+    if (budgetLedger && Number.isFinite(env.total_cost_usd)) budgetLedger.record(env.total_cost_usd);
+    return env;
+  };
 
   try {
     return await attempt();
   } catch (err) {
     if (!retryOnTransient || !isTransient(err)) throw err;
     await sleep(retryDelayMs);
-    try {
-      return await attempt();
-    } catch (err2) {
-      if (!isTransient(err2)) throw err2;
-      await sleep(retryDelayMs * 2.5);
-      return await attempt();
-    }
+    return await attempt();
   }
 }
 
@@ -762,13 +836,17 @@ function spawnAndCollect({
 }
 ```
 
+`budgetLedger` is supplied by stage CLIs when a user-level `--max-budget` cap is
+active. The wrapper must read remaining budget before the initial attempt and
+before the single retry; it must not hand each attempt the full original cap.
+
 - [ ] **Step 4: Run, verify pass**
 
 ```bash
 node tests/run.mjs framework/claude-wrapper
 ```
 
-Expected: 3 passed.
+Expected: 4 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -886,7 +964,7 @@ No commit — just verification. Phase 1 already committed via the per-task comm
 Each fetcher is an ESM module that exports a default async function:
 
 ```js
-export default async function fetch({ slug, displayName, hints, env, logger }) {
+export default async function fetch({ slug, displayName, hints, rootdataId, env, logger }) {
   // ... call external API ...
   return {
     name: 'rootdata',           // matches manifest fetchers[].name
@@ -897,6 +975,25 @@ export default async function fetch({ slug, displayName, hints, env, logger }) {
   };
 }
 ```
+
+Fetchers may also export a structured search function:
+
+```js
+export async function search({ query, type, limit = 5, env, logger }) {
+  return {
+    channel: 'rootdata',
+    query,
+    type,
+    ok: true,
+    results: [ /* provider-shaped */ ],
+    fetched_at: '2026-04-25T...'
+  };
+}
+```
+
+The framework only calls `search` when a synthesis/deepening round emits an
+approved `search_requests[]` entry. Search results are appended to the evidence
+packet as `search_results[]`; they never overwrite record fields directly.
 
 `env` is the process env (read-only). `logger` has `.info(msg)` and `.warn(msg)`.
 
@@ -943,7 +1040,7 @@ Read `consumers/protocol-info/fetchers/rootdata.mjs`. The current file is a CLI 
 
 ```js
 // At top of file, after existing imports:
-export default async function fetch({ slug, displayName, hints, env, logger }) {
+export default async function fetch({ slug, displayName, hints, rootdataId, env, logger }) {
   if (!env.ROOTDATA_API_KEY) {
     return {
       name: 'rootdata', ok: false, data: null,
@@ -954,7 +1051,7 @@ export default async function fetch({ slug, displayName, hints, env, logger }) {
   try {
     // Reuse existing internal helpers — the CLI body becomes a thin wrapper
     // around this function.
-    const data = await collectRootDataPacket({ slug, displayName, hints, apiKey: env.ROOTDATA_API_KEY, logger });
+    const data = await collectRootDataPacket({ slug, displayName, hints, rootdataId, apiKey: env.ROOTDATA_API_KEY, logger });
     return { name: 'rootdata', ok: true, data, cost_usd: 0, fetched_at: new Date().toISOString() };
   } catch (err) {
     logger.warn(`rootdata fetch failed: ${err.message}`);
@@ -966,12 +1063,41 @@ export default async function fetch({ slug, displayName, hints, env, logger }) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   // ... existing CLI argv parsing ...
   // Replace the "do everything" body with:
-  const result = await fetch({ slug, displayName, hints, env: process.env, logger: console });
+  const result = await fetch({ slug, displayName, hints, rootdataId, env: process.env, logger: console });
   await writeFile(outputPath, JSON.stringify(result.data, null, 2));
 }
 ```
 
-Refactor the body of the original script into `async function collectRootDataPacket(...)` so both the CLI mode and the new fetcher export call it.
+Refactor the body of the original script into `async function collectRootDataPacket(...)` so both the CLI mode and the new fetcher export call it. Preserve the legacy `--rootdata-id` path by passing it as `rootdataId` into `collectRootDataPacket` and using it before name search.
+
+Also export RootData as a search channel by wrapping the existing
+`/open/ser_inv` helpers:
+
+```js
+export async function search({ query, type = 'project', limit = 5, env, logger }) {
+  if (!env.ROOTDATA_API_KEY) {
+    return { channel: 'rootdata', query, type, ok: false, error: 'ROOTDATA_API_KEY not set', results: [] };
+  }
+  const rootType = type === 'person' ? 3 : 1;
+  try {
+    const results = await apiPost('/open/ser_inv', { query, type: rootType }, env.ROOTDATA_API_KEY);
+    return {
+      channel: 'rootdata',
+      query,
+      type,
+      ok: true,
+      results: Array.isArray(results) ? results.slice(0, limit) : [],
+      fetched_at: new Date().toISOString(),
+    };
+  } catch (err) {
+    logger.warn?.(`rootdata search failed: ${err.message}`);
+    return { channel: 'rootdata', query, type, ok: false, error: err.message, results: [], fetched_at: new Date().toISOString() };
+  }
+}
+```
+
+This keeps RootData as a model-accessible research channel during deepening
+rounds instead of a one-time preprocessor.
 
 - [ ] **Step 4: Update `run.sh`**
 
@@ -985,7 +1111,7 @@ sed -i.bak 's|PREPROCESS_SCRIPT="$SCRIPT_DIR/preprocess-rootdata.mjs"|PREPROCESS
 Create `tests/consumers/protocol-info/rootdata.test.mjs`:
 ```js
 import { strict as assert } from 'node:assert';
-import fetch from '../../../consumers/protocol-info/fetchers/rootdata.mjs';
+import fetch, { search } from '../../../consumers/protocol-info/fetchers/rootdata.mjs';
 
 export const tests = [
   {
@@ -1013,6 +1139,20 @@ export const tests = [
       assert.ok('fetched_at' in result);
     },
   },
+  {
+    name: 'search channel returns ok:false when ROOTDATA_API_KEY missing',
+    fn: async () => {
+      const result = await search({
+        query: 'Pendle founder',
+        type: 'person',
+        env: {},
+        logger: { info: () => {}, warn: () => {} },
+      });
+      assert.equal(result.channel, 'rootdata');
+      assert.equal(result.ok, false);
+      assert.deepEqual(result.results, []);
+    },
+  },
 ];
 ```
 
@@ -1022,7 +1162,7 @@ export const tests = [
 node tests/run.mjs consumers/protocol-info/rootdata
 ```
 
-Expected: 2 passed.
+Expected: 3 passed.
 
 - [ ] **Step 7: Verify CLI mode still works (run.sh path)**
 
@@ -1040,6 +1180,7 @@ git commit -m "refactor: move rootdata to consumers/protocol-info/fetchers/
 
 - migrates preprocess-rootdata.mjs → consumers/protocol-info/fetchers/rootdata.mjs
 - adds default-export following framework FETCHER_INTERFACE
+- adds RootData search channel export for deepening rounds
 - preserves CLI-mode entry for run.sh compatibility
 - adds unit tests covering missing-key path"
 ```
@@ -1386,7 +1527,7 @@ git commit -m "feat(framework): add fetcher-dispatcher (parallel + merge)"
 // framework/cli/fetch.mjs — bash-callable entry. Reads a manifest, runs all
 // declared fetchers, writes the evidence packet to --output.
 //
-// Usage: node framework/cli/fetch.mjs --manifest <path> --slug X --display-name Y --hints Z --output OUT.json
+// Usage: node framework/cli/fetch.mjs --manifest <path> --slug X --display-name Y --hints Z [--rootdata-id ID] --output OUT.json
 
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
@@ -1402,10 +1543,11 @@ const manifestPath = arg('manifest');
 const slug = arg('slug');
 const displayName = arg('display-name');
 const hints = arg('hints', '');
+const rootdataId = arg('rootdata-id', '');
 const output = arg('output');
 
 if (!manifestPath || !slug || !displayName || !output) {
-  console.error('usage: fetch.mjs --manifest <path> --slug X --display-name Y [--hints Z] --output OUT');
+  console.error('usage: fetch.mjs --manifest <path> --slug X --display-name Y [--hints Z] [--rootdata-id ID] --output OUT');
   process.exit(2);
 }
 
@@ -1420,7 +1562,7 @@ const fetchers = (manifest.fetchers || []).map(f => ({
 const packet = await dispatchFetchers({
   fetchers,
   ctx: {
-    slug, displayName, hints,
+    slug, displayName, hints, rootdataId,
     env: process.env,
     logger: { info: m => console.error(`[fetch] ${m}`), warn: m => console.error(`[fetch:warn] ${m}`) },
   },
@@ -1438,7 +1580,7 @@ Create `consumers/protocol-info/manifest.json`:
   "name": "protocol-info",
   "version": "0.5.0-wip",
   "fetchers": [
-    { "name": "rootdata", "module": "./fetchers/rootdata.mjs", "required_env": ["ROOTDATA_API_KEY"], "optional": true },
+      { "name": "rootdata", "module": "./fetchers/rootdata.mjs", "required_env": ["ROOTDATA_API_KEY"], "optional": true, "search": { "enabled": true, "types": ["project", "person"], "max_queries_per_round": 4 } },
     { "name": "defillama", "module": "./fetchers/defillama.mjs", "required_env": [], "optional": true }
   ]
 }
@@ -1467,6 +1609,7 @@ node "$SCRIPT_DIR/framework/cli/fetch.mjs" \
   --slug "$slug" \
   --display-name "$display" \
   --hints "$hints" \
+  ${rootdata_id:+--rootdata-id "$rootdata_id"} \
   --output "$rootdata_pkt" \
   2> "$rootdata_err" &
 ```
@@ -1583,10 +1726,11 @@ No commit — verification only.
         "required": ["name", "module"],
         "properties": {
           "name":         { "type": "string" },
-          "module":       { "type": "string" },
-          "required_env": { "type": "array", "items": { "type": "string" } },
-          "optional":     { "type": "boolean" },
-          "description":  { "type": "string" }
+            "module":       { "type": "string" },
+            "required_env": { "type": "array", "items": { "type": "string" } },
+            "optional":     { "type": "boolean" },
+            "search":       { "type": "object" },
+            "description":  { "type": "string" }
         }
       }
     },
@@ -1609,14 +1753,18 @@ No commit — verification only.
     "reconcile": {
       "type": "object",
       "properties": {
-        "enabled":      { "type": "boolean" },
-        "prompt":       { "type": "string" },
-        "max_turns":    { "type": "integer" },
-        "max_budget_usd": { "type": "number" },
-        "trigger_when": { "type": "object" }
-      }
-    },
+          "enabled":      { "type": "boolean" },
+          "prompt":       { "type": "string" },
+          "max_turns":    { "type": "integer" },
+          "max_budget_usd": { "type": "number" },
+          "mode": { "type": "string", "enum": ["deep", "fast"] },
+          "max_research_rounds": { "type": "integer", "minimum": 1 },
+          "max_search_queries_per_round": { "type": "integer", "minimum": 0 },
+          "fast_skip_allowed": { "type": "boolean" }
+        }
+      },
     "i18n": { "type": "object" },
+    "normalizers": { "type": "array" },
     "post_processing": { "type": "array" },
     "output": { "type": "object" }
   }
@@ -1667,11 +1815,28 @@ export const tests = [
         system_prompt: './p/sys.md',
         subtasks: [{ name: 's', prompt: './p/s.md', schema_slice: './sch/s.json' }],
       }, async (path, dir) => {
+        await writeFile(join(dir, 'a.mjs'), 'export default async () => ({ ok: true })');
+        await mkdir(join(dir, 'p'), { recursive: true });
+        await mkdir(join(dir, 'sch'), { recursive: true });
+        await writeFile(join(dir, 'p/sys.md'), 'system');
+        await writeFile(join(dir, 'p/s.md'), 'prompt');
+        await writeFile(join(dir, 'sch/s.json'), '{"type":"object"}');
         const m = await loadManifest(path);
         assert.equal(m._abs.fetchers[0].module_abs, join(dir, 'a.mjs'));
         assert.equal(m._abs.system_prompt, join(dir, 'p/sys.md'));
         assert.equal(m._abs.subtasks[0].prompt_abs, join(dir, 'p/s.md'));
         assert.equal(m._abs.subtasks[0].schema_slice_abs, join(dir, 'sch/s.json'));
+      });
+    },
+  },
+  {
+    name: 'rejects missing referenced files',
+    fn: async () => {
+      await withManifest({
+        name: 'x', version: '0.1.0',
+        system_prompt: './missing/system.md',
+      }, async (path) => {
+        await assert.rejects(() => loadManifest(path), /missing referenced file/);
       });
     },
   },
@@ -1694,7 +1859,7 @@ Expected: LOAD FAIL.
 //
 // Throws on invalid JSON, schema validation failure, or missing referenced files.
 
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { resolve, dirname, isAbsolute } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -1705,6 +1870,16 @@ const MANIFEST_SCHEMA = resolve(FRAMEWORK_DIR, 'schemas/consumer-manifest.schema
 function abs(base, rel) {
   if (!rel) return null;
   return isAbsolute(rel) ? rel : resolve(base, rel);
+}
+
+async function assertFile(label, path) {
+  if (!path) return;
+  try {
+    const s = await stat(path);
+    if (!s.isFile()) throw new Error('not a file');
+  } catch (err) {
+    throw new Error(`missing referenced file (${label}): ${path}`);
+  }
 }
 
 export async function loadManifest(manifestPath) {
@@ -1742,11 +1917,36 @@ export async function loadManifest(manifestPath) {
       user_prompt_abs:   abs(baseDir, manifest.i18n.user_prompt),
       schema_abs:        abs(baseDir, manifest.i18n.schema),
     } : null,
+    normalizers: (manifest.normalizers || []).map(n => ({
+      ...n,
+      module_abs: abs(baseDir, n.module),
+    })),
     post_processing: (manifest.post_processing || []).map(p => ({
       ...p,
       module_abs: abs(baseDir, p.module),
     })),
   };
+
+  const refs = [
+    ['full schema', manifest._abs.full_schema],
+    ['system prompt', manifest._abs.system_prompt],
+    ['reconcile prompt', manifest._abs.reconcile_prompt],
+    ...(manifest._abs.fetchers || []).map(f => [`fetcher:${f.name}`, f.module_abs]),
+    ...(manifest._abs.subtasks || []).flatMap(s => [
+      [`subtask prompt:${s.name}`, s.prompt_abs],
+      [`subtask schema:${s.name}`, s.schema_slice_abs],
+    ]),
+    ...(manifest._abs.normalizers || []).map(n => [`normalizer:${n.name}`, n.module_abs]),
+    ...(manifest._abs.post_processing || []).map(p => [`post:${p.name}`, p.module_abs]),
+  ];
+  if (manifest._abs.i18n) {
+    refs.push(
+      ['i18n system prompt', manifest._abs.i18n.system_prompt_abs],
+      ['i18n user prompt', manifest._abs.i18n.user_prompt_abs],
+      ['i18n schema', manifest._abs.i18n.schema_abs],
+    );
+  }
+  for (const [label, path] of refs) await assertFile(label, path);
 
   return manifest;
 }
@@ -1758,7 +1958,7 @@ export async function loadManifest(manifestPath) {
 node tests/run.mjs framework/manifest-loader
 ```
 
-Expected: 3 passed.
+Expected: 4 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -1894,6 +2094,7 @@ export async function runSubtask({
   schemaSlice,
   resumeSession = null,
   model = null,
+  budgetLedger = null,
 }) {
   let envelope;
   try {
@@ -1904,6 +2105,7 @@ export async function runSubtask({
       maxBudgetUsd: subtask.max_budget_usd,
       resumeSession,
       model,
+      budgetLedger,
     });
   } catch (err) {
     return {
@@ -1988,7 +2190,7 @@ Replace `consumers/protocol-info/manifest.json` with:
   "version": "0.5.0-wip",
   "schemas": { "full": "./schemas/full.json" },
   "fetchers": [
-    { "name": "rootdata", "module": "./fetchers/rootdata.mjs", "required_env": ["ROOTDATA_API_KEY"], "optional": true },
+      { "name": "rootdata", "module": "./fetchers/rootdata.mjs", "required_env": ["ROOTDATA_API_KEY"], "optional": true, "search": { "enabled": true, "types": ["project", "person"], "max_queries_per_round": 4 } },
     { "name": "defillama", "module": "./fetchers/defillama.mjs", "required_env": [], "optional": true }
   ],
   "system_prompt": "./prompts/system.md",
@@ -2198,7 +2400,8 @@ Each slice is a strict subset of `full.json`. Field definitions are copied verba
   "required": [
     "slug", "provider", "displayName", "type",
     "description", "tags", "establishment",
-    "providerWebsite", "providerXLink", "providerDiscordLink"
+    "providerWebsite", "providerXLink", "providerDiscordLink",
+    "status"
   ],
   "properties": {
     "slug":        { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,63}$" },
@@ -2210,7 +2413,8 @@ Each slice is a strict subset of `full.json`. Field definitions are copied verba
     "establishment": { "type": "integer", "minimum": 1900, "maximum": 2030 },
     "providerWebsite":     { "type": "string", "format": "uri", "maxLength": 500 },
     "providerXLink":       { "type": "string", "format": "uri", "maxLength": 500 },
-    "providerDiscordLink": { "type": ["string", "null"], "format": "uri", "maxLength": 500 }
+    "providerDiscordLink": { "type": ["string", "null"], "format": "uri", "maxLength": 500 },
+    "status": { "type": "string", "enum": ["draft", "active", "archived"] }
   }
 }
 ```
@@ -2345,7 +2549,7 @@ git commit -m "feat(consumer): add 4 slice schemas (metadata/team/funding/audits
 ```js
 #!/usr/bin/env node
 // Verifies each slice schema's properties are a strict subset of full.json's properties,
-// and that each property's definition matches.
+// and that each property's validation semantics match.
 //
 // This catches drift when full.json is updated but a slice is forgotten.
 
@@ -2366,6 +2570,18 @@ const fullSchema = JSON.parse(await readFile(FULL, 'utf8'));
 const fullProps = fullSchema.properties || {};
 let problems = 0;
 
+const ANNOTATION_KEYS = new Set(['$schema', '$id', 'title', 'description', 'examples', 'default']);
+function canonicalValidationShape(node) {
+  if (Array.isArray(node)) return node.map(canonicalValidationShape);
+  if (!node || typeof node !== 'object') return node;
+  const out = {};
+  for (const key of Object.keys(node).sort()) {
+    if (ANNOTATION_KEYS.has(key)) continue;
+    out[key] = canonicalValidationShape(node[key]);
+  }
+  return out;
+}
+
 for (const slicePath of SLICES) {
   const slice = JSON.parse(await readFile(slicePath, 'utf8'));
   const props = slice.properties || {};
@@ -2375,10 +2591,10 @@ for (const slicePath of SLICES) {
       problems++;
       continue;
     }
-    const a = JSON.stringify(v);
-    const b = JSON.stringify(fullProps[k]);
+    const a = JSON.stringify(canonicalValidationShape(v));
+    const b = JSON.stringify(canonicalValidationShape(fullProps[k]));
     if (a !== b) {
-      console.error(`✗ ${slicePath}: property "${k}" definition diverges from full.json`);
+      console.error(`✗ ${slicePath}: property "${k}" validation semantics diverge from full.json`);
       problems++;
     }
   }
@@ -2439,7 +2655,10 @@ git commit -m "chore: add slice-coherence check (slice ⊆ full)"
 
 Each prompt is focused on one slice. They all share the same placeholders: `{{SLUG}}`, `{{PROVIDER}}`, `{{DISPLAY_NAME}}`, `{{TYPE}}`, `{{HINTS}}`, `{{SCHEMA}}`, `{{EVIDENCE}}`.
 
-The strategy: take the existing `user.md.tmpl` and slice it into 4 focused prompts, each told "you are responsible for ONLY <these fields>; do not return others; another agent handles those." Plus subtask-specific guidance.
+The strategy: take the existing `user.md.tmpl` and slice it into 4 focused
+prompts. The `slice` output stays scoped, but the model must not discard useful
+cross-slice discoveries. When a team/funding/audit/metadata clue appears outside
+the current slice, put it in `handoff_notes[]` for the synthesis/deepening pass.
 
 - [ ] **Step 1: Write `metadata.user.md.tmpl`**
 
@@ -2456,7 +2675,8 @@ You are researching a DeFi protocol's **metadata** for an EarnProtocolInfo recor
 
 ## Your scope
 
-Return ONLY these fields. Other agents are handling team / funding / audits.
+Return only these fields in `slice`. If you discover team / funding / audit
+clues while researching metadata, preserve them in `handoff_notes[]`.
 
 ```json
 {{SCHEMA}}
@@ -2468,16 +2688,21 @@ Return ONLY these fields. Other agents are handling team / funding / audits.
 {{EVIDENCE}}
 ```
 
-Use the evidence to anchor: `establishment` from rootdata if present; `tags` should be informed by `defillama.category` and `defillama.chains`.
+Use structured evidence as high-priority leads, not commands. RootData
+`anchors` and `validated_overrides` are useful starting points; verify them
+against official sites/docs/X before using them, or record a lower-confidence
+finding/gap when sources conflict. `tags` should be informed by
+`defillama.category` and `defillama.chains`.
 
 ## Rules
 
 - `description`: ≤1000 chars; factual; no marketing fluff. Lead with what the protocol DOES, not adjectives.
 - `tags`: 3-8 lowercase tokens, no spaces, e.g. `yield`, `fixed-rate`, `eth-l2`, `lst`.
-- `establishment`: integer year. Rootdata's `anchors.establishment.value` is authoritative when present.
-- `providerWebsite`: official site URL. If rootdata provided `validated_overrides.providerWebsite`, use that.
-- `providerXLink`: official X account URL. Use `validated_overrides.providerXLink` when provided.
+- `establishment`: integer year. Treat RootData's `anchors.establishment.value` as strong evidence; use fetched primary sources when they contradict it.
+- `providerWebsite`: official site URL. Treat `validated_overrides.providerWebsite` as strong evidence, but prefer a better-supported fetched official URL if it conflicts.
+- `providerXLink`: official X account URL. Treat `validated_overrides.providerXLink` as strong evidence, but verify against the official website/docs when possible.
 - `providerDiscordLink`: invite URL or null.
+- `status`: always `"draft"`.
 
 Output: a single JSON object matching the schema. No prose.
 ```
@@ -2494,7 +2719,8 @@ You are researching a DeFi protocol's **team** for an EarnProtocolInfo record.
 
 ## Your scope
 
-Return ONLY the `members` field. Other agents handle metadata, funding, audits.
+Return only `members` in `slice`. If team research reveals funding,
+metadata, or audit clues, preserve them in `handoff_notes[]`.
 
 ```json
 {{SCHEMA}}
@@ -2533,7 +2759,8 @@ You are researching a DeFi protocol's **funding history** for an EarnProtocolInf
 
 ## Your scope
 
-Return ONLY `fundingRounds`.
+Return only `fundingRounds` in `slice`. If funding research reveals team,
+metadata, or audit clues, preserve them in `handoff_notes[]`.
 
 ```json
 {{SCHEMA}}
@@ -2545,7 +2772,9 @@ Return ONLY `fundingRounds`.
 {{EVIDENCE}}
 ```
 
-Anchor on `rootdata.api_funding`. Cross-check via Crunchbase, the protocol's own announcements, and announcement-style press (TechCrunch, The Block).
+Treat `rootdata.api_funding` as a strong lead, not ground truth. Cross-check via
+Crunchbase, the protocol's own announcements, and announcement-style press
+(TechCrunch, The Block).
 
 ## Rules
 
@@ -2555,7 +2784,7 @@ Anchor on `rootdata.api_funding`. Cross-check via Crunchbase, the protocol's own
 - `amount`: display string with currency, e.g. `$5M`, `$165M`, `$11M`. Null if undisclosed.
 - `valuation`: e.g. `$1.66B`. Null if undisclosed.
 - `investors`: array of firms/angels for that round. Empty array if undisclosed.
-- Use the `rootdata.api_funding.investors_orgs_normalized` list as a reference for canonical investor names — match casing/style.
+- Use the `rootdata.api_funding.investors_orgs_normalized` list as a reference for canonical investor names when supported by fetched evidence.
 
 Output: `{"fundingRounds": [...]}`. No prose.
 ```
@@ -2571,7 +2800,8 @@ You are researching a DeFi protocol's **security audits** for an EarnProtocolInf
 
 ## Your scope
 
-Return ONLY `audits`.
+Return only `audits` in `slice`. If audit research reveals metadata, team, or
+funding clues, preserve them in `handoff_notes[]`.
 
 ```json
 {{SCHEMA}}
@@ -2682,7 +2912,7 @@ Expected: LOAD FAIL.
 ```js
 // Merges N subtask outputs into a single record + failure log.
 // α-shape: handles slices only. β-shape (findings/gaps accumulation +
-// no-regression guard) extends this in phases 5–6.
+// audit-first R2 guard) extends this in phases 5–6.
 
 export function mergeSlices(subtaskResults, opts = {}) {
   const onCollision = opts.onCollision || ((field, by, prev) => {
@@ -2842,7 +3072,7 @@ Replace `framework/cli/r1.mjs` with:
 //   - collect {slice, ok, error, cost, turns, session_id, envelope}
 // Then merge slices via merger.mjs and write record + per-subtask envelopes.
 
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { loadManifest, selectEvidence } from '../manifest-loader.mjs';
 import { runSubtask } from '../subtask-runner.mjs';
@@ -2996,9 +3226,9 @@ git commit -m "feat: R1 fan-out via 4 parallel subtasks
 
 # Phase 5 — β output (findings + gaps)
 
-**Deliverable:** Universal `findings.schema.json` + `gaps.schema.json`. Subtasks return `{slice, findings, gaps}`. Merger accumulates findings/gaps and tags them with stage/subtask. New artifacts: `findings.json`, `gaps.json` per slug.
+**Deliverable:** Universal `findings.schema.json`, `changes.schema.json`, and `gaps.schema.json`. Subtasks return `{slice, findings, gaps, handoff_notes}`. Merger accumulates findings/gaps/handoffs and tags them with stage/subtask. R2 later uses `changes[]` for audited model-driven edits. New artifacts in this phase: `findings.json`, `gaps.json`, `handoff_notes.json` per slug; `changes.json` lands when R2 is wired in Phase 6.
 
-**Success criterion:** `findings.json` contains plausible per-field provenance with confidence scores; `gaps.json` lists fields Claude couldn't fill with reasons.
+**Success criterion:** `findings.json` contains plausible per-field provenance with confidence scores; `gaps.json` lists fields Claude couldn't fill with reasons; `handoff_notes.json` preserves useful cross-slice clues.
 
 ---
 
@@ -3006,6 +3236,7 @@ git commit -m "feat: R1 fan-out via 4 parallel subtasks
 
 **Files:**
 - Create: `framework/schemas/findings.schema.json`
+- Create: `framework/schemas/changes.schema.json`
 - Create: `framework/schemas/gaps.schema.json`
 
 - [ ] **Step 1: Write `findings.schema.json`**
@@ -3022,6 +3253,7 @@ git commit -m "feat: R1 fan-out via 4 parallel subtasks
     "required": ["field", "value", "source", "confidence"],
     "properties": {
       "field":      { "type": "string", "minLength": 1, "maxLength": 200 },
+      "entity_key": { "type": "string", "minLength": 1, "maxLength": 200 },
       "value":      {},
       "source":     { "type": "string", "format": "uri", "maxLength": 500 },
       "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
@@ -3036,7 +3268,32 @@ git commit -m "feat: R1 fan-out via 4 parallel subtasks
 }
 ```
 
-- [ ] **Step 2: Write `gaps.schema.json`**
+- [ ] **Step 2: Write `changes.schema.json`**
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "framework/schemas/changes.schema.json",
+  "type": "array",
+  "maxItems": 200,
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["field", "before", "after", "reason", "confidence"],
+    "properties": {
+      "field":      { "type": "string", "minLength": 1, "maxLength": 200 },
+      "entity_key": { "type": "string", "minLength": 1, "maxLength": 200 },
+      "before":     {},
+      "after":      {},
+      "reason":     { "type": "string", "minLength": 1, "maxLength": 500 },
+      "source":     { "type": "string", "maxLength": 500 },
+      "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+    }
+  }
+}
+```
+
+- [ ] **Step 3: Write `gaps.schema.json`**
 
 ```json
 {
@@ -3061,11 +3318,11 @@ git commit -m "feat: R1 fan-out via 4 parallel subtasks
 }
 ```
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add framework/schemas/findings.schema.json framework/schemas/gaps.schema.json
-git commit -m "feat(framework): add universal findings + gaps schemas"
+git add framework/schemas/findings.schema.json framework/schemas/changes.schema.json framework/schemas/gaps.schema.json
+git commit -m "feat(framework): add universal findings/changes/gaps schemas"
 ```
 
 ---
@@ -3085,11 +3342,12 @@ tests.push({
   fn: async () => {
     const env = JSON.stringify({
       session_id: 's', total_cost_usd: 0.05, num_turns: 3,
-      structured_output: {
-        slice: { members: [{ memberName: 'A' }] },
-        findings: [{ field: 'members[0].memberName', value: 'A', source: 'https://x.com/a', confidence: 0.9 }],
-        gaps: []
-      }
+        structured_output: {
+          slice: { members: [{ memberName: 'A' }] },
+          findings: [{ field: 'members[0].memberName', value: 'A', source: 'https://x.com/a', confidence: 0.9 }],
+          gaps: [],
+          handoff_notes: [{ target: 'funding', note: 'A appears in seed announcement', source: 'https://example.com/seed' }]
+        }
     });
     await withStubClaude(env, async (claudeBin) => {
       const result = await runSubtask({
@@ -3102,12 +3360,13 @@ tests.push({
       });
       assert.equal(result.ok, true);
       assert.deepEqual(result.slice, { members: [{ memberName: 'A' }] });
-      assert.equal(result.findings.length, 1);
-      assert.equal(result.findings[0].confidence, 0.9);
-      assert.deepEqual(result.gaps, []);
-    });
-  },
-});
+        assert.equal(result.findings.length, 1);
+        assert.equal(result.findings[0].confidence, 0.9);
+        assert.deepEqual(result.gaps, []);
+        assert.equal(result.handoff_notes.length, 1);
+      });
+    },
+  });
 ```
 
 - [ ] **Step 2: Update implementation**
@@ -3116,21 +3375,61 @@ Modify `framework/subtask-runner.mjs`. Add new parameters and union-schema const
 
 ```js
 // Insert before runSubtask:
-function buildUnionSchema(sliceSchema, findingsSchema, gapsSchema) {
+function buildUnionSchema(outputKey, payloadSchema, findingsSchema, gapsSchema, changesSchema = null) {
+    const required = [outputKey, 'findings', 'gaps'];
+    const properties = {
+      [outputKey]: payloadSchema,
+      findings: findingsSchema,
+      gaps: gapsSchema,
+      handoff_notes: {
+        type: 'array',
+        maxItems: 20,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['target', 'note'],
+          properties: {
+            target: { type: 'string', maxLength: 80 },
+            note: { type: 'string', minLength: 1, maxLength: 500 },
+            source: { type: 'string', maxLength: 500 },
+          },
+        },
+      },
+      search_requests: {
+        type: 'array',
+        maxItems: 10,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['channel', 'query', 'reason'],
+          properties: {
+            channel: { type: 'string', enum: ['rootdata'] },
+            type: { type: 'string', enum: ['project', 'person'] },
+            query: { type: 'string', minLength: 2, maxLength: 200 },
+            reason: { type: 'string', minLength: 1, maxLength: 500 },
+            limit: { type: 'integer', minimum: 1, maximum: 10 },
+          },
+        },
+      },
+    };
+  if (changesSchema) {
+    required.splice(2, 0, 'changes');
+    properties.changes = changesSchema;
+  }
   return {
     type: 'object',
     additionalProperties: false,
-    required: ['slice', 'findings', 'gaps'],
-    properties: {
-      slice: sliceSchema,
-      findings: findingsSchema,
-      gaps: gapsSchema,
-    },
+    required,
+    properties,
   };
 }
 ```
 
-In `runSubtask`'s parameters add `findingsSchema` and `gapsSchema` (default both to `{ type: 'array', items: {} }` for backward-compat with α-shape). When BOTH are provided, run with the union schema; otherwise fall back to α-shape (just `schemaSlice`).
+In `runSubtask`'s parameters add `findingsSchema`, `gapsSchema`, optional
+`changesSchema`, and optional `outputKey = 'slice'` (default keeps R1 behavior).
+When findings+gaps are provided, run with the union schema; otherwise fall back
+to α-shape (just `schemaSlice`). R2 uses `outputKey: 'record'` plus
+`changesSchema`.
 
 ```js
 export async function runSubtask({
@@ -3141,12 +3440,14 @@ export async function runSubtask({
   schemaSlice,
   findingsSchema = null,
   gapsSchema = null,
+  changesSchema = null,
+  outputKey = 'slice',
   resumeSession = null,
   model = null,
 }) {
   const useBeta = findingsSchema && gapsSchema;
   const schemaJson = useBeta
-    ? buildUnionSchema(schemaSlice, findingsSchema, gapsSchema)
+    ? buildUnionSchema(outputKey, schemaSlice, findingsSchema, gapsSchema, changesSchema)
     : schemaSlice;
 
   let envelope;
@@ -3174,19 +3475,30 @@ export async function runSubtask({
   }
 
   if (useBeta) {
-    if (!parsed.slice || !Array.isArray(parsed.findings) || !Array.isArray(parsed.gaps)) {
+    if (!parsed[outputKey] || !Array.isArray(parsed.findings) || !Array.isArray(parsed.gaps)) {
       return {
-        ok: false, error: 'β output missing slice/findings/gaps',
+        ok: false, error: `β output missing ${outputKey}/findings/gaps`,
+        cost_usd: envelope.total_cost_usd ?? 0, turns: envelope.num_turns ?? 0,
+        session_id: envelope.session_id, envelope,
+      };
+    }
+    if (changesSchema && !Array.isArray(parsed.changes)) {
+      return {
+        ok: false, error: 'β output missing changes',
         cost_usd: envelope.total_cost_usd ?? 0, turns: envelope.num_turns ?? 0,
         session_id: envelope.session_id, envelope,
       };
     }
     return {
       ok: true,
-      slice: parsed.slice,
-      findings: parsed.findings,
-      gaps: parsed.gaps,
-      cost_usd: envelope.total_cost_usd ?? 0,
+      [outputKey]: parsed[outputKey],
+        slice: parsed[outputKey],
+        findings: parsed.findings,
+        changes: parsed.changes || [],
+        gaps: parsed.gaps,
+        handoff_notes: parsed.handoff_notes || [],
+        search_requests: parsed.search_requests || [],
+        cost_usd: envelope.total_cost_usd ?? 0,
       turns: envelope.num_turns ?? 0,
       session_id: envelope.session_id ?? null,
       envelope,
@@ -3234,10 +3546,10 @@ Output: a single JSON object matching the schema. No prose.
 
 with:
 
-```markdown
+````markdown
 ## Output format
 
-Return a JSON object with three fields:
+Return a JSON object with four fields:
 
 ```
 {
@@ -3251,11 +3563,14 @@ Return a JSON object with three fields:
       "method":     "≤200 chars: how you verified, e.g. 'X bio + LinkedIn cross-check'",
       "supporting_sources": ["optional", "≤5 corroborating URLs"]
     }
-  ],
-  "gaps": [
-    { "field": "JSON path", "reason": "≤500 chars why couldn't fill", "tried": ["≤10 method/source descriptions"] }
-  ]
-}
+    ],
+    "gaps": [
+      { "field": "JSON path", "reason": "≤500 chars why couldn't fill", "tried": ["≤10 method/source descriptions"] }
+    ],
+    "handoff_notes": [
+      { "target": "metadata|team|funding|audits|reconcile", "note": "out-of-scope clue worth preserving", "source": "optional URL" }
+    ]
+  }
 ```
 
 Rules for findings:
@@ -3267,8 +3582,13 @@ Rules for gaps:
 - Use when a required field is missing or you skipped it. Example: a member with `memberLink.linkedinLink: null` and you couldn't find one → gap with reason `"no public LinkedIn profile found"`, `tried: ["linkedin search", "X bio"]`.
 - Empty array is fine if you filled everything confidently.
 
+Rules for handoff notes:
+- Use when you discover a useful clue outside your slice. Do not add out-of-scope
+  fields to `slice`; preserve the clue here so R2 can synthesize across slices.
+- Empty array is fine.
+
 No prose. JSON only.
-```
+````
 
 - [ ] **Step 1: Apply to `metadata.user.md.tmpl`**, `team.user.md.tmpl`, `funding.user.md.tmpl`, `audits.user.md.tmpl`. Each gets the same closing block (above), replacing whatever closing instruction was there.
 
@@ -3322,10 +3642,11 @@ export function mergeSlices(subtaskResults, opts = {}) {
   });
 
   const record = {};
-  const failed_subtasks = [];
-  const findings = [];
-  const gaps = [];
-  const field_owner = {};
+    const failed_subtasks = [];
+    const findings = [];
+    const gaps = [];
+    const handoff_notes = [];
+    const field_owner = {};
 
   for (const r of subtaskResults) {
     if (!r.ok) {
@@ -3348,13 +3669,16 @@ export function mergeSlices(subtaskResults, opts = {}) {
     if (Array.isArray(r.findings)) {
       for (const f of r.findings) findings.push({ ...f, stage, subtask: r.name });
     }
-    if (Array.isArray(r.gaps)) {
-      for (const g of r.gaps) gaps.push({ ...g, stage, subtask: r.name });
+      if (Array.isArray(r.gaps)) {
+        for (const g of r.gaps) gaps.push({ ...g, stage, subtask: r.name });
+      }
+      if (Array.isArray(r.handoff_notes)) {
+        for (const h of r.handoff_notes) handoff_notes.push({ ...h, stage, subtask: r.name });
+      }
     }
-  }
 
-  return { record, findings, gaps, failed_subtasks, field_owner };
-}
+    return { record, findings, gaps, handoff_notes, failed_subtasks, field_owner };
+  }
 ```
 
 - [ ] **Step 3: Run tests**
@@ -3369,12 +3693,12 @@ Expected: 4 passed (3 from before + 1 new).
 
 ```bash
 git add framework/merger.mjs tests/framework/merger.test.mjs
-git commit -m "feat(framework): merger accumulates findings/gaps with stage+subtask tags"
+git commit -m "feat(framework): merger accumulates findings/gaps/handoffs with stage+subtask tags"
 ```
 
 ---
 
-### Task 5.5: Wire β output through r1.mjs + write findings.json + gaps.json
+### Task 5.5: Wire β output through r1.mjs + write findings/gaps/handoffs
 
 **Files:**
 - Modify: `framework/cli/r1.mjs`
@@ -3401,11 +3725,13 @@ const r = await runSubtask({
 });
 ```
 
-After `mergeSlices`, write the new artifacts. Add new CLI args `--findings-out` and `--gaps-out`:
+After `mergeSlices`, write the new artifacts. Add new CLI args
+`--findings-out`, `--gaps-out`, and `--handoff-out`:
 
 ```js
 const findingsOut = arg('findings-out');
 const gapsOut = arg('gaps-out');
+const handoffOut = arg('handoff-out');
 
 // ... after mergeSlices:
 const merge = mergeSlices(results, { stage: 'r1' });
@@ -3413,6 +3739,7 @@ const merge = mergeSlices(results, { stage: 'r1' });
 await writeFile(recordOut, JSON.stringify(merge.record, null, 2));
 if (findingsOut) await writeFile(findingsOut, JSON.stringify(merge.findings, null, 2));
 if (gapsOut) await writeFile(gapsOut, JSON.stringify(merge.gaps, null, 2));
+if (handoffOut) await writeFile(handoffOut, JSON.stringify(merge.handoff_notes, null, 2));
 ```
 
 - [ ] **Step 2: Update run.sh to pass new args**
@@ -3427,8 +3754,9 @@ node "$SCRIPT_DIR/framework/cli/r1.mjs" \
   --hints "$hints" \
   --evidence "$rootdata_pkt" \
   --record-out "$rec" \
-  --findings-out "$slug_dir/findings.json" \
-  --gaps-out "$slug_dir/gaps.json" \
+    --findings-out "$slug_dir/findings.json" \
+    --gaps-out "$slug_dir/gaps.json" \
+    --handoff-out "$slug_dir/handoff_notes.json" \
   --debug-dir "$debug_dir/r1" \
   > /dev/null 2> "$r1_err" &
 pid_claude=$!
@@ -3442,6 +3770,7 @@ OUT=$(ls -1t out | head -1)
 jq 'length' out/$OUT/pendle/findings.json
 jq '. | map({field, confidence, source}) | .[0:3]' out/$OUT/pendle/findings.json
 jq '. | map({field, reason})' out/$OUT/pendle/gaps.json
+jq '. | length' out/$OUT/pendle/handoff_notes.json
 ```
 
 Expected: findings.json has plausible per-field entries; gaps.json lists genuinely-unfilled fields with reasons.
@@ -3460,11 +3789,205 @@ git commit -m "feat: r1.mjs writes findings.json + gaps.json (β output)
 
 ---
 
-# Phase 6 — R2 reconcile in Node + no-regression guard
+# Phase 6 — R2+ synthesis/deepening in Node + RootData search + audit-first guard
 
-**Deliverable:** `framework/cli/r2.mjs` + reconcile prompt template; merger gains a `mergeR2(...)` function applying the no-regression guard; manifest's `reconcile.trigger_when` controls whether R2 runs.
+**Deliverable:** deterministic post-R1 evidence-diff prioritization,
+RootData-backed structured search channel, `framework/cli/r2.mjs` + reconcile
+prompt template; merger gains a `mergeR2(...)` function applying the audit-first
+R2 guard. R2 synthesis runs by default; `max_research_rounds` and budget caps
+bound any additional search/deepening rounds.
 
-**Smoke test:** A slug whose R1 produced a low-confidence field gets that field updated by R2; a high-confidence R1 field is preserved.
+**Smoke test:** Even a clean R1 runs one synthesis pass; a slug whose R1 missed
+RootData funding investors gets prioritized via `evidence_diff.funding.severity`;
+a low-confidence field gets updated by R2; a high-confidence R1 field is
+preserved unless R2 explains the change; a model-emitted RootData
+`search_requests[]` entry appends `search_results[]` and drives one extra round.
+
+---
+
+### Task 6.0: Add post-R1 evidence-diff enrichment
+
+**Files:**
+- Create: `framework/evidence-diff.mjs`
+- Create: `framework/cli/evidence-diff.mjs`
+- Test: `tests/framework/evidence-diff.test.mjs`
+
+- [ ] **Step 1: Add tests**
+
+```js
+import { strict as assert } from 'node:assert';
+import { enrichEvidenceDiff } from '../../framework/evidence-diff.mjs';
+
+export const tests = [
+  {
+    name: 'computes RootData funding discrepancy severity from R1 record',
+    fn: async () => {
+      const record = { fundingRounds: [{ investors: ['Paradigm'] }] };
+      const evidence = {
+        rootdata: {
+          api_funding: {
+            total_funding: '$10000000',
+            investors_orgs_normalized: ['paradigm', 'dragonfly', 'variant'],
+            investors_people: ['Alice'],
+          },
+        },
+      };
+      const out = enrichEvidenceDiff({ evidence, record });
+      assert.equal(out.evidence_diff.funding.severity, 'medium');
+      assert.deepEqual(out.evidence_diff.funding.missing_org_investors, ['dragonfly', 'variant']);
+    },
+  },
+  {
+    name: 'uses none when no comparable funding evidence exists',
+    fn: async () => {
+      const out = enrichEvidenceDiff({ evidence: {}, record: { fundingRounds: [] } });
+      assert.equal(out.evidence_diff.funding.severity, 'none');
+    },
+  },
+];
+```
+
+- [ ] **Step 2: Implement**
+
+```js
+function normInvestor(name) {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/\s+(capital|ventures|labs|fund|partners|investments|group|network)\s*$/i, '')
+    .trim();
+}
+
+function severityForMissing(count) {
+  if (count > 5) return 'high';
+  if (count >= 2) return 'medium';
+  if (count >= 1) return 'low';
+  return 'none';
+}
+
+export function enrichEvidenceDiff({ evidence, record }) {
+  const out = structuredClone(evidence || {});
+  const r1Investors = new Set(
+    (record?.fundingRounds || [])
+      .flatMap(r => r.investors || [])
+      .map(normInvestor)
+      .filter(Boolean)
+  );
+  const api = out.rootdata?.api_funding || {};
+  const apiOrgs = (api.investors_orgs_normalized || []).map(normInvestor).filter(Boolean);
+  const missing = apiOrgs.filter(name => !r1Investors.has(name));
+
+  out.evidence_diff = {
+    ...(out.evidence_diff || {}),
+    funding: {
+      severity: apiOrgs.length ? severityForMissing(missing.length) : 'none',
+      api_total_funding: api.total_funding || null,
+      missing_org_investors: missing,
+      api_angel_investors: api.investors_people || [],
+    },
+  };
+  return out;
+}
+```
+
+`framework/cli/evidence-diff.mjs` reads `--evidence-in`, `--record-in`, and
+`--evidence-out`, calls `enrichEvidenceDiff`, and writes the enriched packet.
+This preserves the bash-era investor discrepancy signal without asking fetchers
+to classify data they cannot compare until R1 exists. The signal prioritizes R2
+attention; it does not decide whether synthesis runs.
+
+- [ ] **Step 3: Run**
+
+```bash
+node tests/run.mjs framework/evidence-diff
+```
+
+Expected: 2 passed.
+
+---
+
+### Task 6.0b: Add structured search-channel executor
+
+**Files:**
+- Create: `framework/search-channel.mjs`
+- Test: `tests/framework/search-channel.test.mjs`
+
+- [ ] **Step 1: Add tests**
+
+```js
+import { strict as assert } from 'node:assert';
+import { runSearchRequests } from '../../framework/search-channel.mjs';
+
+export const tests = [
+  {
+    name: 'runs approved search requests through fetcher search export',
+    fn: async () => {
+      const fetchers = [{
+        name: 'rootdata',
+        search: async ({ query, type }) => ({ channel: 'rootdata', query, type, ok: true, results: [{ id: 1 }] }),
+      }];
+      const out = await runSearchRequests({
+        requests: [{ channel: 'rootdata', type: 'person', query: 'Pendle founder', reason: 'team verification' }],
+        fetchers,
+        maxQueries: 4,
+        env: {},
+        logger: console,
+        round: 2,
+      });
+      assert.equal(out.length, 1);
+      assert.equal(out[0].channel, 'rootdata');
+      assert.deepEqual(out[0].results, [{ id: 1 }]);
+    },
+  },
+  {
+    name: 'drops unknown channels and caps query count',
+    fn: async () => {
+      const out = await runSearchRequests({
+        requests: [
+          { channel: 'unknown', type: 'project', query: 'x' },
+          { channel: 'rootdata', type: 'project', query: 'y' },
+        ],
+        fetchers: [{ name: 'rootdata', search: async ({ query }) => ({ channel: 'rootdata', query, ok: true, results: [] }) }],
+        maxQueries: 1,
+        env: {},
+        logger: console,
+        round: 2,
+      });
+      assert.equal(out.length, 0);
+    },
+  },
+];
+```
+
+- [ ] **Step 2: Implement**
+
+```js
+export async function runSearchRequests({ requests, fetchers, maxQueries, env, logger, round }) {
+  const byName = new Map(fetchers.map(f => [f.name, f]));
+  const out = [];
+  for (const req of (requests || []).slice(0, maxQueries)) {
+    const f = byName.get(req.channel);
+    if (!f || typeof f.search !== 'function') {
+      logger.warn?.(`[search] skipped unknown channel ${req.channel}`);
+      continue;
+    }
+    const result = await f.search({ query: req.query, type: req.type, limit: req.limit || 5, env, logger });
+    out.push({ round, reason: req.reason || '', ...result });
+  }
+  return out;
+}
+```
+
+Search requests are model-authored but framework-approved: only manifest-enabled
+channels run, query count is capped, and results are appended to evidence as
+`search_results[]`.
+
+- [ ] **Step 3: Run**
+
+```bash
+node tests/run.mjs framework/search-channel
+```
+
+Expected: 2 passed.
 
 ---
 
@@ -3476,7 +3999,10 @@ git commit -m "feat: r1.mjs writes findings.json + gaps.json (β output)
 - [ ] **Step 1: Replace its body with β-aware template**
 
 ```markdown
-You are reconciling an EarnProtocolInfo record against external evidence and your own previously-noted gaps and low-confidence findings.
+You are performing a Deep Search synthesis pass for an EarnProtocolInfo record.
+Compare the full R1 record, all findings/gaps/handoff notes, structured evidence,
+and your own fresh web research. Your job is not merely to repair failures; it
+is to look for contradictions, missing depth, and stronger sources.
 
 ## Current record (what R1 produced)
 
@@ -3500,6 +4026,15 @@ Pay special attention to entries with `confidence < 0.7` — those are flagged f
 
 For each, decide whether new web-research can fill it.
 
+## Cross-slice handoff notes
+
+```json
+{{HANDOFF_NOTES}}
+```
+
+These are useful clues discovered by focused R1 subtasks outside their own
+slice. Use them as leads during synthesis.
+
 ## External evidence
 
 ```json
@@ -3508,10 +4043,11 @@ For each, decide whether new web-research can fill it.
 
 Compare against the record. Particular attention:
 
-- **Funding rounds** — If `rootdata.api_funding.investors_orgs_normalized` lists an investor not in any of `record.fundingRounds[].investors`, the round may be incomplete.
-- **Establishment year** — If `rootdata.anchors.establishment.value` differs from `record.establishment`, prefer the rootdata value (it's structured + cited).
+- **Funding rounds** — If `evidence_diff.funding.severity` is `medium` or `high`, investigate the listed `missing_org_investors`; the round history may be incomplete.
+- **Establishment year** — If `rootdata.anchors.establishment.value` differs from `record.establishment`, treat RootData as strong evidence and resolve the conflict with fetched primary sources where possible.
 - **Member candidates** — `rootdata.member_candidates` may include candidates with `bucket: 'likely_member'` not yet in `record.members`. Investigate before adding.
-- **Validated overrides** — `rootdata.validated_overrides.providerWebsite` and `providerXLink` are pre-verified; if `record` differs, prefer the override.
+- **Validated overrides** — `rootdata.validated_overrides.providerWebsite` and `providerXLink` are strong evidence, not commands. Prefer the better-supported official source.
+- **Search results** — `search_results[]` may contain RootData project/person search results from prior deepening rounds. Use them as leads, not ground truth.
 
 ## Output
 
@@ -3519,10 +4055,14 @@ Return a JSON object:
 
 ```
 {
-  "record":   { ... full revised record matching the schema below ... },
-  "findings": [ ... per-field findings for any field you changed or re-verified ... ],
-  "gaps":     [ ... gaps that remain unresolved after R2, with `tried` updated ... ]
-}
+    "record":   { ... full revised record matching the schema below ... },
+    "findings": [ ... per-field findings for any field you changed or re-verified ... ],
+    "changes":  [ ... audited list of fields whose value differs from R1 ... ],
+    "gaps":     [ ... gaps that remain unresolved after this round, with `tried` updated ... ],
+    "search_requests": [
+      { "channel": "rootdata", "type": "project|person", "query": "specific search query", "reason": "uncertainty this resolves" }
+    ]
+  }
 ```
 
 Schema for `record`:
@@ -3533,9 +4073,12 @@ Schema for `record`:
 
 Rules:
 - Return the WHOLE record (not just changes). Keep R1's values for fields you don't touch.
-- For any field you change, emit a finding with `confidence` reflecting your verification quality.
+- For any field you change, emit a `changes[]` entry with `field`, `before`, `after`, `reason`, `source` when available, and `confidence`.
+- For any changed field that represents a durable fact, also emit a finding with `confidence` reflecting your verification quality.
 - For any R1 field with `confidence < 0.7` that you confirm without changing, emit a fresh finding with higher confidence.
 - For gaps that remain, append `tried` entries describing what new attempts you made.
+- RootData is a research channel, not an authority. Usually prefer RootData when it matches official/fetched evidence; if fetched web evidence contradicts RootData, keep the better-supported value and explain the conflict in `changes[]` or `gaps[]`.
+- Emit `search_requests[]` only for targeted RootData project/person searches that would likely resolve a specific unresolved conflict. Empty array is fine.
 
 No prose. JSON only.
 ```
@@ -3549,7 +4092,7 @@ git commit -m "feat(consumer): rewrite reconcile prompt for β output"
 
 ---
 
-### Task 6.2: No-regression guard in merger
+### Task 6.2: Audit-first guard in merger
 
 **Files:**
 - Modify: `framework/merger.mjs`
@@ -3572,6 +4115,7 @@ tests.push({
     const r2 = {
       record: { description: 'old', tags: ['yield'] },
       findings: [{ field: 'tags', value: ['yield'], source: 'https://y', confidence: 0.95 }],
+      changes: [{ field: 'tags', before: [], after: ['yield'], reason: 'DeFiLlama category confirms yield', source: 'https://defillama.com', confidence: 0.95 }],
       gaps: [],
     };
     const m = mergeR2(r1, r2);
@@ -3580,7 +4124,7 @@ tests.push({
 });
 
 tests.push({
-  name: 'mergeR2 rejects R2 value when R1 was high-confidence and R2 is not higher',
+  name: 'mergeR2 rejects uncited R2 change to a high-confidence R1 field',
   fn: async () => {
     const r1 = {
       record: { description: 'GOOD' },
@@ -3589,12 +4133,13 @@ tests.push({
     };
     const r2 = {
       record: { description: 'WEAKER' },
-      findings: [{ field: 'description', value: 'WEAKER', source: 'https://y', confidence: 0.6 }],
+      findings: [],
+      changes: [],
       gaps: [],
     };
     const m = mergeR2(r1, r2);
     assert.equal(m.record.description, 'GOOD');
-    assert.ok(m.gaps.some(g => g.reason && g.reason.includes('r2_regression_suppressed')));
+    assert.ok(m.gaps.some(g => g.reason && g.reason.includes('r2_uncited_high_conf_change_suppressed')));
   },
 });
 
@@ -3609,10 +4154,31 @@ tests.push({
     const r2 = {
       record: { description: 'verified' },
       findings: [{ field: 'description', value: 'verified', source: 'https://y', confidence: 0.95 }],
+      changes: [{ field: 'description', before: 'guess', after: 'verified', reason: 'official docs wording', source: 'https://y', confidence: 0.95 }],
       gaps: [],
     };
     const m = mergeR2(r1, r2);
     assert.equal(m.record.description, 'verified');
+  },
+});
+
+tests.push({
+  name: 'mergeR2 treats array descendant/entity_key evidence as explanation',
+  fn: async () => {
+    const r1 = {
+      record: { members: [{ memberName: 'A', oneLiner: 'old', memberLink: { xLink: 'https://x.com/a' } }] },
+      findings: [{ field: 'members', value: [], source: 'https://x', confidence: 0.92 }],
+      gaps: [],
+    };
+    const r2 = {
+      record: { members: [{ memberName: 'A', oneLiner: 'new', memberLink: { xLink: 'https://x.com/a' } }] },
+      findings: [{ field: 'members[0].oneLiner', entity_key: 'member:x:https://x.com/a', value: 'new', source: 'https://y', confidence: 0.95 }],
+      changes: [{ field: 'members[0].oneLiner', entity_key: 'member:x:https://x.com/a', before: 'old', after: 'new', reason: 'profile updated', source: 'https://y', confidence: 0.95 }],
+      gaps: [],
+    };
+    const m = mergeR2(r1, r2);
+    assert.equal(m.record.members[0].oneLiner, 'new');
+    assert.equal(m.gaps.some(g => g.reason === 'uncited_r2_change'), false);
   },
 });
 ```
@@ -3621,23 +4187,57 @@ tests.push({
 
 Append to `framework/merger.mjs`:
 ```js
-// Merges R2 output back into R1 with the no-regression guard.
-// For each field path P:
-//   - If R1 had a finding at P with confidence > 0.85 AND R2's finding at P has confidence ≤ R1: keep R1.
-//   - Else if R2 produced a value: take R2.
-//   - Else: keep R1.
+// Merges R2 output back into R1 with the audit-first guard.
+// Audit-first rule:
+//   - R2 may change fields freely when it emits a matching changes[] or finding.
+//   - If R2 changes a high-confidence R1 field without any matching change/finding,
+//     keep R1 and add a suppression gap.
+//   - If R2 changes a lower-confidence/unfound field without provenance, accept it
+//     but add an uncited_r2_change gap for review.
 //
 // Field-level granularity: walks both records' top-level keys, then recurses
-// into objects. Arrays are replaced wholesale (R2 wins unless guard fires).
+// into objects. Arrays are replaced wholesale, but item-level descendant paths
+// or shared entity_key values count as explanations for the array change.
 
 const HIGH_CONF = 0.85;
 
-function findingFor(findings, fieldPath) {
-  if (!Array.isArray(findings)) return null;
-  return findings.find(f => f.field === fieldPath) || null;
+function sameJson(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function mergeRecursive(r1Val, r2Val, path, r1Findings, r2Findings, suppressed) {
+function pathMatches(entryPath, changedPath) {
+  if (!entryPath) return false;
+  return entryPath === changedPath ||
+    entryPath.startsWith(`${changedPath}.`) ||
+    entryPath.startsWith(`${changedPath}[`);
+}
+
+function entityKeysFor(value) {
+  const keys = new Set();
+  const add = v => { if (v) keys.add(v); };
+  const visit = item => {
+    if (!item || typeof item !== 'object') return;
+    add(item.entity_key);
+    if (item.memberLink?.xLink) add(`member:x:${item.memberLink.xLink}`);
+    if (item.memberLink?.linkedinLink) add(`member:linkedin:${item.memberLink.linkedinLink}`);
+    if (item.memberName) add(`member:name:${String(item.memberName).toLowerCase()}`);
+    if (item.round && item.date) add(`funding:${item.round}:${item.date}`);
+    if (item.auditor && item.reportUrl) add(`audit:${item.auditor}:${item.reportUrl}`);
+  };
+  if (Array.isArray(value)) value.forEach(visit);
+  else visit(value);
+  return keys;
+}
+
+function evidenceFor(entries, fieldPath, entityKeys = new Set()) {
+  if (!Array.isArray(entries)) return null;
+  return entries.find(e =>
+    pathMatches(e.field, fieldPath) ||
+    (e.entity_key && entityKeys.has(e.entity_key))
+  ) || null;
+}
+
+function mergeRecursive(r1Val, r2Val, path, r1Findings, r2Findings, r2Changes, gaps) {
   if (r2Val === undefined) return r1Val;
   if (r1Val === undefined) return r2Val;
 
@@ -3646,32 +4246,47 @@ function mergeRecursive(r1Val, r2Val, path, r1Findings, r2Findings, suppressed) 
       && !Array.isArray(r1Val) && !Array.isArray(r2Val)) {
     const out = { ...r1Val };
     for (const k of new Set([...Object.keys(r1Val), ...Object.keys(r2Val)])) {
-      out[k] = mergeRecursive(r1Val[k], r2Val[k], path ? `${path}.${k}` : k, r1Findings, r2Findings, suppressed);
+      out[k] = mergeRecursive(r1Val[k], r2Val[k], path ? `${path}.${k}` : k, r1Findings, r2Findings, r2Changes, gaps);
     }
     return out;
   }
 
-  // Leaf or array: apply guard.
-  const r1f = findingFor(r1Findings, path);
-  const r2f = findingFor(r2Findings, path);
-  if (r1f && r1f.confidence > HIGH_CONF && (!r2f || r2f.confidence <= r1f.confidence)) {
-    if (JSON.stringify(r1Val) !== JSON.stringify(r2Val)) {
-      suppressed.push({
-        field: path,
-        reason: `r2_regression_suppressed: r1.confidence=${r1f.confidence} r2.confidence=${r2f?.confidence ?? 'none'}`,
-        tried: [],
-        stage: 'r2',
-        subtask: 'reconcile',
-      });
-    }
+  // Leaf or array: apply audit-first guard.
+  if (sameJson(r1Val, r2Val)) return r2Val;
+  const entityKeys = new Set([...entityKeysFor(r1Val), ...entityKeysFor(r2Val)]);
+  const r1f = evidenceFor(r1Findings, path, entityKeys);
+  const r2f = evidenceFor(r2Findings, path, entityKeys);
+  const r2c = evidenceFor(r2Changes, path, entityKeys);
+  const explained = !!(r2f || r2c);
+  if (!explained && r1f && r1f.confidence > HIGH_CONF) {
+    gaps.push({
+      field: path,
+      reason: `r2_uncited_high_conf_change_suppressed: r1.confidence=${r1f.confidence}`,
+      tried: [],
+      stage: 'r2',
+      subtask: 'reconcile',
+    });
     return r1Val;
+  }
+  if (!explained) {
+    gaps.push({
+      field: path,
+      reason: 'uncited_r2_change',
+      tried: [],
+      stage: 'r2',
+      subtask: 'reconcile',
+    });
   }
   return r2Val;
 }
 
 export function mergeR2(r1, r2) {
-  const suppressed = [];
-  const merged_record = mergeRecursive(r1.record, r2.record, '', r1.findings, r2.findings, suppressed);
+  const auditGaps = [];
+  const merged_record = mergeRecursive(
+    r1.record, r2.record, '',
+    r1.findings, r2.findings, r2.changes || [],
+    auditGaps
+  );
 
   // findings: keep R1's, then overlay R2's (R2 newer = wins on dup field path)
   const findings = [
@@ -3685,10 +4300,15 @@ export function mergeR2(r1, r2) {
   const gaps = [
     ...(r1.gaps || []).filter(g => !r2GapFields.has(g.field) && !r2FindingFields.has(g.field)),
     ...((r2.gaps || []).map(g => ({ ...g, stage: 'r2', subtask: 'reconcile' }))),
-    ...suppressed,
+    ...auditGaps,
   ];
 
-  return { record: merged_record, findings, gaps };
+  const changes = [
+    ...((r1.changes || []).map(c => c)),
+    ...((r2.changes || []).map(c => ({ ...c, stage: 'r2', subtask: 'reconcile' }))),
+  ];
+
+  return { record: merged_record, findings, changes, gaps };
 }
 ```
 
@@ -3704,11 +4324,11 @@ Expected: 7 passed.
 
 ```bash
 git add framework/merger.mjs tests/framework/merger.test.mjs
-git commit -m "feat(framework): mergeR2 with no-regression guard
+git commit -m "feat(framework): mergeR2 with audit-first change guard
 
-- field-level confidence guard (R2 only overrides R1 when R2 confidence > R1)
-- threshold: HIGH_CONF=0.85 — fields with R1.confidence > 0.85 protected
-- suppressed regressions emit gap entries with reason 'r2_regression_suppressed'
+- R2 changes are accepted when explained by changes[] or findings[]
+- threshold: HIGH_CONF=0.85 — uncited changes to these fields are protected
+- suppressed regressions emit gap entries with reason 'r2_uncited_high_conf_change_suppressed'
 - recurse into objects; arrays replaced wholesale (subject to same guard)"
 ```
 
@@ -3724,14 +4344,15 @@ git commit -m "feat(framework): mergeR2 with no-regression guard
 ```js
 // framework/cli/r2.mjs — R2 reconcile executor.
 // Reads R1 record + findings + gaps + evidence, runs reconcile prompt,
-// applies no-regression guard via merger.mergeR2, writes outputs.
+// applies audit-first guard via merger.mergeR2, writes outputs.
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadManifest } from '../manifest-loader.mjs';
 import { runSubtask } from '../subtask-runner.mjs';
 import { mergeR2 } from '../merger.mjs';
+import { runSearchRequests } from '../search-channel.mjs';
 
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url)).replace(/\/cli$/, '');
 
@@ -3744,16 +4365,18 @@ const manifestPath = arg('manifest');
 const recordIn = arg('record-in');
 const findingsIn = arg('findings-in');
 const gapsIn = arg('gaps-in');
+const handoffIn = arg('handoff-in', null);
 const evidencePath = arg('evidence');
 const recordOut = arg('record-out');
 const findingsOut = arg('findings-out');
+const changesOut = arg('changes-out');
 const gapsOut = arg('gaps-out');
 const debugDir = arg('debug-dir');
 const sessionId = arg('session', null);   // resume R1's session if available
 const claudeBin = process.env.CLAUDE_BIN || 'claude';
 
 if (!manifestPath || !recordIn || !findingsIn || !gapsIn || !evidencePath || !recordOut || !debugDir) {
-  console.error('usage: r2.mjs --manifest M --record-in R --findings-in F --gaps-in G --evidence E --record-out R2 [--findings-out F2] [--gaps-out G2] --debug-dir D [--session S]');
+  console.error('usage: r2.mjs --manifest M --record-in R --findings-in F --gaps-in G [--handoff-in H] --evidence E --record-out R2 [--findings-out F2] [--gaps-out G2] --debug-dir D [--session S]');
   process.exit(2);
 }
 
@@ -3767,6 +4390,7 @@ if (!manifest.reconcile?.enabled) {
   const r1Gaps = JSON.parse(await readFile(gapsIn, 'utf8'));
   await writeFile(recordOut, JSON.stringify(r1Record, null, 2));
   if (findingsOut) await writeFile(findingsOut, JSON.stringify(r1Findings, null, 2));
+  if (changesOut) await writeFile(changesOut, JSON.stringify([], null, 2));
   if (gapsOut) await writeFile(gapsOut, JSON.stringify(r1Gaps, null, 2));
   process.exit(0);
 }
@@ -3774,33 +4398,12 @@ if (!manifest.reconcile?.enabled) {
 const r1Record = JSON.parse(await readFile(recordIn, 'utf8'));
 const r1Findings = JSON.parse(await readFile(findingsIn, 'utf8'));
 const r1Gaps = JSON.parse(await readFile(gapsIn, 'utf8'));
-const evidence = JSON.parse(await readFile(evidencePath, 'utf8'));
-
-// Trigger check
-function shouldRun(r1Findings, r1Gaps, evidence, trigger) {
-  if (!trigger) return true;
-  if (trigger.min_finding_confidence != null) {
-    const lowConf = r1Findings.some(f => f.confidence < trigger.min_finding_confidence);
-    if (lowConf) return true;
-  }
-  // Severity check from evidence (rootdata's investor diff severity, when computed)
-  const sev = evidence.evidence_diff_severity || (evidence.rootdata?.api_funding?.severity);
-  const want = trigger.evidence_diff_severity || ['medium', 'high'];
-  if (sev && want.includes(sev)) return true;
-  if (r1Gaps.length > 0) return true;   // any gap → run
-  return false;
-}
-
-if (!shouldRun(r1Findings, r1Gaps, evidence, manifest.reconcile.trigger_when)) {
-  console.error('[r2] trigger conditions not met; skipping R2');
-  await writeFile(recordOut, JSON.stringify(r1Record, null, 2));
-  if (findingsOut) await writeFile(findingsOut, JSON.stringify(r1Findings, null, 2));
-  if (gapsOut) await writeFile(gapsOut, JSON.stringify(r1Gaps, null, 2));
-  process.exit(0);
-}
+const handoffNotes = handoffIn ? JSON.parse(await readFile(handoffIn, 'utf8')) : [];
+let evidence = JSON.parse(await readFile(evidencePath, 'utf8'));
 
 const fullSchema = JSON.parse(await readFile(manifest._abs.full_schema, 'utf8'));
 const findingsSchema = JSON.parse(await readFile(join(FRAMEWORK_DIR, 'schemas/findings.schema.json'), 'utf8'));
+const changesSchema = JSON.parse(await readFile(join(FRAMEWORK_DIR, 'schemas/changes.schema.json'), 'utf8'));
 const gapsSchema = JSON.parse(await readFile(join(FRAMEWORK_DIR, 'schemas/gaps.schema.json'), 'utf8'));
 const reconcileTmpl = await readFile(manifest._abs.reconcile_prompt, 'utf8');
 
@@ -3808,53 +4411,83 @@ function render(t, vars) {
   return Object.entries(vars).reduce((s, [k, v]) => s.replaceAll(`{{${k}}}`, v), t);
 }
 
-const userPrompt = render(reconcileTmpl, {
-  RECORD: JSON.stringify(r1Record, null, 2),
-  FINDINGS: JSON.stringify(r1Findings, null, 2),
-  GAPS: JSON.stringify(r1Gaps, null, 2),
-  EVIDENCE: JSON.stringify(evidence, null, 2),
-  SCHEMA: JSON.stringify(fullSchema, null, 2),
-});
-
 const r2Subtask = {
   name: 'reconcile',
   max_turns: manifest.reconcile.max_turns ?? 10,
   max_budget_usd: manifest.reconcile.max_budget_usd ?? 0.50,
 };
 
-// R2's "slice" is actually a full record; reuse subtask-runner's β path.
-const result = await runSubtask({
-  claudeBin,
-  subtask: r2Subtask,
-  systemPrompt: '',
-  userPrompt,
-  schemaSlice: fullSchema,
-  findingsSchema,
-  gapsSchema,
-  resumeSession: sessionId,
-});
-
-if (result.envelope) {
-  await writeFile(join(debugDir, 'reconcile.envelope.json'), JSON.stringify(result.envelope, null, 2));
-}
-if (!result.ok) {
-  console.error(`[r2] failed: ${result.error}; falling back to R1 outputs`);
-  await writeFile(recordOut, JSON.stringify(r1Record, null, 2));
-  if (findingsOut) await writeFile(findingsOut, JSON.stringify(r1Findings, null, 2));
-  if (gapsOut) await writeFile(gapsOut, JSON.stringify(r1Gaps, null, 2));
-  process.exit(0);   // not a hard error — R1 results survive
+const searchFetchers = [];
+for (const f of manifest._abs.fetchers || []) {
+  if (!f.search?.enabled) continue;
+  const mod = await import(pathToFileURL(f.module_abs).href);
+  if (typeof mod.search === 'function') searchFetchers.push({ name: f.name, search: mod.search });
 }
 
-const merged = mergeR2(
-  { record: r1Record, findings: r1Findings, gaps: r1Gaps },
-  { record: result.slice, findings: result.findings, gaps: result.gaps }
-);
+let state = { record: r1Record, findings: r1Findings, changes: [], gaps: r1Gaps };
+const maxRounds = manifest.reconcile.max_research_rounds ?? 3;
+for (let round = 1; round <= maxRounds; round++) {
+  const userPrompt = render(reconcileTmpl, {
+    RECORD: JSON.stringify(state.record, null, 2),
+    FINDINGS: JSON.stringify(state.findings, null, 2),
+    GAPS: JSON.stringify(state.gaps, null, 2),
+    HANDOFF_NOTES: JSON.stringify(handoffNotes, null, 2),
+    EVIDENCE: JSON.stringify(evidence, null, 2),
+    SCHEMA: JSON.stringify(fullSchema, null, 2),
+  });
 
-await writeFile(recordOut, JSON.stringify(merged.record, null, 2));
-if (findingsOut) await writeFile(findingsOut, JSON.stringify(merged.findings, null, 2));
-if (gapsOut) await writeFile(gapsOut, JSON.stringify(merged.gaps, null, 2));
+  const result = await runSubtask({
+    claudeBin,
+    subtask: r2Subtask,
+    systemPrompt: '',
+    userPrompt,
+    schemaSlice: fullSchema,
+    findingsSchema,
+    changesSchema,
+    gapsSchema,
+    outputKey: 'record',
+    resumeSession: round === 1 ? sessionId : null,
+  });
 
-console.error(`[r2] done — cost=$${result.cost_usd} turns=${result.turns}`);
+  if (result.envelope) {
+    await writeFile(join(debugDir, `reconcile.round${round}.envelope.json`), JSON.stringify(result.envelope, null, 2));
+  }
+  if (!result.ok) {
+    console.error(`[r2] round ${round} failed: ${result.error}; keeping previous state`);
+    break;
+  }
+
+  state = mergeR2(state, {
+    record: result.record,
+    findings: result.findings,
+    changes: result.changes,
+    gaps: result.gaps,
+  });
+
+  const requests = result.search_requests || [];
+  if (requests.length === 0 || round === maxRounds) break;
+  const searchResults = await runSearchRequests({
+    requests,
+    fetchers: searchFetchers,
+    maxQueries: manifest.reconcile.max_search_queries_per_round ?? 4,
+    env: process.env,
+    logger: console,
+    round: round + 1,
+  });
+  if (searchResults.length === 0) break;
+  evidence = {
+    ...evidence,
+    search_results: [...(evidence.search_results || []), ...searchResults],
+  };
+}
+
+await writeFile(evidencePath, JSON.stringify(evidence, null, 2));
+await writeFile(recordOut, JSON.stringify(state.record, null, 2));
+if (findingsOut) await writeFile(findingsOut, JSON.stringify(state.findings, null, 2));
+if (changesOut) await writeFile(changesOut, JSON.stringify(state.changes, null, 2));
+if (gapsOut) await writeFile(gapsOut, JSON.stringify(state.gaps, null, 2));
+
+console.error(`[r2] done — synthesis/deepening complete`);
 process.exit(0);
 ```
 
@@ -3867,10 +4500,10 @@ Add `reconcile` block to `consumers/protocol-info/manifest.json`:
   "prompt": "./prompts/reconcile.user.md.tmpl",
   "max_turns": 10,
   "max_budget_usd": 0.50,
-  "trigger_when": {
-    "min_finding_confidence": 0.7,
-    "evidence_diff_severity": ["medium", "high"]
-  }
+  "mode": "deep",
+  "max_research_rounds": 3,
+  "max_search_queries_per_round": 4,
+  "fast_skip_allowed": false
 }
 ```
 
@@ -3885,11 +4518,13 @@ SESSION_ID=$(jq -r '.session_id // empty' "$debug_dir/r1/metadata.envelope.json"
 node "$SCRIPT_DIR/framework/cli/r2.mjs" \
   --manifest "$SCRIPT_DIR/consumers/protocol-info/manifest.json" \
   --record-in "$rec" \
-  --findings-in "$slug_dir/findings.json" \
-  --gaps-in "$slug_dir/gaps.json" \
-  --evidence "$rootdata_pkt" \
+    --findings-in "$slug_dir/findings.json" \
+    --gaps-in "$slug_dir/gaps.json" \
+    --handoff-in "$slug_dir/handoff_notes.json" \
+    --evidence "$rootdata_pkt" \
   --record-out "$rec.r2" \
   --findings-out "$slug_dir/findings.json.r2" \
+  --changes-out "$slug_dir/changes.json.r2" \
   --gaps-out "$slug_dir/gaps.json.r2" \
   --debug-dir "$debug_dir" \
   ${SESSION_ID:+--session "$SESSION_ID"} \
@@ -3898,6 +4533,7 @@ node "$SCRIPT_DIR/framework/cli/r2.mjs" \
 # Adopt R2 outputs as canonical (R1 fallback was already written by R2 on failure)
 mv "$rec.r2" "$rec"
 mv "$slug_dir/findings.json.r2" "$slug_dir/findings.json"
+mv "$slug_dir/changes.json.r2" "$slug_dir/changes.json"
 mv "$slug_dir/gaps.json.r2" "$slug_dir/gaps.json"
 ```
 
@@ -3912,7 +4548,7 @@ ls out/$OUT/pendle/_debug/
 jq '. | map({field, confidence, stage, subtask})' out/$OUT/pendle/findings.json
 ```
 
-Expected: `_debug/` contains `reconcile.envelope.json`; findings includes some entries with `stage: "r2"`.
+Expected: `_debug/` contains `reconcile.round1.envelope.json`; findings includes some entries with `stage: "r2"` and `changes.json` exists.
 
 - [ ] **Step 5: Run check-all**
 
@@ -3923,13 +4559,120 @@ node scripts/check-all.mjs
 - [ ] **Step 6: Commit**
 
 ```bash
-git add framework/cli/r2.mjs consumers/protocol-info/manifest.json run.sh
-git commit -m "feat: R2 reconcile in Node + no-regression guard
+git add framework/evidence-diff.mjs framework/cli/evidence-diff.mjs framework/cli/r2.mjs consumers/protocol-info/manifest.json run.sh
+git commit -m "feat: R2 reconcile in Node + evidence-diff + audit-first guard
 
 - r2.mjs reads R1 outputs + evidence, runs reconcile prompt
-- trigger_when gate: skip R2 if confidence high + no severe diffs
-- mergeR2 applies field-level no-regression guard (R1 high-conf protected)
+- evidence-diff preserves bash-era RootData funding discrepancy severity
+- default-on synthesis pass; evidence_diff prioritizes conflicts instead of gating
+- supports RootData search_requests for bounded extra deepening rounds
+- mergeR2 applies audit-first guard (uncited high-conf changes protected)
 - removes legacy bash R2 block; pipeline cleanup deferred to phase 9"
+```
+
+---
+
+### Task 6.4: Add deterministic final normalizer before validation
+
+**Files:**
+- Create: `framework/normalizer-stage.mjs`
+- Create: `framework/cli/normalize.mjs`
+- Create: `consumers/protocol-info/normalizers/final.mjs`
+- Modify: `consumers/protocol-info/manifest.json`
+- Modify: `run.sh`
+
+This stage is deliberately narrow. It may set crawler metadata and perform
+schema-shape repairs that are not research claims. It must not mechanically
+override factual fields like `providerWebsite` or `providerXLink`; those remain
+Deep Search evidence handled by R2.
+
+- [ ] **Step 1: Add manifest normalizers block**
+
+```json
+"normalizers": [
+  { "name": "protocol-info-final", "module": "./normalizers/final.mjs" }
+]
+```
+
+- [ ] **Step 2: Implement consumer normalizer**
+
+```js
+// consumers/protocol-info/normalizers/final.mjs
+// Deterministic metadata only. No factual web-claim overrides.
+
+export default function normalize({ record, now = new Date() }) {
+  const out = JSON.parse(JSON.stringify(record));
+  const changes = [];
+  const today = now.toISOString().slice(0, 10);
+
+  if (out.audits && Array.isArray(out.audits.items)) {
+    const before = out.audits.lastScannedAt;
+    if (before !== today) {
+      out.audits.lastScannedAt = today;
+      changes.push({
+        field: 'audits.lastScannedAt',
+        before,
+        after: today,
+        reason: 'crawler scan date',
+        source: 'framework:normalizer',
+        confidence: 1,
+      });
+    }
+  }
+
+  return { record: out, changes, gaps: [] };
+}
+```
+
+- [ ] **Step 3: Implement framework normalizer stage + CLI**
+
+`framework/normalizer-stage.mjs` loads each `manifest._abs.normalizers[]`,
+passes `{record, evidence, manifest}`, and returns `{record, changes, gaps}`.
+`framework/cli/normalize.mjs` reads `--record-in`, `--evidence`,
+`--changes-in`, `--gaps-in`, writes `--record-out`, `--changes-out`,
+`--gaps-out`.
+
+Important: append normalizer changes to `changes.json`; do not overwrite R2
+changes.
+
+- [ ] **Step 4: Wire into run.sh**
+
+After adopting R2 outputs and before schema validation:
+
+```bash
+node "$SCRIPT_DIR/framework/cli/normalize.mjs" \
+  --manifest "$SCRIPT_DIR/consumers/protocol-info/manifest.json" \
+  --record-in "$rec" \
+  --evidence "$rootdata_pkt" \
+  --changes-in "$slug_dir/changes.json" \
+  --gaps-in "$slug_dir/gaps.json" \
+  --record-out "$rec.normalized" \
+  --changes-out "$slug_dir/changes.json.normalized" \
+  --gaps-out "$slug_dir/gaps.json.normalized" \
+  2> "$debug_dir/normalize.stderr.log"
+
+mv "$rec.normalized" "$rec"
+mv "$slug_dir/changes.json.normalized" "$slug_dir/changes.json"
+mv "$slug_dir/gaps.json.normalized" "$slug_dir/gaps.json"
+```
+
+- [ ] **Step 5: Smoke test**
+
+```bash
+./run.sh --i18n none --display-name "Pendle" --type fixed_rate --slug pendle
+OUT=$(ls -1t out | head -1)
+jq '.audits.lastScannedAt' out/$OUT/pendle/record.json
+jq '.[] | select(.field=="audits.lastScannedAt")' out/$OUT/pendle/changes.json
+```
+
+Expected: `audits.lastScannedAt` equals today's UTC date and the normalizer
+change is present when the field changed.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add framework/normalizer-stage.mjs framework/cli/normalize.mjs consumers/protocol-info/normalizers/final.mjs consumers/protocol-info/manifest.json run.sh
+git commit -m "feat: add deterministic final normalizer before validation"
 ```
 
 ---
@@ -4059,6 +4802,7 @@ export async function runI18nStage({
   parallelism = 8,
   claudeBin = 'claude',
   modelOverride = null,
+  budgetLedger = null,
   logger = console,
 }) {
   if (!manifest.i18n?.enabled) return { ok: 0, failed: [], translations: {} };
@@ -4092,6 +4836,7 @@ export async function runI18nStage({
         maxTurns: 3,
         maxBudgetUsd: manifest.i18n.max_budget_usd_per_call ?? 0.10,
         model: modelOverride || manifest.i18n.model_default,
+        budgetLedger,
       });
       const out = env.structured_output && typeof env.structured_output === 'object'
         ? env.structured_output
@@ -4490,6 +5235,7 @@ git commit -m "feat(consumer): dashboard-export builds {version, exportedAt, dat
 "output": {
   "record_filename": "record.json",
   "findings_filename": "findings.json",
+  "changes_filename": "changes.json",
   "gaps_filename": "gaps.json",
   "meta_filename": "meta.json",
   "full_filename": "record.full.json",
@@ -4635,8 +5381,12 @@ import { runWithLimit } from './parallel-runner.mjs';
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
 
 function callCli(cliName, args, opts = {}) {
+  return callNode(join(FRAMEWORK_DIR, 'cli', `${cliName}.mjs`), args, opts);
+}
+
+function callNode(scriptPath, args, opts = {}) {
   return new Promise((resolve) => {
-    const proc = spawn('node', [join(FRAMEWORK_DIR, 'cli', `${cliName}.mjs`), ...args], {
+    const proc = spawn('node', [scriptPath, ...args], {
       stdio: opts.silent ? ['ignore', 'ignore', 'pipe'] : 'inherit',
       env: { ...process.env, ...(opts.env || {}) },
     });
@@ -4646,7 +5396,38 @@ function callCli(cliName, args, opts = {}) {
   });
 }
 
-export async function runOne({ manifestPath, provider, runDir, parallelism = 1 }) {
+function pushOpt(args, flag, value) {
+  if (value !== undefined && value !== null && value !== '') args.push(flag, String(value));
+}
+
+async function writeJson(path, value) {
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+async function finish(metaPath, meta, result) {
+  meta.status = result.status;
+  meta.stage = result.stage;
+  meta.completed_at = new Date().toISOString();
+  await writeJson(metaPath, meta);
+  return result;
+}
+
+async function summarizeEnvelopes(dir) {
+  const summary = { cost_usd: 0, turns: 0, sessions: [] };
+  try {
+    for (const f of await readdir(dir)) {
+      if (!f.endsWith('.envelope.json')) continue;
+      const env = JSON.parse(await readFile(join(dir, f), 'utf8'));
+      summary.cost_usd += Number(env.total_cost_usd || 0);
+      summary.turns += Number(env.num_turns || 0);
+      if (env.session_id) summary.sessions.push(env.session_id);
+    }
+  } catch {}
+  return summary;
+}
+
+export async function runOne({ manifestPath, provider, runDir, options = {} }) {
+  const manifest = await loadManifest(manifestPath);
   const slug = provider.slug;
   const slugDir = join(runDir, slug);
   const debugDir = join(slugDir, '_debug');
@@ -4654,26 +5435,61 @@ export async function runOne({ manifestPath, provider, runDir, parallelism = 1 }
 
   const evidencePath = join(debugDir, 'rootdata.json');   // legacy filename retained
   const recordPath = join(slugDir, 'record.json');
-  const findingsPath = join(slugDir, 'findings.json');
-  const gapsPath = join(slugDir, 'gaps.json');
+    const findingsPath = join(slugDir, 'findings.json');
+    const changesPath = join(slugDir, 'changes.json');
+    const gapsPath = join(slugDir, 'gaps.json');
+    const handoffPath = join(slugDir, 'handoff_notes.json');
+  const metaPath = join(slugDir, manifest.output?.meta_filename || 'meta.json');
   const r1Err = join(debugDir, 'r1.stderr.log');
   const r2Err = join(debugDir, 'r2.stderr.log');
+  const diffErr = join(debugDir, 'evidence-diff.stderr.log');
+  const normalizeErr = join(debugDir, 'normalize.stderr.log');
+  const schemaErr = join(debugDir, 'schema.stderr.log');
+  const meta = {
+    slug,
+    started_at: new Date().toISOString(),
+    effective_budgets: options.effectiveBudgets || null,
+    r0: null,
+    r1: null,
+    evidence_diff: null,
+    r2: null,
+    normalize: null,
+    schema: null,
+    i18n: null,
+    post: null,
+  };
+
+  if (options.dryRun) {
+    await callCli('r1', [
+      '--manifest', manifestPath,
+      '--slug', slug,
+      '--provider', provider.provider || slug,
+      '--display-name', provider.displayName,
+      '--type', provider.type,
+      '--hints', provider.hints || '',
+      '--dry-run',
+    ], { silent: false });
+    return { slug, status: 'DRY_RUN', stage: 'dry-run' };
+  }
 
   // R0 fetchers
-  const r0 = await callCli('fetch', [
+  const fetchArgs = [
     '--manifest', manifestPath,
     '--slug', slug,
     '--display-name', provider.displayName,
     '--hints', provider.hints || '',
     '--output', evidencePath,
-  ], { silent: true });
+  ];
+  pushOpt(fetchArgs, '--rootdata-id', provider.rootdataId);
+  const r0 = await callCli('fetch', fetchArgs, { silent: true });
+  meta.r0 = { status: r0.code === 0 ? 'ok' : 'failed' };
   if (r0.code !== 0) {
     console.error(`[${slug}] fetch failed: ${r0.stderr}`);
-    return { slug, status: 'CRAWL_FAIL', stage: 'r0' };
+    return finish(metaPath, meta, { slug, status: 'CRAWL_FAIL', stage: 'r0' });
   }
 
   // R1 fan-out
-  const r1 = await callCli('r1', [
+  const r1Args = [
     '--manifest', manifestPath,
     '--slug', slug,
     '--provider', provider.provider || slug,
@@ -4682,16 +5498,39 @@ export async function runOne({ manifestPath, provider, runDir, parallelism = 1 }
     '--hints', provider.hints || '',
     '--evidence', evidencePath,
     '--record-out', recordPath,
-    '--findings-out', findingsPath,
-    '--gaps-out', gapsPath,
-    '--debug-dir', join(debugDir, 'r1'),
-  ], { silent: true });
+      '--findings-out', findingsPath,
+      '--gaps-out', gapsPath,
+      '--handoff-out', handoffPath,
+      '--debug-dir', join(debugDir, 'r1'),
+  ];
+  pushOpt(r1Args, '--model', options.model);
+  pushOpt(r1Args, '--max-turns', options.maxTurns);
+  pushOpt(r1Args, '--max-budget', options.effectiveBudgets?.r1_total);
+  const r1 = await callCli('r1', r1Args, { silent: true });
+  meta.r1 = {
+    status: r1.code === 0 ? 'ok' : 'failed',
+    budget_usd: options.effectiveBudgets?.r1_total ?? null,
+    ...(await summarizeEnvelopes(join(debugDir, 'r1'))),
+  };
   if (r1.code !== 0) {
     console.error(`[${slug}] R1 failed: ${r1.stderr}`);
-    return { slug, status: 'CRAWL_FAIL', stage: 'r1' };
+    return finish(metaPath, meta, { slug, status: 'CRAWL_FAIL', stage: 'r1' });
   }
 
-  // R2 reconcile (optional, gated by manifest)
+  // Enrich fetched evidence with deterministic comparisons that require R1.
+  const diff = await callCli('evidence-diff', [
+    '--evidence-in', evidencePath,
+    '--record-in', recordPath,
+    '--evidence-out', `${evidencePath}.enriched`,
+  ], { silent: true });
+  meta.evidence_diff = { status: diff.code === 0 ? 'ok' : 'failed' };
+  if (diff.code !== 0) {
+    await writeFile(diffErr, diff.stderr || '');
+    return finish(metaPath, meta, { slug, status: 'CRAWL_FAIL', stage: 'evidence-diff', recordPath });
+  }
+  await rename(`${evidencePath}.enriched`, evidencePath);
+
+    // R2+ synthesis/deepening (default-on; bounded by manifest/budget)
   let sessionId = '';
   try {
     const r1MetaEnv = JSON.parse(await readFile(join(debugDir, 'r1', 'metadata.envelope.json'), 'utf8'));
@@ -4700,45 +5539,111 @@ export async function runOne({ manifestPath, provider, runDir, parallelism = 1 }
   const r2Args = [
     '--manifest', manifestPath,
     '--record-in', recordPath,
-    '--findings-in', findingsPath,
-    '--gaps-in', gapsPath,
-    '--evidence', evidencePath,
+      '--findings-in', findingsPath,
+      '--gaps-in', gapsPath,
+      '--handoff-in', handoffPath,
+      '--evidence', evidencePath,
     '--record-out', `${recordPath}.r2`,
     '--findings-out', `${findingsPath}.r2`,
+    '--changes-out', `${changesPath}.r2`,
     '--gaps-out', `${gapsPath}.r2`,
     '--debug-dir', debugDir,
   ];
   if (sessionId) r2Args.push('--session', sessionId);
+  pushOpt(r2Args, '--model', options.model);
+  pushOpt(r2Args, '--max-budget', options.effectiveBudgets?.r2);
   const r2 = await callCli('r2', r2Args, { silent: true });
+  meta.r2 = {
+    status: r2.code === 0 ? 'ok' : 'failed_nonfatal',
+    budget_usd: options.effectiveBudgets?.r2 ?? null,
+    ...(await summarizeEnvelopes(debugDir)),
+  };
   if (r2.code === 0) {
     // Adopt R2 outputs
-    const fs = await import('node:fs/promises');
-    await fs.rename(`${recordPath}.r2`, recordPath);
-    await fs.rename(`${findingsPath}.r2`, findingsPath);
-    await fs.rename(`${gapsPath}.r2`, gapsPath);
+    await rename(`${recordPath}.r2`, recordPath);
+    await rename(`${findingsPath}.r2`, findingsPath);
+    await rename(`${changesPath}.r2`, changesPath);
+    await rename(`${gapsPath}.r2`, gapsPath);
   } else {
     console.error(`[${slug}] R2 failed (non-fatal): ${r2.stderr}`);
+    await writeFile(changesPath, '[]\n');
   }
 
-  // Schema validate
-  const validate = await callCli('../schema-validator', [
-    recordPath, '--schema', (await import('./manifest-loader.mjs')).default
-      ? null : null,   // simpler: invoke through cli wrapper instead
+  // Deterministic normalizers before validation.
+  const norm = await callCli('normalize', [
+    '--manifest', manifestPath,
+    '--record-in', recordPath,
+    '--evidence', evidencePath,
+    '--changes-in', changesPath,
+    '--gaps-in', gapsPath,
+    '--record-out', `${recordPath}.normalized`,
+    '--changes-out', `${changesPath}.normalized`,
+    '--gaps-out', `${gapsPath}.normalized`,
   ], { silent: true });
-  // (Phase 9 keeps schema-validator's CLI as direct invocation — see below)
+  meta.normalize = { status: norm.code === 0 ? 'ok' : 'failed' };
+  if (norm.code !== 0) {
+    await writeFile(normalizeErr, norm.stderr || '');
+    return finish(metaPath, meta, { slug, status: 'SCHEMA_FAIL', stage: 'normalize' });
+  }
+  await rename(`${recordPath}.normalized`, recordPath);
+  await rename(`${changesPath}.normalized`, changesPath);
+  await rename(`${gapsPath}.normalized`, gapsPath);
 
-  return { slug, status: 'OK', stage: 'r2', recordPath };
+  // Schema validate
+  const validate = await callNode(join(FRAMEWORK_DIR, 'schema-validator.mjs'), [
+    recordPath, '--schema', manifest._abs.full_schema,
+  ], { silent: true });
+  meta.schema = { status: validate.code === 0 ? 'ok' : 'failed' };
+  if (validate.code !== 0) {
+    await writeFile(schemaErr, validate.stderr || '');
+    return finish(metaPath, meta, { slug, status: 'SCHEMA_FAIL', stage: 'schema', recordPath });
+  }
+
+  // i18n and post-processing only after schema pass.
+  if (options.i18nLocales?.length) {
+    const i18nArgs = [
+      '--manifest', manifestPath,
+      '--record', recordPath,
+      '--locales', options.i18nLocales.join(','),
+      '--output-dir', join(debugDir, 'i18n'),
+      '--parallel', String(options.i18nParallel || 8),
+    ];
+    pushOpt(i18nArgs, '--model', options.i18nModel);
+    const i18n = await callCli('i18n', i18nArgs, { silent: true });
+    meta.i18n = {
+      status: i18n.code === 0 ? 'ok' : 'failed_nonfatal',
+      model: options.i18nModel || manifest.i18n?.model_default || null,
+      locales_requested: options.i18nLocales,
+      ...(await summarizeEnvelopes(join(debugDir, 'i18n'))),
+    };
+  }
+  const post = await callCli('post', ['--manifest', manifestPath, '--slug-dir', slugDir], { silent: true });
+  meta.post = { status: post.code === 0 ? 'ok' : 'failed' };
+  if (post.code !== 0) {
+    return finish(metaPath, meta, { slug, status: 'POST_FAIL', stage: 'post', recordPath });
+  }
+
+  return finish(metaPath, meta, { slug, status: 'OK', stage: 'post', recordPath });
 }
 
-export async function run({ manifestPath, providers, runDir, parallelism = 1, dryRun = false }) {
+export async function run({ manifestPath, providers, runDir, parallelism = 1, dryRun = false, options = {} }) {
   if (dryRun) parallelism = 1;
-  const tasks = providers.map(p => async () => runOne({ manifestPath, provider: p, runDir, parallelism }));
+  if (dryRun) options = { ...options, dryRun: true };
+  const tasks = providers.map(p => async () => runOne({ manifestPath, provider: p, runDir, options }));
   const results = await runWithLimit(parallelism, tasks);
   return results;
 }
 ```
 
-NOTE: I'm intentionally leaving the orchestrator as a thin sequencer — it spawns the per-stage CLI scripts (already proven in phases 2–8) rather than collapsing them all into one giant function. This keeps each stage independently testable and revertable.
+NOTE: Keep the orchestrator as a thin sequencer that spawns the per-stage CLI
+scripts, but do not leave any parsed CLI flag unused. In this task, extend
+`r1.mjs` and `r2.mjs` to accept `--model`, `--max-turns`, and `--max-budget`;
+extend `fetch.mjs` to accept `--rootdata-id`; preserve `--dry-run` by rendering
+prompts without calling Claude; and keep the legacy no-flag i18n behavior
+(interactive when stdin is a TTY, skip when headless). Each stage CLI that calls
+Claude constructs an in-process `budgetLedger` seeded with its effective stage
+cap and passes it to `runSubtask`/`runClaude`, so transient retries consume
+remaining stage budget instead of receiving a fresh full cap.
 
 - [ ] **Step 2: Implement framework/cli.mjs (the entry)**
 
@@ -4822,7 +5727,24 @@ console.log(`i18n:        ${i18nArg || '(skip)'}`);
 console.log(`Out dir:     ${runDir}`);
 console.log('');
 
-const results = await run({ manifestPath, providers, runDir, parallelism, dryRun });
+const i18nLocales = resolveI18nLocales(i18nArg); // none/empty => []
+const effectiveBudgets = computeEffectiveBudgets({ manifestPath, maxBudget });
+
+const results = await run({
+  manifestPath,
+  providers,
+  runDir,
+  parallelism,
+  dryRun,
+  options: {
+    model,
+    maxTurns,
+    effectiveBudgets,
+    i18nLocales,
+    i18nParallel,
+    i18nModel,
+  },
+});
 
 // Print summary
 console.log('\n=== Summary ===');
@@ -4831,7 +5753,9 @@ for (const r of results) console.log(`${r.slug}\t${r.status}\t${r.stage}`);
 process.exit(results.every(r => r.status === 'OK') ? 0 : 1);
 ```
 
-NOTE: The orchestrator.mjs implementation above is INCOMPLETE — it's a sketch. The plan task is to flesh out the full orchestration including i18n + post-processing calls that currently live in run.sh's tail. The implementer should follow the existing run.sh as the spec, calling `framework/cli/{fetch,r1,r2,i18n,post}.mjs` in sequence.
+Add `resolveI18nLocales(...)` and `computeEffectiveBudgets(...)` in this task.
+`computeEffectiveBudgets` enforces the contract that `--max-budget` is a
+single-provider total LLM hard cap and records the effective caps in `meta.json`.
 
 - [ ] **Step 3: Test orchestrator end-to-end (single provider)**
 
@@ -4972,12 +5896,19 @@ Prepend to `CHANGELOG.md` (under the title block):
 - **Multi-source evidence aggregator**: RootData + DeFiLlama fetchers
   called in parallel via `framework/fetcher-dispatcher.mjs`. Fetcher
   interface documented in `framework/FETCHER_INTERFACE.md`.
+- **Post-R1 evidence-diff**: deterministic comparison of RootData funding
+  evidence against the merged R1 record; conflict signals prioritize R2 instead
+  of gating it.
+- **Default-on R2+ synthesis/deepening**: whole-record synthesis always runs
+  once, can request RootData project/person searches, and may run bounded extra
+  rounds while budget and `max_research_rounds` allow.
 - **β output**: every subtask returns `{slice, findings, gaps}`.
   New per-slug artifacts: `findings.json` (per-field provenance with
-  source URLs and confidence scores), `gaps.json` (unfilled fields with
-  reasons + tried methods).
-- **No-regression guard** in R2 merge: high-confidence R1 fields
-  protected from R2 over-edits.
+  source URLs and confidence scores), `changes.json` (R2/framework change
+  audit), `gaps.json` (unfilled fields with reasons + tried methods).
+- **Audit-first R2 guard**: R2+ can make model-judgment changes with
+  `changes[]` provenance; uncited high-confidence regressions are suppressed
+  or logged for review.
 - **Manifest-driven consumer config**: `consumers/protocol-info/manifest.json`
   declares subtasks / fetchers / i18n / post-processing. Framework is
   consumer-agnostic.
@@ -4988,7 +5919,7 @@ Prepend to `CHANGELOG.md` (under the title block):
 - **`run.sh` is now a ≤50-line shim** that exec's `framework/cli.mjs`.
   Argv parsing + main pipeline live in Node.
 - **Output paths unchanged** for users (`out/<ts>/<slug>/{record,record.full,record.import,meta}.json`,
-  `_debug/...`). New: `findings.json`, `gaps.json`.
+  `_debug/...`). New: `findings.json`, `changes.json`, `gaps.json`.
 - Schema `establishment` range matches dashboard (1900–2030).
 
 ### Removed
@@ -5091,23 +6022,27 @@ git tag -a v1.0.0 -m "Deep-research framework + protocol-info consumer (β outpu
 
 **Spec coverage:**
 - §3 Architecture → Phase 1 (bootstrap) + Phase 2 (fetcher dirs) + Phase 9 (final tree) ✓
-- §4 Data flow → Phase 2 (R0 packet shape) + Phase 4 (R1 fan-out) + Phase 6 (R2 merge) + Phase 7 (i18n) + Phase 8 (export) ✓
+- §4 Data flow → Phase 2 (R0 packet shape + RootData search channel) + Phase 4 (R1 fan-out + handoffs) + Phase 6 (evidence-diff + default-on R2+ search/deepening + merge) + Phase 7 (i18n) + Phase 8 (export) ✓
 - §5 Schemas → Phase 4 (slices) + Phase 5 (findings/gaps universal) ✓
 - §6 Manifest → grown incrementally; final shape lands in Phase 7 (i18n) + Phase 8 (post_processing) + Phase 9 (output filenames) ✓
-- §7 Error/cost/retry → claude-wrapper retry (Phase 1) + per-subtask isolation (Phase 4 merger) + R2 trigger gate (Phase 6) ✓
+- §7 Error/cost/retry → claude-wrapper one-retry budget guard (Phase 1) + per-subtask isolation (Phase 4 merger) + bounded R2+ rounds from manifest/budget (Phase 6) + always-written meta in orchestrator (Phase 9) ✓
 - §8 Testing → tests/run.mjs (Phase 1) + per-module tests in each phase + slice-coherence (Phase 4) + check-all (Phase 1, extended Phase 4) ✓
 - §9 Migration phases → 1:1 mapping ✓
 
-**Placeholder scan:** no TBD/TODO/"add error handling" placeholders in the plan body; all code blocks are complete.
+**Placeholder scan:** no TBD/"add error handling" placeholders in the plan body. The only TODO-style note is the documented dashboard 21-locale follow-up; it does not block implementation.
 
 **Type consistency:**
 - `runWithLimit(limit, tasks, opts?)` — used consistently in Phase 2 (dispatcher), Phase 4 (r1.mjs), Phase 7 (i18n-stage)
-- `runSubtask({claudeBin, subtask, systemPrompt, userPrompt, schemaSlice, findingsSchema?, gapsSchema?, ...})` — extended in Phase 5; back-compatible
+- `runSubtask({claudeBin, subtask, systemPrompt, userPrompt, schemaSlice, findingsSchema?, gapsSchema?, changesSchema?, ...})` — extended in Phase 5; supports `handoff_notes` and R2+ `search_requests`; back-compatible
 - `mergeSlices(results, opts?)` and `mergeR2(r1, r2)` — distinct functions, both exported from `framework/merger.mjs`
+- `runSearchRequests({requests, fetchers, maxQueries, ...})` — executes model-requested structured searches; currently RootData-backed
 - `dashboardLocaleFor(code)` — single export, used by `dashboard-export.mjs`
 - `extractTranslatable(record, paths)` and `mergeTranslated(base, translated)` — used in `i18n-stage.mjs` and `dashboard-export.mjs`
 
-**One known partial gap I called out:** Task 9.1 step 2 admits the orchestrator is sketched. The implementer fleshes out by following run.sh's tail (i18n call, post call, summary printing) — same pattern as the per-stage CLI scripts already in place.
+**Review correction applied:** Task 9.1 now explicitly validates before OK,
+passes legacy flags through, runs normalizers before validation, runs i18n
+and post-processing only after schema pass, and keeps R2+ default-on instead of
+treating evidence-diff as a gate.
 
 ---
 
@@ -5120,5 +6055,3 @@ Plan complete and committed alongside the spec. Two execution options:
 **2. Inline Execution** — execute tasks in this session via superpowers:executing-plans. Faster for short tasks but context grows large given the migration's size.
 
 Per the user's standing autonomy grant ("剩下的你可以自己全部都做完决策了"), I'll proceed with **Subagent-Driven**. The user can interject at any phase boundary if direction changes.
-
-

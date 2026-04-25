@@ -16,18 +16,34 @@ dossiers) plug in by writing a small adapter — not by forking.
 
 ### Explicit non-goals (this iteration)
 
-- **Gap-loop (R3+ iteration).** Design hooks for it (gaps.json contains
-  enough info to drive a future loop) but do not implement.
+- **Unbounded autonomous crawling.** v1.0.0 implements bounded deepening, not an
+  open-ended agent. The orchestrator may run multiple synthesis/deepening rounds
+  within manifest/user budget caps, then stops with explicit gaps.
 - **Multiple consumers shipping.** `protocol-info` is the only consumer
   for v1.0.0. The framework's API surfaces are designed for >1 consumer
   but only exercised by one.
 - **Paid evidence sources.** Tier 1 only (RootData + DeFiLlama); Messari /
   Token Terminal explicitly deferred.
 - **JSON Schema `$ref` cross-file resolution.** Slice schemas duplicate
-  field definitions from `full.json`; a coherence-check script keeps them
-  in sync.
+  validation semantics from `full.json`; a coherence-check script keeps them
+  in sync while ignoring annotation-only text.
 - **TypeScript / build step / npm packages.** Strict zero-runtime-deps;
   ESM `.mjs`; Node stdlib only.
+
+### Deep Search philosophy
+
+- **Models act as researchers, not form-fillers.** Prompts should give Claude
+  room to follow leads, compare contradictory sources, and overrule structured
+  evidence when fetched evidence is stronger.
+- **Breadth first, then depth.** R1 uses focused parallel slices for coverage;
+  R2+ performs whole-record synthesis and bounded deepening so confident-looking
+  but wrong R1 outputs still get challenged.
+- **Freedom is controlled by artifacts, not by forbidding judgment.** The
+  framework records `findings`, `gaps`, `handoff_notes`, `changes`, and
+  `search_requests`; merge/validation decide what is accepted.
+- **RootData is a channel, not an oracle.** Initial RootData fetches and
+  RootData search results are high-priority evidence for the model, never
+  mechanical instructions to overwrite the final record.
 
 ## 2. Approach
 
@@ -35,12 +51,12 @@ dossiers) plug in by writing a small adapter — not by forking.
 |---|---|---|
 | Repo shape | Monorepo (framework + consumer same repo) | Only 1 consumer; splitting now is premature. Later extraction is cheap. |
 | Abstraction level | "Framework + adapter", not just protocol-info improvements | User chose B (Q2): future research projects plug in cheaply |
-| Evidence sources | RootData + DeFiLlama; everything else via Claude WebSearch/WebFetch | Tier 1 only (Q3); audit-doc discovery happens via web research, not a dedicated GitHub fetcher |
+| Evidence sources | RootData + DeFiLlama as structured channels; RootData search can be invoked during deepening; everything else via Claude WebSearch/WebFetch | Tier 1 only (Q3); audit-doc discovery happens via web research, not a dedicated GitHub fetcher |
 | Subtask cuts | 4 (metadata / team / funding / audits) | A in Q4 |
-| Subtask output shape | β: `{slice, findings, gaps}` | Only β delivers per-field citation, the deep-research hallmark |
+| Subtask output shape | β: `{slice, findings, gaps, handoff_notes?}` | Per-field citation plus cross-slice clues preserves breadth without polluting slices |
 | Framework boundary | Mid-thickness: orchestrator + subtask-runner + merger + i18n + fetcher-dispatcher in framework | β in Q6 |
 | Language | Hybrid: thin bash entry + Node orchestrator | bash-jq spaghetti for β-output merging is a maintenance trap |
-| R2 shape | Whole `record` (not fan-out), with no-regression guard at merge | 4× cost of R2 fan-out not justified; cheap mechanical guard handles "Claude over-edits" risk |
+| R2+ shape | Whole `record` synthesis/deepening rounds, with audit-first change guard at merge | 4× cost of R2 fan-out not justified; change audit handles "Claude over-edits" risk without over-constraining research judgment |
 | Migration strategy | 9 incremental phases, 1 commit each | Risk-bounded; `run.sh` keeps running through phases 1-8 |
 
 ## 3. Architecture
@@ -54,17 +70,21 @@ protocol-info/
 │
 ├── framework/                          # generic deep-research framework
 │   ├── cli.mjs                         # Node entry, exec'd by run.sh
-│   ├── orchestrator.mjs                # R0 → R1 → R2 → i18n → export pipeline
+│   ├── orchestrator.mjs                # R0 → R1 → R2+ → normalize → validate → i18n → export
 │   ├── claude-wrapper.mjs              # spawn `claude -p`, schema-forced, retry, cost cap
 │   ├── parallel-runner.mjs             # bounded promise queue
 │   ├── fetcher-dispatcher.mjs          # parallel-call manifest fetchers → unified evidence
-│   ├── subtask-runner.mjs              # render prompt → claude → parse {slice,findings,gaps}
+│   ├── search-channel.mjs              # execute model-requested structured searches
+│   ├── subtask-runner.mjs              # render prompt → claude → parse {slice,findings,gaps,handoff_notes}
 │   ├── merger.mjs                      # N slices → full record + flat findings + gaps
+│   ├── evidence-diff.mjs               # deterministic post-R1 evidence comparisons
 │   ├── i18n-stage.mjs                  # generic i18n: manifest declares translatable fields
+│   ├── normalizer-stage.mjs            # deterministic, consumer-declared pre-validation fixes
 │   ├── schema-validator.mjs            # ← migrated from validate.mjs (zero-dep Draft-07)
 │   ├── json-extract.mjs                # ← migrated from extract-json.mjs (balanced JSON)
 │   └── schemas/
 │       ├── findings.schema.json        # universal finding shape
+│       ├── changes.schema.json         # R2/framework change-audit shape
 │       ├── gaps.schema.json            # universal gap shape
 │       └── consumer-manifest.schema.json
 │
@@ -90,6 +110,8 @@ protocol-info/
 │       ├── fetchers/
 │       │   ├── rootdata.mjs            # ← from preprocess-rootdata.mjs
 │       │   └── defillama.mjs           # NEW
+│       ├── normalizers/
+│       │   └── final.mjs               # overwrite scan metadata; no factual research
 │       └── post/
 │           ├── locale-map.mjs          # ← from dashboard_locale_for bash function
 │           └── dashboard-export.mjs    # ← from export_dashboard_record bash function
@@ -120,17 +142,19 @@ protocol-info/
 | framework/claude-wrapper.mjs | ~80 |
 | framework/parallel-runner.mjs | ~30 |
 | framework/fetcher-dispatcher.mjs | ~50 |
+| framework/search-channel.mjs | ~40 |
 | framework/subtask-runner.mjs | ~100 |
 | framework/merger.mjs | ~80 |
 | framework/i18n-stage.mjs | ~150 |
+| framework/normalizer-stage.mjs | ~50 |
 | framework/schema-validator.mjs | ~150 (unchanged) |
 | framework/json-extract.mjs | ~50 (unchanged) |
 | consumer post-processing | ~100 |
 | run.sh | ~50 |
-| **Total framework + consumer** | **~1040** |
+| **Total framework + consumer** | **~1130** |
 
 vs. current `run.sh` (1100) + `preprocess-rootdata.mjs` (~600) + helpers ≈ **~1700**.
-**~40% reduction in code volume + every module single-responsibility & testable.**
+**~35% reduction in code volume + every module single-responsibility & testable.**
 
 ## 4. Data Flow
 
@@ -152,31 +176,49 @@ vs. current `run.sh` (1100) + `preprocess-rootdata.mjs` (~600) + helpers ≈ **~
          defillama.mjs┼──▶ evidence packet ──▶ subtask metadata ─┐
                       │                        team              │
                       │                        funding           │── slices + findings + gaps
-                      │                        audits            │
+                      │                        audits            │── handoff notes
                       └──────────┬─────────────────────────────────┘
                                  │
                                  ▼
                               merger
                                  │
                                  ▼
-                    merged record + findings[] + gaps[]
+                    merged record + findings[] + gaps[] + handoff_notes[]
                                  │
-                       ┌─────────┴──────────────┐
-                       ▼                        │
-            R2 reconcile (conditional)          │
-            ─────────────                       │
-            • evidence diff (RootData)          │
-            • re-research findings.confidence<0.7│
-            • output: revised whole record      │
-            • merger applies "no-regression"    │
-              guard against R1                  │
-                       │                        │ (if i18n enabled)
-                       ▼                        ▼
-                 record.json              i18n-stage (Haiku, per-locale)
-                 findings.json            ────────────────
-                 gaps.json                Translates manifest.translatable_fields
-                                                │
-                                                ▼
+                                 ▼
+                         evidence-diff + priority signals
+                         ───────────────────────────────
+                         • compare R1 record vs R0 evidence
+                         • prioritize conflicts/gaps
+                                 │
+                                 ▼
+                         R2+ synthesis/deepening loop
+                         ────────────────────────────
+                         • default-on synthesis pass
+                         • may request RootData searches
+                         • re-research low-confidence / conflicting facts
+                         • output: revised whole record
+                         • output: changes[] + search_requests[]
+                         • merger applies audit-first guard each round
+                                 │
+                                 ▼
+                         final-normalizer
+                         ────────────────
+                         • deterministic metadata only
+                         • no factual web-claim overrides
+                                 │
+                                 ▼
+                         schema validation
+                                 │
+                                 ▼
+                 record.json + findings.json + changes.json + gaps.json
+                                 │
+                                 ▼ (only after schema pass; if i18n enabled)
+                       i18n-stage (Haiku, per-locale)
+                       ────────────────
+                       Translates manifest.translatable_fields
+                                 │
+                                 ▼
                                   consumer post-processing
                                   ────────────
                                   dashboard-export.mjs
@@ -187,17 +229,43 @@ vs. current `run.sh` (1100) + `preprocess-rootdata.mjs` (~600) + helpers ≈ **~
 
 ### Key data structures
 
-**Evidence packet (R0 → R1 input):** Top-level keys per fetcher; each fetcher
-defines its own inner shape. Framework only owns top-level merging.
+**Evidence packet (R0 → R1 input, then R1 → R2+ after enrichment/search):**
+Top-level keys per fetcher; each fetcher defines its own inner shape. Framework
+owns top-level merging, deterministic post-R1 comparison signals, and appending
+search-channel results from later deepening rounds.
 
 ```json
 {
   "fetchers_run": ["rootdata", "defillama"],
   "rootdata": { /* fetcher-defined */ },
   "defillama": { /* fetcher-defined */ },
+  "evidence_diff": {
+    "funding": {
+      "severity": "none | low | medium | high",
+      "missing_org_investors": ["..."],
+      "api_total_funding": "$..."
+    }
+  },
+  "search_results": [
+    {
+      "round": 2,
+      "channel": "rootdata",
+      "query": "Pendle cofounder",
+      "type": "project | person",
+      "results": [ /* provider-defined */ ]
+    }
+  ],
   "fetched_at": "2026-04-25T..."
 }
 ```
+
+`evidence_diff` is computed after R1 because it needs both fetched evidence and
+the merged R1 record. It replaces the current bash-only investor discrepancy
+logic, but it is a prioritization signal, not an R2 gate. Fetchers emit raw
+provider data; they do not pre-classify discrepancies that require the model's
+first-pass record. `search_results` is appended between deepening rounds when
+the synthesis model asks the framework to query a structured channel such as
+RootData search.
 
 **Subtask output:**
 
@@ -205,12 +273,16 @@ defines its own inner shape. Framework only owns top-level merging.
 {
   "slice": { /* shape of consumer's slice schema */ },
   "findings": [ { "field": "...", "value": ..., "source": "...", "confidence": 0.92, "method": "..." } ],
-  "gaps": [ { "field": "...", "reason": "...", "tried": [...] } ]
+  "gaps": [ { "field": "...", "reason": "...", "tried": [...] } ],
+  "handoff_notes": [
+    { "target": "team | funding | audits | metadata | reconcile", "note": "out-of-scope clue", "source": "https://..." }
+  ]
 }
 ```
 
 `stage` and `subtask` are added to each finding/gap by the framework after parse;
-Claude does not produce them.
+Claude does not produce them. `handoff_notes` is optional in v1.0.0, but prompts
+should use it for cross-slice clues discovered while doing focused research.
 
 **Merger output:**
 
@@ -226,13 +298,33 @@ Claude does not produce them.
 }
 ```
 
+**R2 change audit:**
+
+```json
+{
+  "field": "JSON path, e.g. description or members[0].oneLiner",
+  "entity_key": "optional stable identity for array items, e.g. member:x:0xfoo",
+  "before": "any JSON type",
+  "after": "any JSON type",
+  "reason": "why R2 changed it",
+  "source": "primary URL or evidence key",
+  "confidence": 0.86
+}
+```
+
+`changes[]` is intentionally an audit trail, not a permission slip. The model
+is trusted to make research judgments; the framework requires enough change
+surface area for review, debugging, and future gap-loop work.
+
 **Final on-disk artifacts (per slug):**
 
 | File | Content | Producer |
 |---|---|---|
-| `record.json` | merged + R2 record (crawler invariant, schema-validated) | merger |
+| `record.json` | merged + R2 + normalized record (crawler invariant, schema-validated) | merger / normalizer |
 | `findings.json` | accumulated findings, per-field provenance | merger |
+| `changes.json` | R2 + deterministic framework change audit | merger / normalizer |
 | `gaps.json` | accumulated gaps with stage tags | merger |
+| `handoff_notes.json` | cross-slice clues from R1 subtasks and R2 deepening | merger |
 | `record.full.json` | inline-i18n version | post (dashboard-export) |
 | `record.import.json` | dashboard envelope, per-locale array | post (dashboard-export) |
 | `meta.json` | r0/r1/r2/i18n stage telemetry (cost, turns, fetcher status, subtask split) | orchestrator |
@@ -251,11 +343,30 @@ Claude does not produce them.
 ```json
 {
   "field": "JSON path, e.g. members[0].oneLiner",
+  "entity_key": "optional stable entity identity for array items",
   "value": "any JSON type, equals record value at that path",
   "source": "primary URL, format: uri",
   "confidence": "0.0–1.0",
   "method": "≤200 char, e.g. 'X bio + LinkedIn cross-check'",
   "supporting_sources": ["≤5 corroborating URLs"]
+}
+```
+
+`entity_key` is optional in v1.0.0. It is recommended for array-backed facts
+whose numeric index can shift (`members`, `fundingRounds`, `audits`). Examples:
+`member:x:0xngmi`, `funding:Seed:2021-04`, `audit:OpenZeppelin:<reportUrl>`.
+
+**`framework/schemas/changes.schema.json`** — array of:
+
+```json
+{
+  "field": "JSON path",
+  "entity_key": "optional stable entity identity for array items",
+  "before": "any JSON type",
+  "after": "any JSON type",
+  "reason": "≤500 char",
+  "source": "URL or evidence key",
+  "confidence": "0.0–1.0"
 }
 ```
 
@@ -276,15 +387,19 @@ Claude does not produce them.
   `1900–2030` per v0.4.0).
 - `metadata.slice.json` — strict subset: slug, provider, displayName, type,
   description, tags, establishment, providerWebsite, providerXLink,
-  providerDiscordLink.
+  providerDiscordLink, status.
 - `team.slice.json` — `members` only.
 - `funding.slice.json` — `fundingRounds` only.
 - `audits.slice.json` — `audits` only.
 
-**Slice schemas duplicate field definitions from `full.json`.** No `$ref`
+**Slice schemas duplicate validation semantics from `full.json`.** No `$ref`
 cross-file resolution (zero-dep validator doesn't support it; implementing
 `$ref` properly costs ~150 lines for marginal gain). Drift is prevented by
-`scripts/check-slice-coherence.mjs` (~30 lines), run in pre-push and CI.
+`scripts/check-slice-coherence.mjs`, run in pre-push and CI. The coherence
+check compares validation-relevant keywords (`type`, `required`, `enum`,
+`format`, `pattern`, min/max bounds, `items`, nested `properties`, and
+`additionalProperties`) and ignores annotation-only keywords such as
+`description`, `title`, `$id`, and `$schema`.
 
 ### Per-call union schema (runtime-constructed)
 
@@ -307,31 +422,63 @@ findings + gaps:
 `findings` and `gaps` are required arrays; empty array means "this subtask
 had nothing to add", explicitly distinguished from "Claude forgot the field".
 
-### R2 schema
+### R2+ synthesis/deepening schema
 
-R2 returns the whole record, not a slice:
+Every synthesis/deepening round returns the whole record, not a slice:
 
 ```json
 {
-  "required": ["record", "findings", "gaps"],
+  "required": ["record", "findings", "changes", "gaps"],
   "properties": {
     "record": { /* inlined full.json */ },
     "findings": { /* findings */ },
-    "gaps": { /* gaps */ }
+    "changes": { /* changes */ },
+    "gaps": { /* gaps */ },
+    "search_requests": [
+      {
+        "channel": "rootdata",
+        "type": "project | person",
+        "query": "string",
+        "reason": "what uncertainty this search resolves"
+      }
+    ]
   }
 }
 ```
 
-### No-regression guard
+`search_requests` is optional. When present and budget/round caps allow, the
+orchestrator executes the structured search channel, appends results to the
+evidence packet, and runs another synthesis/deepening round. The model decides
+what to search; the framework decides whether the request fits configured
+channels, budget, and `max_research_rounds`.
 
-Merger applies this rule when integrating R2 output into R1 merged record:
+### R2 audit-first guard
 
-- For each field path `P` where R2 produces a value:
-  - If R1 had a finding at `P` with `confidence > 0.85` AND R2's finding at
-    `P` has `confidence ≤ R1.confidence`: **reject R2's value, keep R1's**.
-    Log to gaps.json with reason `"r2_regression_suppressed"`.
-  - If R1 had no finding at `P` (Claude added it in R2): accept.
-  - Otherwise (R2 has higher confidence or R1 was low confidence): accept R2.
+Merger applies this rule when integrating each R2+ output into the current
+merged record:
+
+- Diff R1 record vs R2 record.
+- For each changed path `P`, look for either:
+  - a matching `changes[]` entry, or
+  - a matching `findings[]` entry.
+- For array-backed paths, "matching" means exact path, descendant path, or shared
+  `entity_key`. Examples: a change to `members` may be explained by
+  `members[0].oneLiner` plus `entity_key: "member:x:0xngmi"`.
+- If R2 explains the change, accept it. This preserves Deep Search freedom:
+  the model may overrule RootData or R1 when it found better evidence.
+- If R2 changes a field without any change/finding entry:
+  - If R1 had a finding at `P` with `confidence > 0.85`, keep R1's value and
+    append a gap with reason `"r2_uncited_high_conf_change_suppressed"`.
+  - Otherwise accept R2's value but append a gap with reason
+    `"uncited_r2_change"` so review/gap-loop can inspect it.
+
+RootData `validated_overrides` are evidence, not mechanical post-R2 facts. R2
+should usually prefer them, but may reject them when fetched web evidence is
+stronger; that rejection must appear in `changes[]` or `gaps[]`.
+
+Deterministic normalizers are reserved for crawler metadata that is not a
+research claim. For protocol-info v1.0.0, `audits.lastScannedAt` is overwritten
+with the UTC crawl date before validation.
 
 ## 6. Manifest Design
 
@@ -346,7 +493,13 @@ Merger applies this rule when integrating R2 output into R1 merged record:
   "schemas": { "full": "./schemas/full.json" },
 
   "fetchers": [
-    { "name": "rootdata",   "module": "./fetchers/rootdata.mjs",   "required_env": ["ROOTDATA_API_KEY"], "optional": true },
+    {
+      "name": "rootdata",
+      "module": "./fetchers/rootdata.mjs",
+      "required_env": ["ROOTDATA_API_KEY"],
+      "optional": true,
+      "search": { "enabled": true, "types": ["project", "person"], "max_queries_per_round": 4 }
+    },
     { "name": "defillama",  "module": "./fetchers/defillama.mjs",  "required_env": [], "optional": true }
   ],
 
@@ -387,11 +540,14 @@ Merger applies this rule when integrating R2 output into R1 merged record:
     "enabled": true,
     "prompt": "./prompts/reconcile.user.md.tmpl",
     "max_turns": 10, "max_budget_usd": 0.50,
-    "trigger_when": {
-      "min_finding_confidence": 0.7,
-      "evidence_diff_severity": ["medium", "high"]
-    }
+    "mode": "deep",
+    "max_research_rounds": 3,
+    "fast_skip_allowed": false
   },
+
+  "normalizers": [
+    { "name": "protocol-info-final", "module": "./normalizers/final.mjs" }
+  ],
 
   "i18n": {
     "enabled": true,
@@ -424,6 +580,7 @@ Merger applies this rule when integrating R2 output into R1 merged record:
   "output": {
     "record_filename": "record.json",
     "findings_filename": "findings.json",
+    "changes_filename": "changes.json",
     "gaps_filename": "gaps.json",
     "meta_filename": "meta.json",
     "full_filename": "record.full.json",
@@ -437,9 +594,14 @@ Merger applies this rule when integrating R2 output into R1 merged record:
 - `evidence_keys` are jq-style paths into the evidence packet; framework
   injects only matching subtrees into each subtask's prompt → smaller
   prompts, less Claude distraction.
-- `reconcile.trigger_when` — R2 is conditional. Skip R2 entirely when neither
-  trigger fires (saves ~$0.50/protocol when R1 already produced high-confidence
-  output and evidence diffs are clean).
+- `reconcile.mode` — default `"deep"` means R2 synthesis always runs once, then
+  may continue for additional rounds when the model emits approved
+  `search_requests` and unresolved gaps/conflicts remain. A future explicit
+  `"fast"` mode may skip synthesis when evidence is clean, but deep mode is the
+  default CLI behavior.
+- `fetchers[].search` advertises structured search channels available to the
+  deepening loop. For protocol-info, RootData's `/open/ser_inv` search is a
+  channel, not an authority: its results are evidence for the model to compare.
 - `translatable_fields` use bracket notation (`members[].memberPosition`)
   for "for-each" selectors. Adding a new translatable field is a one-line
   manifest change.
@@ -447,6 +609,9 @@ Merger applies this rule when integrating R2 output into R1 merged record:
   not abort the pipeline. R1 simply runs without that source's evidence.
 - Manifest is validated against `framework/schemas/consumer-manifest.schema.json`
   on framework startup; bad manifests fail fast with a clear message.
+- Legacy CLI flags remain authoritative. `--model`, `--max-turns`,
+  `--max-budget`, `--i18n`, `--i18n-parallel`, `--i18n-model`, and
+  `--rootdata-id` must be passed through to the relevant stages.
 
 ## 7. Error / Cost / Retry
 
@@ -459,13 +624,26 @@ Merger applies this rule when integrating R2 output into R1 merged record:
 | R1 team | $0.80 | 25 | members research is the most expensive subtask |
 | R1 funding | $0.50 | 15 | |
 | R1 audits | $0.50 | 20 | audit-doc discovery often takes more turns |
-| R2 reconcile | $0.50 | 10 | conditional on trigger |
+| R2 synthesis/deepening (per round) | $0.50 | 10 | default-on once; additional rounds bounded by `max_research_rounds` + budget |
 | i18n (per locale) | $0.10 | 3 | Haiku, schema-forced |
 | **Total ceiling per protocol** | ~$3.40 | — | R1 $2.30 + R2 $0.50 + i18n max $1.90 (19 locales) |
 
+**CLI budget contract:**
+- Manifest budgets are default per-stage ceilings.
+- `--max-budget <usd>` is a **single-provider total LLM hard cap** across R1,
+  R2, and i18n. Provider-level parallelism does not multiply the per-provider
+  cap; it only runs multiple capped providers concurrently.
+- When `--max-budget` is lower than the manifest default total, the
+  orchestrator scales or truncates stage ceilings before invoking Claude and
+  records the effective caps in `meta.json`.
+- `--max-turns` is a compatibility override for the legacy full-run ceiling.
+  In fan-out mode it caps each research subtask unless a lower manifest cap is
+  already present.
+- `--model` applies to R1/R2 research calls. `--i18n-model` applies only to
+  i18n.
+
 **Retry policy:**
-- 5xx / connection timeout / 529 overloaded → 1 retry with exponential
-  backoff (2 s, 5 s).
+- 5xx / connection timeout / 529 overloaded → 1 retry after 2 s.
 - 4xx / max-turns / max-budget exceeded → no retry, classify as failure.
 - JSON parse failure → 1 retry with stricter prompt suffix
   (`Your previous output was not valid JSON; emit JSON only matching the
@@ -477,10 +655,10 @@ Merger applies this rule when integrating R2 output into R1 merged record:
   `{ field: "<subtask>", reason: "subtask_failed: <error>", stage: "r1" }`.
 - Final classification:
   - 4/4 subtasks succeed → normal path → schema validate
-  - 1–3/4 succeed → partial record + `status: SCHEMA_FAIL`, gaps.json shows
-    which subtask(s) failed
-  - 0/4 succeed → `status: CRAWL_FAIL`, no record.json (avoid misleading
-    downstream consumers)
+  - 1–3/4 succeed → partial record + run classification `SCHEMA_FAIL`,
+    gaps.json shows which subtask(s) failed
+  - 0/4 succeed → run classification `CRAWL_FAIL`, no record.json (avoid
+    misleading downstream consumers)
 
 **Pipeline abort conditions (early exit):**
 - Manifest fails schema → exit 2 (config error)
@@ -490,7 +668,9 @@ Merger applies this rule when integrating R2 output into R1 merged record:
 
 **Cost aggregation:** subtask-runner returns `{cost_usd, turns}`;
 orchestrator accumulates into `meta.json` per stage. Failed subtasks still
-record cost (knowing what we burned matters).
+record cost when the envelope exposes it (knowing what we burned matters).
+`meta.json` is written for every non-dry-run slug outcome, including R0/R1/R2,
+normalization, schema, and i18n failures.
 
 ## 8. Testing Strategy
 
@@ -541,8 +721,8 @@ through phases 1–8.
 | 2 | **Fetcher framework** | `preprocess-rootdata.mjs` → `consumers/protocol-info/fetchers/rootdata.mjs` (interface adjusted); add `defillama.mjs`; add `framework/fetcher-dispatcher.mjs`; `run.sh` calls dispatcher | Run a slug; evidence packet contains both rootdata + defillama subtrees | Low — interface swap |
 | 3 | **R1 single-task in Node** | `framework/subtask-runner.mjs` (α-shape, no findings/gaps); wraps existing big prompt; `run.sh` delegates R1 but pipeline shape unchanged | Run same slug; record.json substantially equivalent to phase-2 baseline (within Claude variance) | Med — language migration |
 | 4 | **Fan-out** | 4 prompt templates + 4 slice schemas; subtask-runner dispatches in parallel via parallel-runner; `framework/merger.mjs` combines | Same slug; 4-subtask version vs phase-3 baseline; field fill-rate equal or higher | **High** — prompt-quality critical |
-| 5 | **β output (findings + gaps)** | Union schema (slice + findings + gaps); prompts request findings/gaps; merger accumulates → `findings.json` + `gaps.json` | Inspect findings.json: plausible per-field source/confidence | Med — prompt design |
-| 6 | **R2 in Node + no-regression guard** | `reconcile.user.md.tmpl`; R2 via subtask-runner returning whole `record`; merger applies confidence guard | Slug with known R1 gaps: R2 should fill them; field with high R1 confidence not regressed | Med |
+| 5 | **β output (findings + gaps)** | Union schema (slice + findings + gaps); prompts request findings/gaps; merger accumulates → `findings.json` + `gaps.json`; add universal `changes.schema.json` for R2 | Inspect findings.json: plausible per-field source/confidence | Med — prompt design |
+| 6 | **R2+ in Node + RootData search + audit-first guard + normalizer** | Post-R1 evidence-diff prioritizes conflicts; `reconcile.user.md.tmpl`; default-on synthesis returns whole `record` + `changes` + optional `search_requests`; RootData search results can drive bounded extra rounds; merger applies audit-first guard; final normalizer overwrites crawler metadata | Even clean R1 runs one synthesis pass; slug with known RootData funding/team/social conflict is deepened; uncited high-confidence changes are suppressed/logged; `audits.lastScannedAt` is current UTC date | Med |
 | 7 | **i18n in Node** | `framework/i18n-stage.mjs` replaces bash `i18n_dispatch`; `manifest.translatable_fields` drives selection | `--i18n zh_CN,ja_JP` produces same per-locale sidecars as v0.4.0 | Low |
 | 8 | **Export in Node** | `consumers/protocol-info/post/{locale-map,dashboard-export}.mjs` replace bash functions | `record.import.json` byte-equivalent (modulo timestamp) to v0.4.0 output | Low |
 | 9 | **`run.sh` shrink + 1.0.0** | `run.sh` ≤ 50 lines; remove all migrated bash; bump version; update README/CHANGELOG | Plugin install + slash command + standalone CLI all work | Low |
@@ -597,7 +777,7 @@ Standalone CLI:
 The `run.sh` shim transparently `exec`s `framework/cli.mjs`. CLI flags
 unchanged. Output paths unchanged (`record.json`, `record.full.json`,
 `record.import.json`, `meta.json`, `_debug/`). New artifacts:
-`findings.json`, `gaps.json` per slug.
+`findings.json`, `changes.json`, `gaps.json` per slug.
 
 ---
 
@@ -607,13 +787,13 @@ unchanged. Output paths unchanged (`record.json`, `record.full.json`,
 |---|---|---|
 | Q1: Which directions? | #1 fan-out + #2 multi-source (#3 gap-loop deferred) | All three at once (overkill); fan-out alone (no value-add to evidence); evidence alone (doesn't fix monolithic prompt) |
 | Q2: Abstraction level | B (reusable framework) | A (protocol-info-only — no future leverage); C (scoped + extension points — middle-ground compromise that user explicitly rejected) |
-| Q3: Evidence sources | Tier 1: RootData + DeFiLlama; everything else via Claude WebSearch/WebFetch | GitHub fetcher (motive was audit-doc discovery, but better via web); Messari/Token Terminal (paid, low ROI for our schema) |
+| Q3: Evidence sources | Tier 1: RootData + DeFiLlama; RootData also exposes a search channel for deepening; everything else via Claude WebSearch/WebFetch | GitHub fetcher (motive was audit-doc discovery, but better via web); Messari/Token Terminal (paid, low ROI for our schema) |
 | Q4: Subtask cuts | 4 (metadata / team / funding / audits) | 5 with separate `socials` (over-decomposed); 3 with `team`+`metadata` merged (token-saving but quality hit) |
 | Q5: Subtask output | β (slice + findings + gaps) | α (no citations — fails deep-search promise); γ (sidecar findings — pragmatic middle, but β commits to the deep-research feature properly) |
 | Q6: Framework boundary | β (orchestrator + subtask-runner + fetcher-dispatcher + merger + i18n in framework) | α (thin framework — pipeline shape leaks into every consumer); γ (manifest DSL — premature abstraction) |
 | Q7: Language | Hybrid (bash entry + Node orchestrator) | Bash-only (jq spaghetti for β output); Node-only (loses the familiar `./run.sh` entry, no real gain) |
-| Slice schemas | Duplicate field definitions; ship coherence-check script | `$ref` cross-file (zero-dep validator doesn't support; ~150 LoC investment for marginal gain) |
-| R2 shape | Whole `record` + no-regression guard at merge | R2 fan-out (4× cost without quality justification) |
+| Slice schemas | Duplicate validation semantics; ship coherence-check script | `$ref` cross-file (zero-dep validator doesn't support; ~150 LoC investment for marginal gain) |
+| R2+ shape | Default-on whole-record synthesis + bounded search/deepening + audit-first change guard at merge | R2 fan-out (4× cost without quality justification); exception-only R2 (too weak for Deep Search) |
 
 ## Appendix B — Memory Notes
 
