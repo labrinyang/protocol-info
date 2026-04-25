@@ -33,4 +33,43 @@ Crunchbase, the protocol's own announcements, and announcement-style press
 - `investors`: array of firms/angels for that round. Empty array if undisclosed.
 - Use the `rootdata.api_funding.investors_orgs_normalized` list as a reference for canonical investor names when supported by fetched evidence.
 
-Output: `{"fundingRounds": [...]}`. No prose.
+## Output format
+
+Return a JSON object with four fields:
+
+```
+{
+  "slice":    { ... <fields per the schema above> ... },
+  "findings": [
+    {
+      "field":      "JSON path of a field, e.g. 'members[0].oneLiner'",
+      "value":      <the value you put in slice at that path>,
+      "source":     "primary URL where you verified it",
+      "confidence": 0.0-1.0,
+      "method":     "≤200 chars: how you verified, e.g. 'X bio + LinkedIn cross-check'",
+      "supporting_sources": ["optional", "≤5 corroborating URLs"]
+    }
+  ],
+  "gaps": [
+    { "field": "JSON path", "reason": "≤500 chars why couldn't fill", "tried": ["≤10 method/source descriptions"] }
+  ],
+  "handoff_notes": [
+    { "target": "metadata|team|funding|audits|reconcile", "note": "out-of-scope clue worth preserving", "source": "optional URL" }
+  ]
+}
+```
+
+Rules for findings:
+- One finding per non-trivial field you populated. Boilerplate fields (slug, displayName) don't need findings.
+- `confidence < 0.7` indicates "I made my best guess but a follow-up agent should verify."
+- Cite the URL you actually consulted, not a generic homepage.
+
+Rules for gaps:
+- Use when a required field is missing or you skipped it. Example: a member with `memberLink.linkedinLink: null` and you couldn't find one → gap with reason `"no public LinkedIn profile found"`, `tried: ["linkedin search", "X bio"]`.
+- Empty array is fine if you filled everything confidently.
+
+Rules for handoff notes:
+- Use when you discover a useful clue outside your slice. Do not add out-of-scope fields to `slice`; preserve the clue here so R2 can synthesize across slices.
+- Empty array is fine.
+
+No prose. JSON only.
