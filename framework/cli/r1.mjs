@@ -7,11 +7,17 @@
 // Then merge slices via merger.mjs and write record + per-subtask envelopes.
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadManifest, selectEvidence } from '../manifest-loader.mjs';
 import { runSubtask } from '../subtask-runner.mjs';
 import { mergeSlices } from '../merger.mjs';
 import { runWithLimit } from '../parallel-runner.mjs';
+
+// FRAMEWORK_DIR resolves to .../framework/ — dirname() strips r1.mjs, second
+// dirname() strips the cli/ directory, leaving the framework root where
+// schemas/ lives.
+const FRAMEWORK_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 
 function arg(name, def) {
   const i = process.argv.indexOf(`--${name}`);
@@ -31,11 +37,14 @@ const evidencePath = arg('evidence');
 const recordOut = arg('record-out');
 const debugDir = arg('debug-dir');
 const model = arg('model', null);
+const findingsOut = arg('findings-out');
+const gapsOut = arg('gaps-out');
+const handoffOut = arg('handoff-out');
 const claudeBin = process.env.CLAUDE_BIN || 'claude';
 const concurrency = parseInt(arg('concurrency', '4'), 10);
 
 if (!manifestPath || !slug || !displayName || !recordOut || !debugDir) {
-  console.error('usage: r1.mjs --manifest M --slug S --display-name D [--type T] [--provider P] [--hints H] [--model M] --evidence E --record-out R --debug-dir D2');
+  console.error('usage: r1.mjs --manifest M --slug S --display-name D [--type T] [--provider P] [--hints H] [--model M] --evidence E --record-out R --debug-dir D2 [--findings-out F] [--gaps-out G] [--handoff-out H]');
   process.exit(2);
 }
 
@@ -43,6 +52,8 @@ await mkdir(debugDir, { recursive: true });
 
 const manifest = await loadManifest(manifestPath);
 const systemPrompt = await readFile(manifest._abs.system_prompt, 'utf8');
+const findingsSchema = JSON.parse(await readFile(join(FRAMEWORK_DIR, 'schemas/findings.schema.json'), 'utf8'));
+const gapsSchema = JSON.parse(await readFile(join(FRAMEWORK_DIR, 'schemas/gaps.schema.json'), 'utf8'));
 
 // Evidence is loaded defensively (try/catch) because in run.sh's parallel pipeline
 // the fetcher writes $rootdata_pkt concurrently with r1.mjs starting; once Phase 4
@@ -77,6 +88,7 @@ const tasks = manifest._abs.subtasks.map(st => async () => {
     console.error(`[r1:${st.name}] starting (max_budget=$${st.max_budget_usd} max_turns=${st.max_turns})`);
     const r = await runSubtask({
       claudeBin, subtask: st, systemPrompt, userPrompt, schemaSlice: slice, model,
+      findingsSchema, gapsSchema,
     });
 
     if (r.envelope) {
@@ -105,9 +117,12 @@ const tasks = manifest._abs.subtasks.map(st => async () => {
 });
 
 const results = await runWithLimit(concurrency, tasks);
-const merge = mergeSlices(results);
+const merge = mergeSlices(results, { stage: 'r1' });
 
 await writeFile(recordOut, JSON.stringify(merge.record, null, 2));
+if (findingsOut) await writeFile(findingsOut, JSON.stringify(merge.findings, null, 2));
+if (gapsOut) await writeFile(gapsOut, JSON.stringify(merge.gaps, null, 2));
+if (handoffOut) await writeFile(handoffOut, JSON.stringify(merge.handoff_notes, null, 2));
 
 console.error(`[r1] done — ${results.filter(r => r.ok).length}/${results.length} subtasks ok`);
 if (merge.failed_subtasks.length > 0) {

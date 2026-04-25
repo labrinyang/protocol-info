@@ -365,6 +365,9 @@ run_one() {
     --evidence "$rootdata_pkt" \
     --record-out "$rec" \
     --debug-dir "$debug_dir/r1" \
+    --findings-out "$slug_dir/findings.json" \
+    --gaps-out "$slug_dir/gaps.json" \
+    --handoff-out "$slug_dir/handoff_notes.json" \
     > /dev/null 2> "$r1_err"
   r1_exit=$?
   set -e
