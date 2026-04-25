@@ -25,7 +25,7 @@ export const tests = [
     name: 'rejects manifest with bad name',
     fn: async () => {
       await withManifest({ name: 'BAD NAME', version: '0.1.0' }, async (path) => {
-        await assert.rejects(() => loadManifest(path), /name/);
+        await assert.rejects(() => loadManifest(path), /manifest schema validation failed/);
       });
     },
   },

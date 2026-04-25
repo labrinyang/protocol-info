@@ -34,6 +34,7 @@ export async function loadManifest(manifestPath) {
 
   // Validate against the manifest schema using framework/schema-validator.mjs
   const validator = resolve(FRAMEWORK_DIR, 'schema-validator.mjs');
+  // schema-validator emits validation errors on stdout; stderr only on argv/usage errors.
   const r = spawnSync('node', [validator, manifestPath, '--schema', MANIFEST_SCHEMA], { encoding: 'utf8' });
   if (r.status !== 0) {
     throw new Error(`manifest schema validation failed:\n${r.stderr || r.stdout}`);
