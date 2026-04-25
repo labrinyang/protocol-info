@@ -9,7 +9,7 @@ export async function runSearchRequests({ requests, fetchers, maxQueries, env, l
   for (const req of (requests || []).slice(0, maxQueries)) {
     const f = byName.get(req.channel);
     if (!f || typeof f.search !== 'function') {
-      logger.warn?.(`[search] skipped unknown channel ${req.channel}`);
+      logger?.warn?.(`[search] skipped unknown channel ${req.channel}`);
       continue;
     }
     const result = await f.search({ query: req.query, type: req.type, limit: req.limit || 5, env, logger });
