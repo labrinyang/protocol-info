@@ -135,6 +135,29 @@ locale_name_for() {
   return 1
 }
 
+# 把我们的 locale code (en_US / zh_CN / ja_JP / ...) 映射成 dashboard 期望的格式
+# (en / zh-cn / ja / ...). 规则:仅当语言有多种 region 变体时保留 region (pt_BR → pt-br),
+# 否则只保留 language code (en_US → en, fr_FR → fr).
+# TODO: dashboard 文档说支持 21 种 locale,我们目前 19 种;待 dashboard 给清单后补两个。
+dashboard_locale_for() {
+  case "$1" in
+    en_US) echo "en" ;;
+    fr_FR) echo "fr" ;;
+    hi_IN) echo "hi" ;;
+    it_IT) echo "it" ;;
+    ja_JP) echo "ja" ;;
+    ko_KR) echo "ko" ;;
+    th_TH) echo "th" ;;
+    uk_UA) echo "uk" ;;
+    pt_BR) echo "pt-br" ;;
+    zh_CN) echo "zh-cn" ;;
+    zh_HK) echo "zh-hk" ;;
+    zh_TW) echo "zh-tw" ;;
+    bn|de|es|id|pt|ru|vi) echo "$1" ;;
+    *) echo "$1" | tr '[:upper:]' '[:lower:]' | tr '_' '-' ;;
+  esac
+}
+
 # ── slugify: displayName -> slug ──────────────────────────────────────
 slugify() {
   echo "$1" \
@@ -866,6 +889,59 @@ i18n_dispatch() {
   done
 }
 
+# ── 导出 dashboard import 格式 ────────────────────────────────────────
+# 把 record.json (源语言) + _debug/i18n/<locale>.json (翻译 sidecar) 合成
+# {version, exportedAt, data:[...]} 格式,每个 locale 一条独立记录。
+# 字段处理:strip sources、注入 locale、把翻译 merge 进 description + members[i].{memberPosition,oneLiner}。
+export_dashboard_record() {
+  local slug="$1"
+  local slug_dir="$OUT_DIR/$slug"
+  local rec="$slug_dir/record.json"
+  local i18n_dir="$slug_dir/_debug/i18n"
+  local out="$slug_dir/record.import.json"
+
+  [[ -f "$rec" ]] || return 0
+
+  # 源语言记录:strip sources,locale='en'
+  local base_en
+  base_en=$(jq 'del(.sources) | . + {locale: "en"}' "$rec")
+
+  # 收集所有 locale 的记录
+  local records_json
+  records_json=$(echo "[$base_en]" | jq '.')
+
+  shopt -s nullglob
+  local f our_code dashboard_code merged
+  for f in "$i18n_dir"/*.json; do
+    our_code=$(basename "$f" .json)
+    case "$our_code" in
+      *.envelope|failures) continue ;;
+    esac
+    locale_name_for "$our_code" >/dev/null 2>&1 || continue
+
+    dashboard_code=$(dashboard_locale_for "$our_code")
+
+    # 合并翻译进 base record:替换 description + 逐 member 替换 memberPosition/oneLiner
+    merged=$(jq \
+      --slurpfile tr "$f" \
+      --arg locale "$dashboard_code" \
+      '. + {locale: $locale}
+       | .description = ($tr[0].description // .description)
+       | ($tr[0].members // []) as $tm
+       | .members |= [range(0; length) as $i | .[$i] + ($tm[$i] // {})]' \
+      <<< "$base_en")
+
+    records_json=$(echo "$records_json" | jq --argjson r "$merged" '. + [$r]')
+  done
+  shopt -u nullglob
+
+  # 包成 dashboard 信封
+  jq -n \
+    --argjson data "$records_json" \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+    '{version: "1.0", exportedAt: $ts, data: $data}' > "$out"
+}
+
 # ── Dispatcher: 顺序或有界并发 ────────────────────────────────────────
 if [[ $PARALLEL -le 1 ]]; then
   INDEX=0
@@ -919,6 +995,15 @@ if [[ "$DRY_RUN" -ne 1 ]]; then
   if [[ ${#OK_SLUGS[@]} -gt 0 && ${#I18N_SELECTED[@]} -gt 0 ]]; then
     i18n_dispatch "${OK_SLUGS[@]}"
   fi
+fi
+
+# ── 导出 dashboard import 格式 (record.import.json) ───────────────────
+# 即使没翻译,也输出单条 'en' 记录,方便 dashboard 直接导入
+if [[ "$DRY_RUN" -ne 1 ]] && [[ ${#OK_SLUGS[@]} -gt 0 ]]; then
+  for _slug in "${OK_SLUGS[@]}"; do
+    export_dashboard_record "$_slug"
+  done
+  unset _slug
 fi
 
 # ── 合并 per-slug summary 行 + i18n 列 → summary.tsv ─────────────────

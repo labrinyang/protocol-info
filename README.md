@@ -80,8 +80,9 @@ protocol-info/
     └── <YYYYMMDDTHHMMSSZ>/
         ├── summary.tsv                    # 汇总表(含 i18n 列)
         └── <slug>/
-            ├── record.json                # ⭐ 源语言主记录(入 DB)
+            ├── record.json                # ⭐ 源语言主记录(crawler invariant)
             ├── record.full.json           # ⭐ 内联版(record + .i18n) 仅翻译后生成
+            ├── record.import.json         # ⭐ dashboard 导入格式 ({version,data:[]} per-locale)
             ├── meta.json                  # 运行元数据(cost/turns/overrides/i18n)
             └── _debug/                    # 审计 / 排障
                 ├── r1.envelope.json
@@ -221,13 +222,15 @@ RootData API（并行）       ──┘                                    │
 
 1. 检查 `out/<run>/summary.tsv`(含 i18n 成功率列)。
 2. 对每个 `<slug>/record.json`: 验证成员、融资、审计信息。
-3. 导入 DB 前，移除实体暂不支持的字段：
+3. 导入 dashboard 直接用 **`record.import.json`** — 已经是 dashboard 期望的 `{version, exportedAt, data:[...]}` 信封格式,每个 locale 一条记录,`sources` 已 strip:
    ```bash
-   jq 'del(.providerWebsite, .providerXLink, .providerDiscordLink, .sources)' \
-     out/<run>/<slug>/record.json
+   curl -X POST $DASHBOARD/api/earn-protocol-info/import \
+     -H "Content-Type: application/json" \
+     -d @out/<run>/<slug>/record.import.json
    ```
-4. POST 到 `earn-protocol-info.controller.ts` 的创建端点。
-5. **如翻译了**: POST `record.full.json` 的 `.i18n` 字段到对应 i18n 端点,或直接用整份 `record.full.json`(带 `.i18n` 内联)。
+   即使没翻译,`record.import.json` 也包含 1 条 `locale: "en"` 的源语言记录。
+4. **`record.json`** 仍然保留(crawler invariant 严格 schema 通过的源语言记录,人工审核用)。
+5. **`record.full.json`** 仍然保留(嵌套 i18n 的 inline 版本,前端预览方便)。
 
 ## Schema 约定
 

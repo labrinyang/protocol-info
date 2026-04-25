@@ -4,6 +4,32 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-04-25
+
+### Added
+- New output `out/<ts>/<slug>/record.import.json` — dashboard-ready
+  `{version, exportedAt, data:[...]}` envelope, one entry per locale
+  (source `en` plus each translated locale). Replaces the manual
+  `jq 'del(...)'` import workflow. Always emitted for OK slugs even
+  when `--i18n none`.
+- `dashboard_locale_for` helper that maps our underscore-mixed-case
+  locale codes (`en_US`, `zh_CN`, `pt_BR`, ...) to dashboard's
+  hyphen-lowercase format (`en`, `zh-cn`, `pt-br`, ...). Drops
+  redundant region suffixes when there's only one variant per language.
+
+### Changed
+- `establishment` schema range loosened from `2008-2100` to `1900-2030`
+  to match dashboard's `1900~currentYear+1` constraint.
+- Import documentation in README now points at `record.import.json` as
+  the canonical dashboard-import artifact (the old `del(.providerWebsite,
+  .providerXLink, .providerDiscordLink, .sources)` recipe was based on
+  an outdated assumption — dashboard accepts those fields).
+
+### Notes
+- Dashboard supports 21 locales; we currently configure 19. Two are
+  still missing — locale catalog will be updated when the authoritative
+  list is provided.
+
 ## [0.3.0] — 2026-04-24
 
 ### Added

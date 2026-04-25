@@ -46,9 +46,9 @@
     },
     "establishment": {
       "type": "integer",
-      "minimum": 2008,
-      "maximum": 2100,
-      "description": "Founding year. Required — crawler must find it (stricter than dashboard DTO which treats it as optional)."
+      "minimum": 1900,
+      "maximum": 2030,
+      "description": "Founding year. Required — crawler must find it (stricter than dashboard DTO which treats it as optional). Range matches dashboard's 1900~currentYear+1 with reasonable headroom; bump max yearly."
     },
     "members": {
       "type": "array",
