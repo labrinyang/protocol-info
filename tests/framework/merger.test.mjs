@@ -140,4 +140,68 @@ export const tests = [
       assert.equal(m.gaps.some(g => g.reason === 'uncited_r2_change'), false);
     },
   },
+  {
+    name: 'mergeR2 keeps higher-confidence R1 finding when R2 re-emits same field at lower confidence',
+    fn: async () => {
+      const r1 = {
+        record: { description: 'X' },
+        findings: [{ field: 'description', value: 'X', source: 'https://r1', confidence: 0.92 }],
+        gaps: [],
+      };
+      const r2 = {
+        record: { description: 'X' },
+        findings: [{ field: 'description', value: 'X', source: 'https://r2', confidence: 0.5 }],
+        changes: [],
+        gaps: [],
+      };
+      const m = mergeR2(r1, r2);
+      const dF = m.findings.filter(f => f.field === 'description');
+      assert.equal(dF.length, 1);
+      assert.equal(dF[0].confidence, 0.92);
+      assert.equal(dF[0].source, 'https://r1');
+    },
+  },
+  {
+    name: 'mergeR2 emits r2_added_field_uncited gap for R2-only leaf field with no provenance',
+    fn: async () => {
+      const r1 = {
+        record: { description: 'X' },
+        findings: [{ field: 'description', value: 'X', source: 'https://x', confidence: 0.9 }],
+        gaps: [],
+      };
+      const r2 = {
+        record: { description: 'X', tokenSymbol: 'FOO' },
+        findings: [],
+        changes: [],
+        gaps: [],
+      };
+      const m = mergeR2(r1, r2);
+      assert.equal(m.record.tokenSymbol, 'FOO');
+      assert.ok(m.gaps.some(g => g.field === 'tokenSymbol' && g.reason === 'r2_added_field_uncited'));
+    },
+  },
+  {
+    name: 'mergeR2 accepts array additions when R2 cites the new item via entity_key',
+    fn: async () => {
+      const r1 = {
+        record: { members: [{ memberName: 'A', memberLink: { xLink: 'https://x.com/a' } }] },
+        findings: [{ field: 'members', value: [], source: 'https://x', confidence: 0.92 }],
+        gaps: [],
+      };
+      const r2 = {
+        record: {
+          members: [
+            { memberName: 'A', memberLink: { xLink: 'https://x.com/a' } },
+            { memberName: 'B', memberLink: { xLink: 'https://x.com/b' } },
+          ],
+        },
+        findings: [{ field: 'members[1]', entity_key: 'member:x:https://x.com/b', value: { memberName: 'B' }, source: 'https://blog.example.com/b-joins', confidence: 0.9 }],
+        changes: [{ field: 'members[1]', entity_key: 'member:x:https://x.com/b', before: null, after: { memberName: 'B' }, reason: 'announcement', source: 'https://blog.example.com/b-joins', confidence: 0.9 }],
+        gaps: [],
+      };
+      const m = mergeR2(r1, r2);
+      assert.equal(m.record.members.length, 2);
+      assert.equal(m.gaps.some(g => g.reason && g.reason.includes('r2_uncited_high_conf_change_suppressed')), false);
+    },
+  },
 ];

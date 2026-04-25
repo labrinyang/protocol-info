@@ -102,7 +102,27 @@ function evidenceFor(entries, fieldPath, entityKeys = new Set()) {
 
 function mergeRecursive(r1Val, r2Val, path, r1Findings, r2Findings, r2Changes, gaps) {
   if (r2Val === undefined) return r1Val;
-  if (r1Val === undefined) return r2Val;
+  if (r1Val === undefined) {
+    // R2 added this key. For leaves, audit; for objects, recurse with an empty R1 side.
+    const isObj = r2Val && typeof r2Val === 'object' && !Array.isArray(r2Val);
+    if (isObj) {
+      return mergeRecursive({}, r2Val, path, r1Findings, r2Findings, r2Changes, gaps);
+    }
+    // Leaf addition: audit
+    const entityKeys = entityKeysFor(r2Val);
+    const r2f = evidenceFor(r2Findings, path, entityKeys);
+    const r2c = evidenceFor(r2Changes, path, entityKeys);
+    if (!r2f && !r2c) {
+      gaps.push({
+        field: path,
+        reason: 'r2_added_field_uncited',
+        tried: [],
+        stage: 'r2',
+        subtask: 'reconcile',
+      });
+    }
+    return r2Val;
+  }
 
   if (r1Val && r2Val && typeof r1Val === 'object' && typeof r2Val === 'object'
       && !Array.isArray(r1Val) && !Array.isArray(r2Val)) {
@@ -149,9 +169,21 @@ export function mergeR2(r1, r2) {
     auditGaps
   );
 
+  const r2ByField = new Map((r2.findings || []).map(f => [f.field, f]));
+  const r1ByField = new Map((r1.findings || []).map(f => [f.field, f]));
   const findings = [
-    ...(r1.findings || []).filter(f => !(r2.findings || []).some(rf => rf.field === f.field)),
-    ...((r2.findings || []).map(f => ({ ...f, stage: 'r2', subtask: 'reconcile' }))),
+    // Keep R1 findings whose R2 counterpart (if any) has lower confidence
+    ...(r1.findings || []).filter(f => {
+      const rf = r2ByField.get(f.field);
+      return !rf || (rf.confidence ?? 0) < (f.confidence ?? 0);
+    }),
+    // Keep R2 findings whose R1 counterpart (if any) has lower-or-equal confidence (R2 ties win)
+    ...(r2.findings || [])
+      .filter(rf => {
+        const f = r1ByField.get(rf.field);
+        return !f || (rf.confidence ?? 0) >= (f.confidence ?? 0);
+      })
+      .map(f => ({ ...f, stage: 'r2', subtask: 'reconcile' })),
   ];
 
   const r2GapFields = new Set((r2.gaps || []).map(g => g.field));
