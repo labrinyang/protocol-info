@@ -75,7 +75,7 @@ unset _env_candidate
 SCHEMA_FILE="$SCRIPT_DIR/consumers/protocol-info/schemas/full.json"
 SYSTEM_PROMPT_FILE="$SCRIPT_DIR/consumers/protocol-info/prompts/system.md"
 USER_TMPL_FILE="$SCRIPT_DIR/consumers/protocol-info/prompts/user.md.tmpl"
-RECONCILE_TMPL_FILE="$SCRIPT_DIR/consumers/protocol-info/prompts/reconcile.md.tmpl"
+RECONCILE_TMPL_FILE="$SCRIPT_DIR/consumers/protocol-info/prompts/reconcile.user.md.tmpl"
 I18N_SYSTEM_FILE="$SCRIPT_DIR/consumers/protocol-info/prompts/i18n.system.md"
 I18N_TMPL_FILE="$SCRIPT_DIR/consumers/protocol-info/prompts/i18n.user.md.tmpl"
 I18N_SCHEMA_FILE="$SCRIPT_DIR/consumers/protocol-info/schemas/i18n.json"
