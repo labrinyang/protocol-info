@@ -389,7 +389,6 @@ run_one() {
     return 0
   fi
 
-  SESSION_ID=$(jq -r '.session_id // empty' "$r1_env" 2>/dev/null)
   r1_cost=$(jq -r '.total_cost_usd // 0' "$r1_env" 2>/dev/null || echo 0)
   [[ "$r1_cost" =~ ^[0-9]+(\.[0-9]+)?$ ]] || r1_cost=0
   final_source="r1"
@@ -400,11 +399,10 @@ run_one() {
   funding_severity="none"
 
   # ── Phase 3: Round 2 reconciliation ──
-  # Phase 6.3 will reintroduce a clean Node-based R2 invocation
-  # (framework/cli/r2.mjs) operating on the merged fan-out record.
-  # Until then, the merged R1 record is the final record.
+  # R2 runs a fresh Claude session per round (no session-resume — incompatible
+  # with fan-out R1, where each subtask has its own session_id). The reconcile
+  # prompt receives the merged record + full evidence + handoff_notes inline.
   api_status=$(if [[ $ROOTDATA_ENABLED -eq 1 && $api_exit -eq 0 ]]; then echo "ok"; elif [[ $ROOTDATA_ENABLED -eq 1 ]]; then echo "exit_$api_exit"; else echo "disabled"; fi)
-  # final_source stays "r1" (the merged fan-out record is the final record)
 
   # Apply validated_overrides via jq patch (independent of R2 — runs whenever rootdata
   # produced a packet; preserves Phase-2/3 behavior. Will be re-evaluated in Phase 6.)
@@ -422,6 +420,51 @@ run_one() {
       overrides_list+=("providerXLink")
     fi
     overrides_applied=$(printf '%s,' "${overrides_list[@]}" 2>/dev/null | sed 's/,$//')
+  fi
+
+  # ── Phase 3.5: Evidence-diff enrichment (post-R1, pre-R2) ──
+  if [[ $ROOTDATA_ENABLED -eq 1 && $api_exit -eq 0 && -f "$rootdata_pkt" ]]; then
+    set +e
+    node "$SCRIPT_DIR/framework/cli/evidence-diff.mjs" \
+      --evidence-in "$rootdata_pkt" \
+      --record-in "$rec" \
+      --evidence-out "$rootdata_pkt" \
+      2>> "$debug_dir/evidence-diff.stderr.log"
+    set -e
+  fi
+
+  # ── Phase 3.6: R2 reconcile / synthesis ──
+  set +e
+  node "$SCRIPT_DIR/framework/cli/r2.mjs" \
+    --manifest "$SCRIPT_DIR/consumers/protocol-info/manifest.json" \
+    --record-in "$rec" \
+    --findings-in "$slug_dir/findings.json" \
+    --gaps-in "$slug_dir/gaps.json" \
+    --handoff-in "$slug_dir/handoff_notes.json" \
+    --evidence "$rootdata_pkt" \
+    --record-out "$rec.r2" \
+    --findings-out "$slug_dir/findings.json.r2" \
+    --changes-out "$slug_dir/changes.json.r2" \
+    --gaps-out "$slug_dir/gaps.json.r2" \
+    --debug-dir "$debug_dir/r2" \
+    2> "$r2_err"
+  r2_exit=$?
+  set -e
+
+  if [[ $r2_exit -eq 0 && -s "$rec.r2" ]]; then
+    mv "$rec.r2" "$rec"
+    [[ -f "$slug_dir/findings.json.r2" ]] && mv "$slug_dir/findings.json.r2" "$slug_dir/findings.json"
+    [[ -f "$slug_dir/changes.json.r2" ]] && mv "$slug_dir/changes.json.r2" "$slug_dir/changes.json"
+    [[ -f "$slug_dir/gaps.json.r2" ]] && mv "$slug_dir/gaps.json.r2" "$slug_dir/gaps.json"
+    final_source="r2"
+    # Aggregate R2 cost across rounds from envelope files
+    r2_cost=$(find "$debug_dir/r2" -maxdepth 1 -name 'reconcile.round*.envelope.json' 2>/dev/null \
+              | xargs -I {} jq -r '.total_cost_usd // 0' {} 2>/dev/null \
+              | awk 'BEGIN{s=0} {s+=$1} END{printf "%.6f", s}' 2>/dev/null || echo 0)
+    [[ "$r2_cost" =~ ^[0-9]+(\.[0-9]+)?$ ]] || r2_cost=0
+  else
+    echo "  -> R2 reconcile failed (exit $r2_exit); keeping R1 record" >&2
+    rm -f "$rec.r2" "$slug_dir/findings.json.r2" "$slug_dir/changes.json.r2" "$slug_dir/gaps.json.r2"
   fi
 
   # ── Phase 4: Post-processing (same as original) ──
@@ -455,7 +498,12 @@ run_one() {
   # ── Write meta.json (运行元数据,不论 schema pass/fail) ──
   local r1_turns_v=$(jq -r '.num_turns // 0' "$r1_env" 2>/dev/null || echo 0)
   local r2_turns_v=0
-  [[ -f "$r2_env" ]] && r2_turns_v=$(jq -r '.num_turns // 0' "$r2_env" 2>/dev/null || echo 0)
+  if [[ -d "$debug_dir/r2" ]]; then
+    r2_turns_v=$(find "$debug_dir/r2" -maxdepth 1 -name 'reconcile.round*.envelope.json' 2>/dev/null \
+                 | xargs -I {} jq -r '.num_turns // 0' {} 2>/dev/null \
+                 | awk 'BEGIN{s=0} {s+=$1} END{print s+0}' 2>/dev/null || echo 0)
+    [[ "$r2_turns_v" =~ ^[0-9]+$ ]] || r2_turns_v=0
+  fi
   jq -n \
     --argjson r1_cost "$r1_cost" \
     --argjson r1_turns "$r1_turns_v" \

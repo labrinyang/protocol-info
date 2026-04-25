@@ -1,12 +1,22 @@
 {
   "name": "protocol-info",
-  "version": "0.5.0-wip",
+  "version": "0.6.0-wip",
   "schemas": { "full": "./schemas/full.json" },
   "fetchers": [
     { "name": "rootdata", "module": "./fetchers/rootdata.mjs", "required_env": ["ROOTDATA_API_KEY"], "optional": true, "search": { "enabled": true, "types": ["project", "person"], "max_queries_per_round": 4 } },
     { "name": "defillama", "module": "./fetchers/defillama.mjs", "required_env": [], "optional": true }
   ],
   "system_prompt": "./prompts/system.md",
+  "reconcile": {
+    "enabled": true,
+    "prompt": "./prompts/reconcile.user.md.tmpl",
+    "max_turns": 30,
+    "max_budget_usd": 1.50,
+    "mode": "deep",
+    "max_research_rounds": 2,
+    "max_search_queries_per_round": 4,
+    "fast_skip_allowed": false
+  },
   "subtasks": [
     {
       "name": "metadata",
