@@ -173,9 +173,6 @@ flush_provider() {
   if [[ -z "$_dn" ]]; then
     echo "错误: --display-name 为必填参数" >&2; exit 1
   fi
-  if [[ -z "$_type" ]]; then
-    echo "错误: --type 为必填参数" >&2; exit 1
-  fi
   local s="${_slug:-$(slugify "$_dn")}"
   PROVIDERS+=("$(jq -nc \
     --arg slug "$s" \
@@ -291,7 +288,11 @@ run_one() {
   local rootdata_id=$(echo "$provider_json" | jq -r '.rootdataId // empty')
   local summary_row_file="$OUT_DIR/.summary-rows/$(printf '%04d' "$INDEX")-$slug.tsv"
 
-  echo "[$INDEX/$TOTAL] $slug ($type)"
+  if [[ -n "$type" ]]; then
+    echo "[$INDEX/$TOTAL] $slug ($type)"
+  else
+    echo "[$INDEX/$TOTAL] $slug (type: model-inferred)"
+  fi
 
   # Render user prompt template
   user_prompt=$(jq -rn \
@@ -325,7 +326,7 @@ run_one() {
   local rec_full="$slug_dir/record.full.json"
   local meta="$slug_dir/meta.json"
 
-  local r1_env="$debug_dir/r1.envelope.json"
+  local r1_env="$debug_dir/r1/metadata.envelope.json"
   local r1_err="$debug_dir/r1.stderr.log"
   local r2_env="$debug_dir/r2.envelope.json"
   local r2_err="$debug_dir/r2.stderr.log"
@@ -340,14 +341,16 @@ run_one() {
     --slug "$slug" \
     --provider "$provider" \
     --display-name "$display" \
-    --type "$type" \
+    ${type:+--type "$type"} \
     --hints "$hints" \
     ${MODEL:+--model "$MODEL"} \
     --evidence "$rootdata_pkt" \
-    --envelope-out "$r1_env" \
-    --slice-out "$rec" \
+    --record-out "$rec" \
+    --debug-dir "$debug_dir/r1" \
     > /dev/null 2> "$r1_err" &
   pid_claude=$!
+  # r1.mjs writes per-subtask envelopes; metadata is canonical for R2 resume
+  r1_env="$debug_dir/r1/metadata.envelope.json"
 
   api_exit=1
   if [[ $ROOTDATA_ENABLED -eq 1 ]]; then

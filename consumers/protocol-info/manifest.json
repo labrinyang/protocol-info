@@ -9,12 +9,36 @@
   "system_prompt": "./prompts/system.md",
   "subtasks": [
     {
-      "name": "full",
-      "prompt": "./prompts/user.md.tmpl",
-      "schema_slice": "./schemas/full.json",
-      "max_turns": 40,
-      "max_budget_usd": 2.00,
-      "evidence_keys": ["rootdata", "defillama"]
+      "name": "metadata",
+      "prompt": "./prompts/metadata.user.md.tmpl",
+      "schema_slice": "./schemas/metadata.slice.json",
+      "max_turns": 15,
+      "max_budget_usd": 0.50,
+      "evidence_keys": ["rootdata.anchors", "rootdata.validated_overrides", "defillama.category", "defillama.chains"]
+    },
+    {
+      "name": "team",
+      "prompt": "./prompts/team.user.md.tmpl",
+      "schema_slice": "./schemas/team.slice.json",
+      "max_turns": 25,
+      "max_budget_usd": 0.80,
+      "evidence_keys": ["rootdata.member_candidates"]
+    },
+    {
+      "name": "funding",
+      "prompt": "./prompts/funding.user.md.tmpl",
+      "schema_slice": "./schemas/funding.slice.json",
+      "max_turns": 15,
+      "max_budget_usd": 0.50,
+      "evidence_keys": ["rootdata.api_funding"]
+    },
+    {
+      "name": "audits",
+      "prompt": "./prompts/audits.user.md.tmpl",
+      "schema_slice": "./schemas/audits.slice.json",
+      "max_turns": 20,
+      "max_budget_usd": 0.50,
+      "evidence_keys": []
     }
   ]
 }

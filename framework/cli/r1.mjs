@@ -1,12 +1,17 @@
-// framework/cli/r1.mjs — bash-callable R1 executor.
-// Reads manifest + evidence packet, renders prompt, runs subtask-runner,
-// writes envelope + parsed slice to disk.
-//
-// In phase 3 there's a single subtask 'full'. Phase 4 will dispatch all subtasks.
+// framework/cli/r1.mjs — fan-out R1 executor.
+// For each subtask in manifest:
+//   - extract relevant evidence subtree
+//   - render prompt
+//   - call subtask-runner
+//   - collect {slice, ok, error, cost, turns, session_id, envelope}
+// Then merge slices via merger.mjs and write record + per-subtask envelopes.
 
-import { readFile, writeFile } from 'node:fs/promises';
-import { loadManifest } from '../manifest-loader.mjs';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { loadManifest, selectEvidence } from '../manifest-loader.mjs';
 import { runSubtask } from '../subtask-runner.mjs';
+import { mergeSlices } from '../merger.mjs';
+import { runWithLimit } from '../parallel-runner.mjs';
 
 function arg(name, def) {
   const i = process.argv.indexOf(`--${name}`);
@@ -17,64 +22,83 @@ const manifestPath = arg('manifest');
 const slug = arg('slug');
 const provider = arg('provider', slug);
 const displayName = arg('display-name');
-const type = arg('type');
+// `type` is OPTIONAL: Phase 4 metadata subtask infers it from evidence.
+// Accepted as a soft hint; when supplied it's surfaced in {{HINTS}} only,
+// never substituted as a fact in metadata's prompt.
+const type = arg('type', '');
 const hints = arg('hints', '');
 const evidencePath = arg('evidence');
-const envelopeOut = arg('envelope-out');
-const sliceOut = arg('slice-out');
+const recordOut = arg('record-out');
+const debugDir = arg('debug-dir');
 const model = arg('model', null);
 const claudeBin = process.env.CLAUDE_BIN || 'claude';
+const concurrency = parseInt(arg('concurrency', '4'), 10);
 
-if (!manifestPath || !slug || !displayName || !type || !envelopeOut || !sliceOut) {
-  console.error('usage: r1.mjs --manifest M --slug S --display-name D --type T [--provider P] [--hints H] [--model M] --evidence E --envelope-out OUT --slice-out OUT2');
+if (!manifestPath || !slug || !displayName || !recordOut || !debugDir) {
+  console.error('usage: r1.mjs --manifest M --slug S --display-name D [--type T] [--provider P] [--hints H] [--model M] --evidence E --record-out R --debug-dir D2');
   process.exit(2);
 }
 
+await mkdir(debugDir, { recursive: true });
+
 const manifest = await loadManifest(manifestPath);
-const subtask = manifest._abs.subtasks[0];   // phase 3: single subtask
-const schemaSlice = JSON.parse(await readFile(subtask.schema_slice_abs, 'utf8'));
 const systemPrompt = await readFile(manifest._abs.system_prompt, 'utf8');
-const userTmpl = await readFile(subtask.prompt_abs, 'utf8');
+
 // Evidence is loaded defensively (try/catch) because in run.sh's parallel pipeline
-// the fetcher writes $rootdata_pkt concurrently with r1.mjs starting; in Phase 3
-// the evidence is not injected into the prompt anyway (R1 behavior preserved).
-//
-// Phase 4 prereq: once subtasks consume evidence_keys to render prompts, run.sh
-// must `wait $pid_api` BEFORE invoking r1.mjs, otherwise R1 silently runs with
-// empty evidence and produces a degraded record with no audit trail.
+// the fetcher writes $rootdata_pkt concurrently with r1.mjs starting; once Phase 4
+// subtasks consume evidence_keys to render prompts, run.sh `wait $pid_api` MUST
+// happen BEFORE invoking r1.mjs, otherwise R1 silently runs with empty evidence
+// and produces a degraded record with no audit trail.
 let evidence = {};
 if (evidencePath) {
   try { evidence = JSON.parse(await readFile(evidencePath, 'utf8')); }
-  catch { /* file not yet ready or missing; phase 3 doesn't use it */ }
+  catch { /* fetcher hasn't written packet yet; proceed with empty evidence */ }
 }
 
 function render(t, vars) {
   return Object.entries(vars).reduce((s, [k, v]) => s.replaceAll(`{{${k}}}`, v), t);
 }
 
-const userPrompt = render(userTmpl, {
-  SLUG: slug,
-  PROVIDER: provider,
-  DISPLAY_NAME: displayName,
-  TYPE: type,
-  HINTS: hints,
-  SCHEMA: JSON.stringify(schemaSlice, null, 2),
+const tasks = manifest._abs.subtasks.map(st => async () => {
+  const slice = JSON.parse(await readFile(st.schema_slice_abs, 'utf8'));
+  const userTmpl = await readFile(st.prompt_abs, 'utf8');
+  const evSubset = selectEvidence(evidence, st.evidence_keys || []);
+  const userPrompt = render(userTmpl, {
+    SLUG: slug,
+    PROVIDER: provider,
+    DISPLAY_NAME: displayName,
+    TYPE: type,    // empty string if --type not passed; metadata template doesn't use {{TYPE}} anyway
+    HINTS: hints,
+    SCHEMA: JSON.stringify(slice, null, 2),
+    EVIDENCE: JSON.stringify(evSubset, null, 2),
+  });
+
+  console.error(`[r1:${st.name}] starting (max_budget=$${st.max_budget_usd} max_turns=${st.max_turns})`);
+  const r = await runSubtask({
+    claudeBin, subtask: st, systemPrompt, userPrompt, schemaSlice: slice, model,
+  });
+
+  if (r.envelope) {
+    await writeFile(join(debugDir, `${st.name}.envelope.json`), JSON.stringify(r.envelope, null, 2));
+  }
+
+  return { name: st.name, ...r };
 });
 
-const result = await runSubtask({
-  claudeBin,
-  subtask,
-  systemPrompt,
-  userPrompt,
-  schemaSlice,
-  model,
-});
+const results = await runWithLimit(concurrency, tasks);
+const merge = mergeSlices(results);
 
-if (result.envelope) await writeFile(envelopeOut, JSON.stringify(result.envelope, null, 2));
-if (result.ok) {
-  await writeFile(sliceOut, JSON.stringify(result.slice, null, 2));
-  console.error(`[r1] ok cost=$${result.cost_usd} turns=${result.turns} session=${result.session_id}`);
-  process.exit(0);
+await writeFile(recordOut, JSON.stringify(merge.record, null, 2));
+
+console.error(`[r1] done — ${results.filter(r => r.ok).length}/${results.length} subtasks ok`);
+if (merge.failed_subtasks.length > 0) {
+  console.error(`[r1] failed: ${merge.failed_subtasks.map(f => `${f.name} (${f.reason})`).join(', ')}`);
 }
-console.error(`[r1] fail: ${result.error}`);
-process.exit(1);
+
+const status = {
+  subtasks: results.map(r => ({ name: r.name, ok: r.ok, cost_usd: r.cost_usd, turns: r.turns, session_id: r.session_id, error: r.error || null })),
+  failed_subtasks: merge.failed_subtasks,
+};
+await writeFile(join(debugDir, 'r1-status.json'), JSON.stringify(status, null, 2));
+
+process.exit(merge.failed_subtasks.length === results.length ? 1 : 0);  // exit fail only if 0/N succeeded

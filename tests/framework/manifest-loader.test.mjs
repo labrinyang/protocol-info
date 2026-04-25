@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { writeFile, mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadManifest } from '../../framework/manifest-loader.mjs';
+import { loadManifest, selectEvidence } from '../../framework/manifest-loader.mjs';
 
 async function withManifest(json, fn) {
   const dir = await mkdtemp(join(tmpdir(), 'mf-'));
@@ -61,6 +61,21 @@ export const tests = [
       }, async (path) => {
         await assert.rejects(() => loadManifest(path), /missing referenced file/);
       });
+    },
+  },
+  {
+    name: 'selectEvidence picks subtree by dot-path',
+    fn: async () => {
+      const packet = { rootdata: { anchors: { x: 1 }, members: [] }, defillama: { tvl: 100 } };
+      const out = selectEvidence(packet, ['rootdata.anchors', 'defillama.tvl']);
+      assert.deepEqual(out, { rootdata: { anchors: { x: 1 } }, defillama: { tvl: 100 } });
+    },
+  },
+  {
+    name: 'selectEvidence skips missing paths silently',
+    fn: async () => {
+      const out = selectEvidence({ a: 1 }, ['x.y.z']);
+      assert.deepEqual(out, {});
     },
   },
 ];

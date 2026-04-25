@@ -95,3 +95,27 @@ export async function loadManifest(manifestPath) {
 
   return manifest;
 }
+
+// Extract a subtree of the evidence packet by jq-style path keys.
+// `keys`: array of dot-paths, e.g. ["rootdata.anchors", "defillama.category"]
+// Returns an object { rootdata: { anchors: ... }, defillama: { category: ... } }
+export function selectEvidence(packet, keys) {
+  const out = {};
+  for (const path of keys) {
+    const parts = path.split('.');
+    let src = packet;
+    let dst = out;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const p = parts[i];
+      if (!src || typeof src !== 'object' || !(p in src)) { src = null; break; }
+      src = src[p];
+      if (!(p in dst)) dst[p] = {};
+      dst = dst[p];
+    }
+    if (src && typeof src === 'object') {
+      const last = parts[parts.length - 1];
+      if (last in src) dst[last] = src[last];
+    }
+  }
+  return out;
+}
