@@ -1,0 +1,111 @@
+import { strict as assert } from 'node:assert';
+import { writeFile, readFile, mkdtemp, rm, chmod } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { runClaude } from '../../framework/claude-wrapper.mjs';
+
+async function withStub(scriptBody, fn) {
+  const dir = await mkdtemp(join(tmpdir(), 'claude-stub-'));
+  const claudePath = join(dir, 'claude');
+  await writeFile(claudePath, `#!/bin/bash\n${scriptBody}\n`);
+  await chmod(claudePath, 0o755);
+  try {
+    return await fn(claudePath);
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+}
+
+export const tests = [
+  {
+    name: 'returns parsed envelope on success',
+    fn: async () => {
+      await withStub('cat > /dev/null; echo \'{"session_id":"s","total_cost_usd":0.01,"num_turns":1,"structured_output":{"ok":true}}\'', async (claudePath) => {
+        const env = await runClaude({
+          claudeBin: claudePath,
+          systemPrompt: 'sys',
+          userPrompt: 'usr',
+          schemaJson: { type: 'object' },
+          maxTurns: 5,
+          maxBudgetUsd: 0.50,
+        });
+        assert.equal(env.session_id, 's');
+        assert.deepEqual(env.structured_output, { ok: true });
+      });
+    },
+  },
+  {
+    name: 'throws on non-zero exit',
+    fn: async () => {
+      await withStub('cat > /dev/null; echo "boom" >&2; exit 2', async (claudePath) => {
+        await assert.rejects(
+          () => runClaude({ claudeBin: claudePath, userPrompt: 'x', schemaJson: {}, maxTurns: 1, maxBudgetUsd: 0.01 }),
+          /exit 2/
+        );
+      });
+    },
+  },
+  {
+    name: 'retries once on transient 5xx-style failure',
+    fn: async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'claude-retry-'));
+      const counterPath = join(dir, 'count');
+      const claudePath = join(dir, 'claude');
+      await writeFile(counterPath, '0');
+      const script = `#!/bin/bash
+cat > /dev/null
+n=$(cat ${counterPath})
+echo $((n+1)) > ${counterPath}
+if [ "$n" = "0" ]; then echo "529 overloaded" >&2; exit 1; fi
+echo '{"session_id":"s","total_cost_usd":0.01,"num_turns":1,"structured_output":{"ok":true}}'
+`;
+      await writeFile(claudePath, script);
+      await chmod(claudePath, 0o755);
+      try {
+        const env = await runClaude({
+          claudeBin: claudePath,
+          userPrompt: 'x',
+          schemaJson: {},
+          maxTurns: 1,
+          maxBudgetUsd: 0.01,
+          retryOnTransient: true,
+        });
+        assert.equal(env.session_id, 's');
+      } finally {
+        await rm(dir, { recursive: true });
+      }
+    },
+  },
+  {
+    name: 'does not retry a transient failure more than once',
+    fn: async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'claude-one-retry-'));
+      const counterPath = join(dir, 'count');
+      const claudePath = join(dir, 'claude');
+      await writeFile(counterPath, '0');
+      const script = `#!/bin/bash
+cat > /dev/null
+n=$(cat ${counterPath})
+echo $((n+1)) > ${counterPath}
+echo "529 overloaded" >&2
+exit 1
+`;
+      await writeFile(claudePath, script);
+      await chmod(claudePath, 0o755);
+      try {
+        await assert.rejects(() => runClaude({
+          claudeBin: claudePath,
+          userPrompt: 'x',
+          schemaJson: {},
+          maxTurns: 1,
+          maxBudgetUsd: 0.01,
+          retryOnTransient: true,
+        }), /529|overloaded|claude exit/);
+        const count = Number(await readFile(counterPath, 'utf8'));
+        assert.equal(count, 2);
+      } finally {
+        await rm(dir, { recursive: true });
+      }
+    },
+  },
+];
