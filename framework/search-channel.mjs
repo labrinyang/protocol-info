@@ -12,7 +12,13 @@ export async function runSearchRequests({ requests, fetchers, maxQueries, env, l
       logger?.warn?.(`[search] skipped unknown channel ${req.channel}`);
       continue;
     }
-    const result = await f.search({ query: req.query, type: req.type, limit: req.limit || 5, env, logger });
+    let result;
+    try {
+      result = await f.search({ query: req.query, type: req.type, limit: req.limit || 5, env, logger });
+    } catch (err) {
+      logger?.warn?.(`[search] ${req.channel} threw: ${err.message || err}`);
+      result = { channel: req.channel, query: req.query, ok: false, error: String(err.message || err), results: [] };
+    }
     out.push({ round, reason: req.reason || '', ...result });
   }
   return out;
