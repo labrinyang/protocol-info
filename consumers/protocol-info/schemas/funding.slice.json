@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "consumers/protocol-info/schemas/funding.slice.json",
+  "title": "EarnProtocolInfo funding slice",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["fundingRounds"],
+  "properties": {
+    "fundingRounds": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["round", "date", "amount", "valuation", "investors"],
+        "properties": {
+          "round":     { "type": "string", "minLength": 1, "maxLength": 80 },
+          "date":      { "type": "string", "pattern": "^\\d{4}-\\d{2}(-\\d{2})?$" },
+          "amount":    { "type": ["string", "null"], "maxLength": 32 },
+          "valuation": { "type": ["string", "null"], "maxLength": 32 },
+          "investors": { "type": "array", "maxItems": 50, "items": { "type": "string", "minLength": 1, "maxLength": 120 } }
+        }
+      }
+    }
+  }
+}

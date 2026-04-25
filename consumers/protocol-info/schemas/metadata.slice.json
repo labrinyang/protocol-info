@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "consumers/protocol-info/schemas/metadata.slice.json",
+  "title": "EarnProtocolInfo metadata slice",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "slug", "provider", "displayName", "type",
+    "description", "tags", "establishment",
+    "providerWebsite", "providerXLink", "providerDiscordLink",
+    "status"
+  ],
+  "properties": {
+    "slug":        { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,63}$" },
+    "provider":    { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+    "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "type":        { "type": "string", "enum": ["fixed_rate", "simple_earn", "staking"] },
+    "description": { "type": ["string", "null"], "maxLength": 1000 },
+    "tags":        { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 32 }, "minItems": 1, "maxItems": 20 },
+    "establishment": { "type": "integer", "minimum": 1900, "maximum": 2030 },
+    "providerWebsite":     { "type": "string", "format": "uri", "maxLength": 500 },
+    "providerXLink":       { "type": "string", "format": "uri", "maxLength": 500 },
+    "providerDiscordLink": { "type": ["string", "null"], "format": "uri", "maxLength": 500 },
+    "status": { "type": "string", "enum": ["draft", "active", "archived"] }
+  }
+}
