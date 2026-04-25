@@ -11,8 +11,8 @@
 //        --slug ethena --display-name "Ethena" \
 //        [--rootdata-id 8583] --output /path/to/rootdata-packet.json
 //
-// CLI exit codes: 0=success, 1=API error, 2=no project found, 3=invalid args,
-//                 4=missing ROOTDATA_API_KEY env var.
+// CLI exit codes: 0=success, 1=fatal (API error or no project found),
+//                 3=invalid args, 4=missing ROOTDATA_API_KEY env var.
 
 import { writeFileSync } from 'node:fs';
 
@@ -24,6 +24,7 @@ const httpFetch = globalThis.fetch;
 
 // ── Public fetcher interface (FETCHER_INTERFACE.md) ────────────────────
 
+// `hints` is accepted but currently unused; reserved for future guided-search use.
 export default async function fetch({ slug, displayName, hints, rootdataId, env, logger }) {
   const apiKey = env?.ROOTDATA_API_KEY;
   if (!apiKey) {
