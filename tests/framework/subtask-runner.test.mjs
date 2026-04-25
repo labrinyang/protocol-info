@@ -73,4 +73,57 @@ export const tests = [
         `expected error_kind to be 'spawn_error' or null, got ${result.error_kind}`);
     },
   },
+  {
+    name: 'returns slice + findings + gaps + handoff_notes in β-shape',
+    fn: async () => {
+      const env = JSON.stringify({
+        session_id: 's', total_cost_usd: 0.05, num_turns: 3,
+        structured_output: {
+          slice: { members: [{ memberName: 'A' }] },
+          findings: [{ field: 'members[0].memberName', value: 'A', source: 'https://x.com/a', confidence: 0.9 }],
+          gaps: [],
+          handoff_notes: [{ target: 'funding', note: 'A appears in seed announcement', source: 'https://example.com/seed' }],
+        },
+      });
+      await withStubClaude(env, async (claudeBin) => {
+        const result = await runSubtask({
+          claudeBin,
+          subtask: { name: 'team', max_turns: 5, max_budget_usd: 0.5 },
+          systemPrompt: '', userPrompt: 'x',
+          schemaSlice: { type: 'object' },
+          findingsSchema: { type: 'array' },
+          gapsSchema: { type: 'array' },
+        });
+        assert.equal(result.ok, true);
+        assert.deepEqual(result.slice, { members: [{ memberName: 'A' }] });
+        assert.equal(result.findings.length, 1);
+        assert.equal(result.findings[0].confidence, 0.9);
+        assert.deepEqual(result.gaps, []);
+        assert.equal(result.handoff_notes.length, 1);
+        assert.deepEqual(result.search_requests, []);
+        assert.deepEqual(result.changes, []);
+      });
+    },
+  },
+  {
+    name: 'returns ok:false when β-mode envelope is missing findings',
+    fn: async () => {
+      const env = JSON.stringify({
+        session_id: 's', total_cost_usd: 0.05, num_turns: 3,
+        structured_output: { slice: { members: [] } },  // missing findings + gaps
+      });
+      await withStubClaude(env, async (claudeBin) => {
+        const result = await runSubtask({
+          claudeBin,
+          subtask: { name: 'team', max_turns: 5, max_budget_usd: 0.5 },
+          systemPrompt: '', userPrompt: 'x',
+          schemaSlice: { type: 'object' },
+          findingsSchema: { type: 'array' },
+          gapsSchema: { type: 'array' },
+        });
+        assert.equal(result.ok, false);
+        assert.match(result.error, /β output missing/);
+      });
+    },
+  },
 ];
