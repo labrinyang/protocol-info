@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { mergeSlices } from '../../framework/merger.mjs';
+import { mergeSlices, mergeR2 } from '../../framework/merger.mjs';
 
 export const tests = [
   {
@@ -64,6 +64,80 @@ export const tests = [
       assert.equal(result.handoff_notes.length, 1);
       assert.equal(result.handoff_notes[0].subtask, 'team');
       assert.equal(result.handoff_notes[0].stage, 'r1');
+    },
+  },
+  {
+    name: 'mergeR2 accepts new R2 value when R1 had no finding for the field',
+    fn: async () => {
+      const r1 = {
+        record: { description: 'old', tags: [] },
+        findings: [{ field: 'description', value: 'old', source: 'https://x', confidence: 0.9 }],
+        gaps: [],
+      };
+      const r2 = {
+        record: { description: 'old', tags: ['yield'] },
+        findings: [{ field: 'tags', value: ['yield'], source: 'https://y', confidence: 0.95 }],
+        changes: [{ field: 'tags', before: [], after: ['yield'], reason: 'DeFiLlama category confirms yield', source: 'https://defillama.com', confidence: 0.95 }],
+        gaps: [],
+      };
+      const m = mergeR2(r1, r2);
+      assert.deepEqual(m.record.tags, ['yield']);
+    },
+  },
+  {
+    name: 'mergeR2 rejects uncited R2 change to a high-confidence R1 field',
+    fn: async () => {
+      const r1 = {
+        record: { description: 'GOOD' },
+        findings: [{ field: 'description', value: 'GOOD', source: 'https://x', confidence: 0.92 }],
+        gaps: [],
+      };
+      const r2 = {
+        record: { description: 'WEAKER' },
+        findings: [],
+        changes: [],
+        gaps: [],
+      };
+      const m = mergeR2(r1, r2);
+      assert.equal(m.record.description, 'GOOD');
+      assert.ok(m.gaps.some(g => g.reason && g.reason.includes('r2_uncited_high_conf_change_suppressed')));
+    },
+  },
+  {
+    name: 'mergeR2 accepts R2 when R2 has higher confidence than R1',
+    fn: async () => {
+      const r1 = {
+        record: { description: 'guess' },
+        findings: [{ field: 'description', value: 'guess', source: 'https://x', confidence: 0.5 }],
+        gaps: [],
+      };
+      const r2 = {
+        record: { description: 'verified' },
+        findings: [{ field: 'description', value: 'verified', source: 'https://y', confidence: 0.95 }],
+        changes: [{ field: 'description', before: 'guess', after: 'verified', reason: 'official docs wording', source: 'https://y', confidence: 0.95 }],
+        gaps: [],
+      };
+      const m = mergeR2(r1, r2);
+      assert.equal(m.record.description, 'verified');
+    },
+  },
+  {
+    name: 'mergeR2 treats array descendant/entity_key evidence as explanation',
+    fn: async () => {
+      const r1 = {
+        record: { members: [{ memberName: 'A', oneLiner: 'old', memberLink: { xLink: 'https://x.com/a' } }] },
+        findings: [{ field: 'members', value: [], source: 'https://x', confidence: 0.92 }],
+        gaps: [],
+      };
+      const r2 = {
+        record: { members: [{ memberName: 'A', oneLiner: 'new', memberLink: { xLink: 'https://x.com/a' } }] },
+        findings: [{ field: 'members[0].oneLiner', entity_key: 'member:x:https://x.com/a', value: 'new', source: 'https://y', confidence: 0.95 }],
+        changes: [{ field: 'members[0].oneLiner', entity_key: 'member:x:https://x.com/a', before: 'old', after: 'new', reason: 'profile updated', source: 'https://y', confidence: 0.95 }],
+        gaps: [],
+      };
+      const m = mergeR2(r1, r2);
+      assert.equal(m.record.members[0].oneLiner, 'new');
+      assert.equal(m.gaps.some(g => g.reason === 'uncited_r2_change'), false);
     },
   },
 ];
