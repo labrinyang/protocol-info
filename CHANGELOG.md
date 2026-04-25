@@ -77,4 +77,4 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Initial bash pipeline: `run.sh` Round 1 + optional Round 2 via RootData.
 - Bounded-concurrency `--parallel` dispatcher.
-- Zero-dep `validate.mjs` JSON Schema validator.
+- Zero-dep schema validator (later moved to framework/schema-validator.mjs in 1.0.0).

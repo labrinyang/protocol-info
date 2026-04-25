@@ -1,24 +1,43 @@
 #!/usr/bin/env node
 // Zero-dep schema validator for earn-protocol-info output.
 // Usage:
-//   node validate.mjs out/20260422T093012Z/pendle.json
-//   node validate.mjs out/20260422T093012Z/*.json      (glob expanded by shell)
-// Exit 0 on all-pass, 1 on any violation.
+//   node framework/schema-validator.mjs out/20260422T093012Z/pendle.json
+//   node framework/schema-validator.mjs out/20260422T093012Z/*.json      (glob expanded by shell)
+//   node framework/schema-validator.mjs file.json --schema my-schema.json
+// Exit 0 on all-pass, 1 on any violation, 2 on no files.
 
 import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SCHEMA_PATH = resolve(__dirname, 'schema/earn-protocol-info.schema.json');
+const DEFAULT_SCHEMA_PATH = resolve(__dirname, '..', 'schema/earn-protocol-info.schema.json');
 
-const schema = JSON.parse(await readFile(SCHEMA_PATH, 'utf8'));
+// Parse argv: extract --schema <path> from anywhere; remaining tokens are file paths.
+const argv = process.argv.slice(2);
+const files = [];
+let schemaPath = DEFAULT_SCHEMA_PATH;
+for (let i = 0; i < argv.length; i++) {
+  const arg = argv[i];
+  if (arg === '--schema') {
+    const next = argv[i + 1];
+    if (!next) {
+      console.error('error: --schema requires a path argument');
+      process.exit(2);
+    }
+    schemaPath = resolve(next);
+    i += 1;
+  } else {
+    files.push(arg);
+  }
+}
 
-const files = process.argv.slice(2);
 if (files.length === 0) {
-  console.error('usage: node validate.mjs <file.json> [more.json ...]');
+  console.error('usage: node framework/schema-validator.mjs <file.json> [more.json ...] [--schema <path>]');
   process.exit(2);
 }
+
+const schema = JSON.parse(await readFile(schemaPath, 'utf8'));
 
 let failed = 0;
 for (const file of files) {
