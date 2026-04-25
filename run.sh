@@ -336,16 +336,18 @@ run_one() {
 
   # ── Phase 1: Parallel execution (Claude Round 1 + RootData API) ──
 
-  echo "$user_prompt" | "$CLAUDE_BIN" -p - \
-    --output-format json \
-    --json-schema "$SCHEMA_INLINE" \
-    --max-turns "$MAX_TURNS" \
-    --max-budget-usd "$MAX_BUDGET_USD" \
-    --permission-mode bypassPermissions \
-    --allowed-tools "WebFetch,WebSearch" \
-    --system-prompt "$SYSTEM_PROMPT" \
-    ${MODEL_FLAG[@]+"${MODEL_FLAG[@]}"} \
-    > "$r1_env" 2> "$r1_err" &
+  node "$SCRIPT_DIR/framework/cli/r1.mjs" \
+    --manifest "$SCRIPT_DIR/consumers/protocol-info/manifest.json" \
+    --slug "$slug" \
+    --provider "$provider" \
+    --display-name "$display" \
+    --type "$type" \
+    --hints "$hints" \
+    ${MODEL:+--model "$MODEL"} \
+    --evidence "$rootdata_pkt" \
+    --envelope-out "$r1_env" \
+    --slice-out "$rec" \
+    > /dev/null 2> "$r1_err" &
   pid_claude=$!
 
   api_exit=1
@@ -380,28 +382,13 @@ run_one() {
     return 0
   fi
 
-  set +e
-  if jq -e '.structured_output | type == "object"' "$r1_env" >/dev/null 2>&1; then
-    jq '.structured_output' "$r1_env" > "$rec" 2> "$parse_err"
-    parse_exit=$?
-  elif jq -e '.structured_output | type == "string"' "$r1_env" >/dev/null 2>&1; then
-    jq -r '.structured_output' "$r1_env" | jq . > "$rec" 2> "$parse_err"
-    parse_exit=$?
-  else
-    payload=$(jq -r '.result // empty' "$r1_env")
-    if [[ -z "$payload" ]]; then
-      echo "  -> CRAWL_FAIL (no structured_output, empty .result); see $r1_env"
-      echo "     --- envelope top-level keys ---" >&2
-      jq -r 'keys | .[]' "$r1_env" 2>/dev/null | sed 's/^/     /' >&2
-      echo "" >&2
-      printf "%s\tCRAWL_FAIL\t-\t-\t-\t-\tr1\t-\n" "$slug" > "$summary_row_file"
-      set -e
-      return 0
-    fi
-    echo "$payload" | node "$SCRIPT_DIR/framework/json-extract.mjs" | jq . > "$rec" 2> "$parse_err"
-    parse_exit=$?
+  if [[ ! -s "$rec" ]]; then
+    echo "  -> CRAWL_FAIL (no slice produced by r1.mjs); see $r1_env $r1_err"
+    tail -20 "$r1_err" 2>/dev/null | sed 's/^/     /' >&2
+    printf "%s\tCRAWL_FAIL\t-\t-\t-\t-\tr1\t-\n" "$slug" > "$summary_row_file"
+    return 0
   fi
-  set -e
+  parse_exit=0
 
   if [[ $parse_exit -eq 0 ]]; then
     rm -f "$parse_err"
