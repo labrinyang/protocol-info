@@ -72,13 +72,13 @@ for _env_candidate in "$SCRIPT_DIR/.env" "$HOME/.config/protocol-info/.env"; do
   fi
 done
 unset _env_candidate
-SCHEMA_FILE="$SCRIPT_DIR/schema/earn-protocol-info.schema.json"
-SYSTEM_PROMPT_FILE="$SCRIPT_DIR/prompts/system.md"
-USER_TMPL_FILE="$SCRIPT_DIR/prompts/user.md.tmpl"
-RECONCILE_TMPL_FILE="$SCRIPT_DIR/prompts/reconcile.md.tmpl"
-I18N_SYSTEM_FILE="$SCRIPT_DIR/prompts/i18n.system.md"
-I18N_TMPL_FILE="$SCRIPT_DIR/prompts/i18n.user.md.tmpl"
-I18N_SCHEMA_FILE="$SCRIPT_DIR/schema/i18n.schema.json"
+SCHEMA_FILE="$SCRIPT_DIR/consumers/protocol-info/schemas/full.json"
+SYSTEM_PROMPT_FILE="$SCRIPT_DIR/consumers/protocol-info/prompts/system.md"
+USER_TMPL_FILE="$SCRIPT_DIR/consumers/protocol-info/prompts/user.md.tmpl"
+RECONCILE_TMPL_FILE="$SCRIPT_DIR/consumers/protocol-info/prompts/reconcile.md.tmpl"
+I18N_SYSTEM_FILE="$SCRIPT_DIR/consumers/protocol-info/prompts/i18n.system.md"
+I18N_TMPL_FILE="$SCRIPT_DIR/consumers/protocol-info/prompts/i18n.user.md.tmpl"
+I18N_SCHEMA_FILE="$SCRIPT_DIR/consumers/protocol-info/schemas/i18n.json"
 RUN_TS="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_DIR="$SCRIPT_DIR/out/$RUN_TS"
 SUMMARY_FILE="$OUT_DIR/summary.tsv"

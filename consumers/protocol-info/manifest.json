@@ -1,8 +1,20 @@
 {
   "name": "protocol-info",
   "version": "0.5.0-wip",
+  "schemas": { "full": "./schemas/full.json" },
   "fetchers": [
     { "name": "rootdata", "module": "./fetchers/rootdata.mjs", "required_env": ["ROOTDATA_API_KEY"], "optional": true, "search": { "enabled": true, "types": ["project", "person"], "max_queries_per_round": 4 } },
     { "name": "defillama", "module": "./fetchers/defillama.mjs", "required_env": [], "optional": true }
+  ],
+  "system_prompt": "./prompts/system.md",
+  "subtasks": [
+    {
+      "name": "full",
+      "prompt": "./prompts/user.md.tmpl",
+      "schema_slice": "./schemas/full.json",
+      "max_turns": 40,
+      "max_budget_usd": 2.00,
+      "evidence_keys": ["rootdata", "defillama"]
+    }
   ]
 }
