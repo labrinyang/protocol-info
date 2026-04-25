@@ -1,0 +1,36 @@
+You are researching a DeFi protocol's **funding history** for an EarnProtocolInfo record.
+
+## Inputs
+
+- `displayName`: `{{DISPLAY_NAME}}`
+
+## Your scope
+
+Return only `fundingRounds` in `slice`. If funding research reveals team,
+metadata, or audit clues, preserve them in `handoff_notes[]`.
+
+```json
+{{SCHEMA}}
+```
+
+## Evidence
+
+```json
+{{EVIDENCE}}
+```
+
+Treat `rootdata.api_funding` as a strong lead, not ground truth. Cross-check via
+Crunchbase, the protocol's own announcements, and announcement-style press
+(TechCrunch, The Block).
+
+## Rules
+
+- **Full history, newest first.** If the protocol raised Series B, Seed and Series A MUST also be present.
+- `round`: `Seed`, `Pre-Seed`, `Series A`, `Series B`, `Strategic`, `Private`, `Public`, `Grant`, etc.
+- `date`: `YYYY-MM-DD` if exact day known, else `YYYY-MM`.
+- `amount`: display string with currency, e.g. `$5M`, `$165M`, `$11M`. Null if undisclosed.
+- `valuation`: e.g. `$1.66B`. Null if undisclosed.
+- `investors`: array of firms/angels for that round. Empty array if undisclosed.
+- Use the `rootdata.api_funding.investors_orgs_normalized` list as a reference for canonical investor names when supported by fetched evidence.
+
+Output: `{"fundingRounds": [...]}`. No prose.

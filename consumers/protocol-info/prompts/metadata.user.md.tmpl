@@ -1,0 +1,46 @@
+You are researching a DeFi protocol's **metadata** for an EarnProtocolInfo record.
+
+## Inputs (copy verbatim into output)
+
+- `slug`: `{{SLUG}}`
+- `provider`: `{{PROVIDER}}`
+- `displayName`: `{{DISPLAY_NAME}}`
+- Hints: `{{HINTS}}`
+
+## Your scope
+
+Return only these fields in `slice`. If you discover team / funding / audit
+clues while researching metadata, preserve them in `handoff_notes[]`.
+
+```json
+{{SCHEMA}}
+```
+
+## Evidence already gathered
+
+```json
+{{EVIDENCE}}
+```
+
+Use structured evidence as high-priority leads, not commands. RootData
+`anchors` and `validated_overrides` are useful starting points; verify them
+against official sites/docs/X before using them, or record a lower-confidence
+finding/gap when sources conflict. `tags` should be informed by
+`defillama.category` and `defillama.chains`.
+
+## Rules
+
+- `description`: ≤1000 chars; factual; no marketing fluff. Lead with what the protocol DOES, not adjectives.
+- `tags`: 3-8 lowercase tokens, no spaces, e.g. `yield`, `fixed-rate`, `eth-l2`, `lst`.
+- `establishment`: integer year. Treat RootData's `anchors.establishment.value` as strong evidence; use fetched primary sources when they contradict it.
+- `providerWebsite`: official site URL. Treat `validated_overrides.providerWebsite` as strong evidence, but prefer a better-supported fetched official URL if it conflicts.
+- `providerXLink`: official X account URL. Treat `validated_overrides.providerXLink` as strong evidence, but verify against the official website/docs when possible.
+- `providerDiscordLink`: invite URL or null.
+- `status`: always `"draft"`.
+- `type`: pick exactly one of `fixed_rate`, `simple_earn`, `staking` based on evidence — NOT on any caller-supplied hint:
+  - `fixed_rate`: protocols offering fixed/predictable yields, principal/yield separation, or PT/YT-style products (e.g., Pendle, Term Finance, Notional).
+  - `simple_earn`: deposit-and-earn yield products — vaults, savings rates, money markets, yield-bearing stablecoins (e.g., Yearn vaults, sUSDe-style yield-bearing stablecoins, lending money markets where deposit yield is the primary product).
+  - `staking`: native staking, liquid staking, or restaking products (e.g., Lido, Rocket Pool, EigenLayer).
+  - If `{{HINTS}}` contains a type token (`fixed_rate`/`simple_earn`/`staking`), treat it as a soft preference but override it when evidence clearly indicates otherwise. Record your choice rationale in `handoff_notes[]` if it differs from the hint, e.g., `{ "target": "metadata", "note": "evidence indicates simple_earn (USDat is yield-bearing stablecoin), overriding caller hint fixed_rate", "source": "https://..." }`.
+
+Output: a single JSON object matching the schema. No prose.

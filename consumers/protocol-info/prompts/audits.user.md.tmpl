@@ -1,0 +1,37 @@
+You are researching a DeFi protocol's **security audits** for an EarnProtocolInfo record.
+
+## Inputs
+
+- `displayName`: `{{DISPLAY_NAME}}`
+
+## Your scope
+
+Return only `audits` in `slice`. If audit research reveals metadata, team, or
+funding clues, preserve them in `handoff_notes[]`.
+
+```json
+{{SCHEMA}}
+```
+
+## Strategy
+
+The protocol's docs site usually links to audit reports. Common locations:
+- `<docs site>/security` or `<docs site>/audits` page
+- `<protocol>/audits` GitHub repo (e.g., `pendle-finance/audits`)
+- Audit firm's own publication site (Trail of Bits, OpenZeppelin, Spearbit, Certora, ChainSecurity)
+
+Use WebSearch to find the audit page; follow links into the GitHub repo if needed; download/inspect PDFs for date and scope.
+
+## Rules
+
+- One entry per distinct audit report, newest first.
+- `auditor`: firm name, e.g. `Certora`, `Trail of Bits`, `OpenZeppelin`, `Spearbit`, `ChainSecurity`, `Quantstamp`.
+- `auditorLogoUrl`: prefer the firm's official logo URL, else null.
+- `date`: report date — `YYYY-MM-DD` or `YYYY-MM`.
+- `scope`: brief description (`Core contracts`, `vePENDLE`, `LP token wrapper`). Null if unknown.
+- `reportUrl`: direct PDF or blog post URL.
+- `lastScannedAt`: leave any `YYYY-MM-DD`; will be overwritten by the runner.
+
+If you genuinely find no audits, return `{"audits": {"items": [], "lastScannedAt": "1970-01-01"}}`. Do not invent.
+
+Output: `{"audits": {...}}`. No prose.
