@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "framework/schemas/consumer-manifest.schema.json",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["name", "version"],
+  "properties": {
+    "name":    { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "version": { "type": "string" },
+    "schemas": {
+      "type": "object",
+      "properties": { "full": { "type": "string" } }
+    },
+    "fetchers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "module"],
+        "properties": {
+          "name":         { "type": "string" },
+          "module":       { "type": "string" },
+          "required_env": { "type": "array", "items": { "type": "string" } },
+          "optional":     { "type": "boolean" },
+          "search":       { "type": "object" },
+          "description":  { "type": "string" }
+        }
+      }
+    },
+    "system_prompt": { "type": "string" },
+    "subtasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "prompt", "schema_slice"],
+        "properties": {
+          "name":           { "type": "string" },
+          "prompt":         { "type": "string" },
+          "schema_slice":   { "type": "string" },
+          "max_turns":      { "type": "integer", "minimum": 1 },
+          "max_budget_usd": { "type": "number",  "minimum": 0 },
+          "evidence_keys":  { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "reconcile": {
+      "type": "object",
+      "properties": {
+        "enabled":      { "type": "boolean" },
+        "prompt":       { "type": "string" },
+        "max_turns":    { "type": "integer" },
+        "max_budget_usd": { "type": "number" },
+        "mode": { "type": "string", "enum": ["deep", "fast"] },
+        "max_research_rounds": { "type": "integer", "minimum": 1 },
+        "max_search_queries_per_round": { "type": "integer", "minimum": 0 },
+        "fast_skip_allowed": { "type": "boolean" }
+      }
+    },
+    "i18n": { "type": "object" },
+    "normalizers": { "type": "array" },
+    "post_processing": { "type": "array" },
+    "output": { "type": "object" }
+  }
+}
