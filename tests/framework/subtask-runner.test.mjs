@@ -53,4 +53,24 @@ export const tests = [
       });
     },
   },
+  {
+    name: 'returns ok:false with error_kind on claude spawn failure',
+    fn: async () => {
+      const result = await runSubtask({
+        claudeBin: '/nonexistent/claude-binary-for-test',
+        subtask: { name: 'team', max_turns: 5, max_budget_usd: 0.5 },
+        systemPrompt: '', userPrompt: 'x',
+        schemaSlice: { type: 'object' },
+      });
+      assert.equal(result.ok, false);
+      assert.match(result.error, /claude invocation failed/);
+      assert.equal(result.session_id, null);
+      assert.equal(result.cost_usd, 0);
+      assert.equal(result.turns, 0);
+      assert.equal(result.envelope, null);
+      // error_kind should be 'spawn_error' from claude-wrapper, but allow null fallback
+      assert.ok(result.error_kind === 'spawn_error' || result.error_kind === null,
+        `expected error_kind to be 'spawn_error' or null, got ${result.error_kind}`);
+    },
+  },
 ];

@@ -55,7 +55,8 @@ export async function runSubtask({
   } catch (err) {
     return {
       ok: false, error: `claude invocation failed: ${err.message}`,
-      cost_usd: 0, turns: 0, envelope: null,
+      error_kind: err.kind ?? null,
+      cost_usd: 0, turns: 0, envelope: null, session_id: null,
     };
   }
 
@@ -64,7 +65,7 @@ export async function runSubtask({
     return {
       ok: false, error: `no structured_output recoverable from envelope`,
       cost_usd: envelope.total_cost_usd ?? 0, turns: envelope.num_turns ?? 0,
-      session_id: envelope.session_id, envelope,
+      session_id: envelope.session_id ?? null, envelope,
     };
   }
 
