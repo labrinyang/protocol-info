@@ -60,29 +60,48 @@ function render(t, vars) {
 }
 
 const tasks = manifest._abs.subtasks.map(st => async () => {
-  const slice = JSON.parse(await readFile(st.schema_slice_abs, 'utf8'));
-  const userTmpl = await readFile(st.prompt_abs, 'utf8');
-  const evSubset = selectEvidence(evidence, st.evidence_keys || []);
-  const userPrompt = render(userTmpl, {
-    SLUG: slug,
-    PROVIDER: provider,
-    DISPLAY_NAME: displayName,
-    TYPE: type,    // empty string if --type not passed; metadata template doesn't use {{TYPE}} anyway
-    HINTS: hints,
-    SCHEMA: JSON.stringify(slice, null, 2),
-    EVIDENCE: JSON.stringify(evSubset, null, 2),
-  });
+  try {
+    const slice = JSON.parse(await readFile(st.schema_slice_abs, 'utf8'));
+    const userTmpl = await readFile(st.prompt_abs, 'utf8');
+    const evSubset = selectEvidence(evidence, st.evidence_keys || []);
+    const userPrompt = render(userTmpl, {
+      SLUG: slug,
+      PROVIDER: provider,
+      DISPLAY_NAME: displayName,
+      TYPE: type,    // empty string if --type not passed; metadata template doesn't use {{TYPE}} anyway
+      HINTS: hints,
+      SCHEMA: JSON.stringify(slice, null, 2),
+      EVIDENCE: JSON.stringify(evSubset, null, 2),
+    });
 
-  console.error(`[r1:${st.name}] starting (max_budget=$${st.max_budget_usd} max_turns=${st.max_turns})`);
-  const r = await runSubtask({
-    claudeBin, subtask: st, systemPrompt, userPrompt, schemaSlice: slice, model,
-  });
+    console.error(`[r1:${st.name}] starting (max_budget=$${st.max_budget_usd} max_turns=${st.max_turns})`);
+    const r = await runSubtask({
+      claudeBin, subtask: st, systemPrompt, userPrompt, schemaSlice: slice, model,
+    });
 
-  if (r.envelope) {
-    await writeFile(join(debugDir, `${st.name}.envelope.json`), JSON.stringify(r.envelope, null, 2));
+    if (r.envelope) {
+      try {
+        await writeFile(join(debugDir, `${st.name}.envelope.json`), JSON.stringify(r.envelope, null, 2));
+      } catch (writeErr) {
+        console.error(`[r1:${st.name}] failed to write envelope: ${writeErr.message}`);
+        // Envelope write failure is operational, not subtask failure — continue with parsed result.
+      }
+    }
+
+    return { name: st.name, ...r };
+  } catch (err) {
+    console.error(`[r1:${st.name}] task setup failed: ${err.message}`);
+    return {
+      name: st.name,
+      ok: false,
+      error: `task setup: ${err.message}`,
+      error_kind: 'task_setup',
+      cost_usd: 0,
+      turns: 0,
+      session_id: null,
+      envelope: null,
+    };
   }
-
-  return { name: st.name, ...r };
 });
 
 const results = await runWithLimit(concurrency, tasks);
@@ -99,6 +118,11 @@ const status = {
   subtasks: results.map(r => ({ name: r.name, ok: r.ok, cost_usd: r.cost_usd, turns: r.turns, session_id: r.session_id, error: r.error || null })),
   failed_subtasks: merge.failed_subtasks,
 };
-await writeFile(join(debugDir, 'r1-status.json'), JSON.stringify(status, null, 2));
+try {
+  await writeFile(join(debugDir, 'r1-status.json'), JSON.stringify(status, null, 2));
+} catch (err) {
+  console.error(`[r1] failed to write r1-status.json: ${err.message}`);
+  // Status file is telemetry; don't fail the run if it can't be written.
+}
 
 process.exit(merge.failed_subtasks.length === results.length ? 1 : 0);  // exit fail only if 0/N succeeded

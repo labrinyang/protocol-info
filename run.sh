@@ -349,8 +349,6 @@ run_one() {
     --debug-dir "$debug_dir/r1" \
     > /dev/null 2> "$r1_err" &
   pid_claude=$!
-  # r1.mjs writes per-subtask envelopes; metadata is canonical for R2 resume
-  r1_env="$debug_dir/r1/metadata.envelope.json"
 
   api_exit=1
   if [[ $ROOTDATA_ENABLED -eq 1 ]]; then
@@ -391,7 +389,7 @@ run_one() {
     return 0
   fi
 
-  SESSION_ID=$(jq -r '.session_id // empty' "$r1_env")
+  SESSION_ID=$(jq -r '.session_id // empty' "$r1_env" 2>/dev/null)
   r1_cost=$(jq -r '.total_cost_usd // 0' "$r1_env" 2>/dev/null || echo 0)
   [[ "$r1_cost" =~ ^[0-9]+(\.[0-9]+)?$ ]] || r1_cost=0
   final_source="r1"
