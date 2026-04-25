@@ -1,6 +1,6 @@
 {
   "name": "protocol-info",
-  "version": "0.7.0-wip",
+  "version": "0.8.0-wip",
   "schemas": { "full": "./schemas/full.json" },
   "fetchers": [
     { "name": "rootdata", "module": "./fetchers/rootdata.mjs", "required_env": ["ROOTDATA_API_KEY"], "optional": true, "search": { "enabled": true, "types": ["project", "person"], "max_queries_per_round": 4 } },
@@ -46,6 +46,27 @@
       { "code": "zh_HK", "name_zh": "繁体中文(香港)", "name_en": "Traditional Chinese (Hong Kong)" },
       { "code": "zh_TW", "name_zh": "繁体中文(台湾)", "name_en": "Traditional Chinese (Taiwan)" }
     ]
+  },
+  "post_processing": [
+    {
+      "name": "dashboard-export",
+      "module": "./post/dashboard-export.mjs",
+      "config": {
+        "envelope_version": "1.0",
+        "source_locale_dashboard_code": "en",
+        "strip_fields": ["sources"]
+      }
+    }
+  ],
+  "output": {
+    "record_filename": "record.json",
+    "findings_filename": "findings.json",
+    "changes_filename": "changes.json",
+    "gaps_filename": "gaps.json",
+    "meta_filename": "meta.json",
+    "full_filename": "record.full.json",
+    "import_filename": "record.import.json",
+    "debug_dir": "_debug"
   },
   "normalizers": [
     { "name": "protocol-info-final", "module": "./normalizers/final.mjs" }

@@ -96,66 +96,6 @@ I18N_PARALLEL=8
 I18N_MODEL="claude-haiku-4-5-20251001"
 I18N_SELECTED=()                             # filled in by i18n_resolve_selection
 
-# 19-locale catalog: "code|中文名|English name"
-I18N_LOCALES=(
-  "bn|孟加拉语|Bengali"
-  "de|德语|German"
-  "en_US|英语(美国)|English (US)"
-  "es|西班牙语|Spanish"
-  "fr_FR|法语|French"
-  "hi_IN|印地语|Hindi"
-  "id|印尼语|Indonesian"
-  "it_IT|意大利语|Italian"
-  "ja_JP|日语|Japanese"
-  "ko_KR|韩语|Korean"
-  "pt|葡萄牙语|Portuguese"
-  "pt_BR|葡萄牙语(巴西)|Portuguese (Brazil)"
-  "ru|俄语|Russian"
-  "th_TH|泰语|Thai"
-  "uk_UA|乌克兰语|Ukrainian"
-  "vi|越南语|Vietnamese"
-  "zh_CN|简体中文|Simplified Chinese"
-  "zh_HK|繁体中文(香港)|Traditional Chinese (Hong Kong)"
-  "zh_TW|繁体中文(台湾)|Traditional Chinese (Taiwan)"
-)
-
-# Lookup a locale's English display name by code. Echos name (or empty on miss).
-locale_name_for() {
-  local target="$1"
-  local entry rest
-  for entry in "${I18N_LOCALES[@]}"; do
-    if [[ "${entry%%|*}" == "$target" ]]; then
-      rest="${entry#*|}"
-      echo "${rest##*|}"
-      return 0
-    fi
-  done
-  return 1
-}
-
-# 把我们的 locale code (en_US / zh_CN / ja_JP / ...) 映射成 dashboard 期望的格式
-# (en / zh-cn / ja / ...). 规则:仅当语言有多种 region 变体时保留 region (pt_BR → pt-br),
-# 否则只保留 language code (en_US → en, fr_FR → fr).
-# TODO: dashboard 文档说支持 21 种 locale,我们目前 19 种;待 dashboard 给清单后补两个。
-dashboard_locale_for() {
-  case "$1" in
-    en_US) echo "en" ;;
-    fr_FR) echo "fr" ;;
-    hi_IN) echo "hi" ;;
-    it_IT) echo "it" ;;
-    ja_JP) echo "ja" ;;
-    ko_KR) echo "ko" ;;
-    th_TH) echo "th" ;;
-    uk_UA) echo "uk" ;;
-    pt_BR) echo "pt-br" ;;
-    zh_CN) echo "zh-cn" ;;
-    zh_HK) echo "zh-hk" ;;
-    zh_TW) echo "zh-tw" ;;
-    bn|de|es|id|pt|ru|vi) echo "$1" ;;
-    *) echo "$1" | tr '[:upper:]' '[:lower:]' | tr '_' '-' ;;
-  esac
-}
-
 # ── slugify: displayName -> slug ──────────────────────────────────────
 slugify() {
   echo "$1" \
@@ -261,7 +201,7 @@ fi
 case "$I18N_ARG" in
   "")    i18n_label="ask after main run (skip if no tty)" ;;
   none)  i18n_label="skip" ;;
-  all)   i18n_label="all ${#I18N_LOCALES[@]} languages" ;;
+  all)   i18n_label="all languages (from manifest catalog)" ;;
   *)     i18n_label="$I18N_ARG" ;;
 esac
 echo "i18n:        $i18n_label [model=$I18N_MODEL, parallel=$I18N_PARALLEL]"
@@ -566,79 +506,22 @@ i18n_resolve_selection() {
   elif [[ "$I18N_ARG" == "none" ]]; then
     return 0
   elif [[ "$I18N_ARG" == "all" ]]; then
-    for entry in "${I18N_LOCALES[@]}"; do
-      raw+=("${entry%%|*}")
-    done
+    while IFS= read -r code; do
+      [[ -n "$code" ]] && raw+=("$code")
+    done < <(jq -r '.i18n.locale_catalog[].code' "$SCRIPT_DIR/consumers/protocol-info/manifest.json")
   else
     local IFS_save="$IFS"
     IFS=',' read -ra raw <<< "$I18N_ARG"
     IFS="$IFS_save"
   fi
 
-  # Trim whitespace + filter unknown codes
+  # Trim whitespace; CLI (framework/cli/i18n.mjs) validates against manifest catalog
   local code trimmed
   for code in "${raw[@]}"; do
     trimmed="${code// /}"
     [[ -z "$trimmed" ]] && continue
-    if locale_name_for "$trimmed" >/dev/null 2>&1; then
-      I18N_SELECTED+=("$trimmed")
-    else
-      echo "warning: unknown locale '$trimmed', skipping" >&2
-    fi
+    I18N_SELECTED+=("$trimmed")
   done
-}
-
-# ── 导出 dashboard import 格式 ────────────────────────────────────────
-# 把 record.json (源语言) + _debug/i18n/<locale>.json (翻译 sidecar) 合成
-# {version, exportedAt, data:[...]} 格式,每个 locale 一条独立记录。
-# 字段处理:strip sources、注入 locale、把翻译 merge 进 description + members[i].{memberPosition,oneLiner}。
-export_dashboard_record() {
-  local slug="$1"
-  local slug_dir="$OUT_DIR/$slug"
-  local rec="$slug_dir/record.json"
-  local i18n_dir="$slug_dir/_debug/i18n"
-  local out="$slug_dir/record.import.json"
-
-  [[ -f "$rec" ]] || return 0
-
-  # 源语言记录:strip sources,locale='en'
-  local base_en
-  base_en=$(jq 'del(.sources) | . + {locale: "en"}' "$rec")
-
-  # 收集所有 locale 的记录
-  local records_json
-  records_json=$(echo "[$base_en]" | jq '.')
-
-  shopt -s nullglob
-  local f our_code dashboard_code merged
-  for f in "$i18n_dir"/*.json; do
-    our_code=$(basename "$f" .json)
-    case "$our_code" in
-      *.envelope|failures) continue ;;
-    esac
-    locale_name_for "$our_code" >/dev/null 2>&1 || continue
-
-    dashboard_code=$(dashboard_locale_for "$our_code")
-
-    # 合并翻译进 base record:替换 description + 逐 member 替换 memberPosition/oneLiner
-    merged=$(jq \
-      --slurpfile tr "$f" \
-      --arg locale "$dashboard_code" \
-      '. + {locale: $locale}
-       | .description = ($tr[0].description // .description)
-       | ($tr[0].members // []) as $tm
-       | .members |= [range(0; length) as $i | .[$i] + ($tm[$i] // {})]' \
-      <<< "$base_en")
-
-    records_json=$(echo "$records_json" | jq --argjson r "$merged" '. + [$r]')
-  done
-  shopt -u nullglob
-
-  # 包成 dashboard 信封
-  jq -n \
-    --argjson data "$records_json" \
-    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
-    '{version: "1.0", exportedAt: $ts, data: $data}' > "$out"
 }
 
 # ── Dispatcher: 顺序或有界并发 ────────────────────────────────────────
@@ -709,74 +592,20 @@ if [[ "$DRY_RUN" -ne 1 ]]; then
         --parallel "$I18N_PARALLEL" \
         ${I18N_MODEL:+--model "$I18N_MODEL"} \
         2>&1 | sed "s/^/[$_slug] /"
-
-      # Recreate meta.json's i18n block from the sidecar files (replicates legacy bash output)
-      i18n_dir="$OUT_DIR/$_slug/_debug/i18n"
-      shopt -s nullglob
-      env_files=("$i18n_dir"/*.envelope.json)
-      ok_files=("$i18n_dir"/*.json)
-      shopt -u nullglob
-
-      # Strip envelope.json from ok_files
-      filtered_ok=()
-      for f in "${ok_files[@]}"; do
-        case "$f" in
-          *.envelope.json|*/failures.log) continue ;;
-        esac
-        filtered_ok+=("$f")
-      done
-
-      cost_sum=0
-      if [[ ${#env_files[@]} -gt 0 ]]; then
-        cost_sum=$(jq -s 'map(.total_cost_usd // 0) | add // 0' "${env_files[@]}" 2>/dev/null || echo 0)
-      fi
-
-      ok_codes='[]'
-      for f in "${filtered_ok[@]}"; do
-        loc=$(basename "$f" .json)
-        ok_codes=$(echo "$ok_codes" | jq --arg c "$loc" '. + [$c]')
-      done
-
-      failed_codes='[]'
-      if [[ -s "$i18n_dir/failures.log" ]]; then
-        failed_codes=$(awk -F'\t' '{print $1}' "$i18n_dir/failures.log" | sort -u | jq -R . | jq -cs .)
-      fi
-
-      jq --argjson ok "$ok_codes" --argjson failed "$failed_codes" --arg model "$I18N_MODEL" --argjson cost "$cost_sum" \
-         '.i18n = {
-            model: $model,
-            locales_requested: ($ok + $failed | unique),
-            locales_ok: $ok,
-            locales_failed: $failed,
-            cost_usd: $cost
-          }' "$OUT_DIR/$_slug/meta.json" > "$OUT_DIR/$_slug/meta.json.tmp" \
-         && mv "$OUT_DIR/$_slug/meta.json.tmp" "$OUT_DIR/$_slug/meta.json"
-
-      # record.full.json (inline i18n map)
-      if [[ ${#filtered_ok[@]} -gt 0 ]]; then
-        map='{}'
-        for f in "${filtered_ok[@]}"; do
-          loc=$(basename "$f" .json)
-          map=$(echo "$map" | jq --arg k "$loc" --slurpfile v "$f" '. + {($k): $v[0]}')
-        done
-        jq --argjson i18n "$map" '. + {i18n: $i18n}' "$OUT_DIR/$_slug/record.json" > "$OUT_DIR/$_slug/record.full.json"
-      fi
-
-      ok_count=${#filtered_ok[@]}
-      echo "[$_slug] i18n done: $ok_count/${#I18N_SELECTED[@]} ok"
-      if [[ -s "$i18n_dir/failures.log" ]]; then
-        sed 's/^/        /' "$i18n_dir/failures.log" >&2
-      fi
     done
     unset _slug
   fi
 fi
 
-# ── 导出 dashboard import 格式 (record.import.json) ───────────────────
-# 即使没翻译,也输出单条 'en' 记录,方便 dashboard 直接导入
+# ── Post-processing: dashboard export + meta patch + record.full.json ──
+# Runs unconditionally on OK slugs. Even when no i18n was requested,
+# post.mjs still produces record.import.json with just the source-locale entry.
 if [[ "$DRY_RUN" -ne 1 ]] && [[ ${#OK_SLUGS[@]} -gt 0 ]]; then
   for _slug in "${OK_SLUGS[@]}"; do
-    export_dashboard_record "$_slug"
+    node "$SCRIPT_DIR/framework/cli/post.mjs" \
+      --manifest "$SCRIPT_DIR/consumers/protocol-info/manifest.json" \
+      --slug-dir "$OUT_DIR/$_slug" \
+      || echo "[post] $_slug failed; record.import.json may be missing" >&2
   done
   unset _slug
 fi
