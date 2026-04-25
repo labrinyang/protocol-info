@@ -4,7 +4,7 @@
 #
 # 双轮管线（设置 ROOTDATA_API_KEY 时）：
 #   Round 1  Claude 网页抓取
-#   API      preprocess-rootdata.mjs 与 Round 1 并行运行
+#   API      consumers/protocol-info/fetchers/rootdata.mjs 与 Round 1 并行运行
 #   Round 2  恢复会话，用 API 证据对 Claude 输出进行对账
 #
 # 未设置 ROOTDATA_API_KEY 时退化为单轮模式。
@@ -79,7 +79,7 @@ RECONCILE_TMPL_FILE="$SCRIPT_DIR/prompts/reconcile.md.tmpl"
 I18N_SYSTEM_FILE="$SCRIPT_DIR/prompts/i18n.system.md"
 I18N_TMPL_FILE="$SCRIPT_DIR/prompts/i18n.user.md.tmpl"
 I18N_SCHEMA_FILE="$SCRIPT_DIR/schema/i18n.schema.json"
-PREPROCESS_SCRIPT="$SCRIPT_DIR/preprocess-rootdata.mjs"
+PREPROCESS_SCRIPT="$SCRIPT_DIR/consumers/protocol-info/fetchers/rootdata.mjs"
 RUN_TS="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_DIR="$SCRIPT_DIR/out/$RUN_TS"
 SUMMARY_FILE="$OUT_DIR/summary.tsv"

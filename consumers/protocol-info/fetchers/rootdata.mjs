@@ -1,19 +1,68 @@
 #!/usr/bin/env node
 //
-// preprocess-rootdata.mjs — Query RootData free-tier API, score member
-// candidates, and emit a four-section evidence packet for Round 2 reconciliation.
+// rootdata.mjs — Query RootData free-tier API, score member candidates, and
+// emit a four-section evidence packet for Round 2 reconciliation.
 //
-// Usage:
-//   ROOTDATA_API_KEY=xxx node preprocess-rootdata.mjs \
-//     --slug ethena --display-name "Ethena" \
-//     [--rootdata-id 8583] --output /path/to/rootdata-packet.json
+// Two modes:
+//   1. Module mode: `import fetch, { search } from '.../rootdata.mjs'` —
+//      conforms to framework/FETCHER_INTERFACE.md (default fetch + search).
+//   2. CLI mode (legacy, used by run.sh):
+//      ROOTDATA_API_KEY=xxx node rootdata.mjs \
+//        --slug ethena --display-name "Ethena" \
+//        [--rootdata-id 8583] --output /path/to/rootdata-packet.json
 //
-// Exit codes: 0=success, 1=API error, 2=no project found, 3=invalid args,
-//             4=missing ROOTDATA_API_KEY env var.
+// CLI exit codes: 0=success, 1=API error, 2=no project found, 3=invalid args,
+//                 4=missing ROOTDATA_API_KEY env var.
 
 import { writeFileSync } from 'node:fs';
 
 const API_BASE = 'https://api.rootdata.com';
+
+// Capture global fetch before our default export shadows the identifier
+// inside this module's scope.
+const httpFetch = globalThis.fetch;
+
+// ── Public fetcher interface (FETCHER_INTERFACE.md) ────────────────────
+
+export default async function fetch({ slug, displayName, hints, rootdataId, env, logger }) {
+  const apiKey = env?.ROOTDATA_API_KEY;
+  if (!apiKey) {
+    return {
+      name: 'rootdata', ok: false, data: null,
+      error: 'ROOTDATA_API_KEY not set',
+      cost_usd: 0, fetched_at: new Date().toISOString(),
+    };
+  }
+  try {
+    const data = await collectRootDataPacket({ slug, displayName, hints, rootdataId, apiKey, logger });
+    return { name: 'rootdata', ok: true, data, cost_usd: 0, fetched_at: new Date().toISOString() };
+  } catch (err) {
+    logger?.warn?.(`rootdata fetch failed: ${err.message}`);
+    return { name: 'rootdata', ok: false, data: null, error: err.message, cost_usd: 0, fetched_at: new Date().toISOString() };
+  }
+}
+
+export async function search({ query, type = 'project', limit = 5, env, logger }) {
+  const apiKey = env?.ROOTDATA_API_KEY;
+  if (!apiKey) {
+    return { channel: 'rootdata', query, type, ok: false, error: 'ROOTDATA_API_KEY not set', results: [], fetched_at: new Date().toISOString() };
+  }
+  const rootType = type === 'person' ? 3 : 1;
+  try {
+    const results = await apiPost('/open/ser_inv', { query, type: rootType }, apiKey);
+    return {
+      channel: 'rootdata',
+      query,
+      type,
+      ok: true,
+      results: Array.isArray(results) ? results.slice(0, limit) : [],
+      fetched_at: new Date().toISOString(),
+    };
+  } catch (err) {
+    logger?.warn?.(`rootdata search failed: ${err.message}`);
+    return { channel: 'rootdata', query, type, ok: false, error: err.message, results: [], fetched_at: new Date().toISOString() };
+  }
+}
 
 // ── CLI parsing ───────────────────────────────────────────────────────
 
@@ -40,7 +89,7 @@ function parseArgs(argv) {
 // ── API helpers ───────────────────────────────────────────────────────
 
 async function apiPost(endpoint, body, apiKey) {
-  const res = await fetch(`${API_BASE}${endpoint}`, {
+  const res = await httpFetch(`${API_BASE}${endpoint}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -243,63 +292,52 @@ function separateInvestors(investors) {
   };
 }
 
-// ── Main ──────────────────────────────────────────────────────────────
+// ── Core packet collector ─────────────────────────────────────────────
 
-async function main() {
-  const apiKey = process.env.ROOTDATA_API_KEY;
-  if (!apiKey) {
-    process.stderr.write('ROOTDATA_API_KEY env var is required\n');
-    process.exit(4);
-  }
-
-  const args = parseArgs(process.argv);
-  const { slug, displayName, output } = args;
-  let projectId = args.rootdataId;
+async function collectRootDataPacket({ slug, displayName, hints, rootdataId, apiKey, logger }) {
+  let projectId = rootdataId;
 
   // Step 1: Resolve project ID if not provided
   if (!projectId) {
-    process.stderr.write(`[rootdata] Searching for project "${displayName}"...\n`);
+    logger?.info?.(`[rootdata] Searching for project "${displayName}"...`);
     const results = await searchProject(displayName, apiKey);
     if (!Array.isArray(results) || results.length === 0) {
-      process.stderr.write(`[rootdata] No project found for "${displayName}"\n`);
-      process.exit(2);
+      throw new Error(`No project found for "${displayName}"`);
     }
     const match = results.find(
       (r) => (r.name || r.item_name || '').toLowerCase() === displayName.toLowerCase()
     ) || results[0];
     projectId = match.id || match.project_id;
     if (!projectId) {
-      process.stderr.write(`[rootdata] Could not resolve project ID for "${displayName}"\n`);
-      process.exit(2);
+      throw new Error(`Could not resolve project ID for "${displayName}"`);
     }
-    process.stderr.write(`[rootdata] Resolved "${displayName}" -> ID ${projectId}\n`);
+    logger?.info?.(`[rootdata] Resolved "${displayName}" -> ID ${projectId}`);
   }
 
   // Step 2: Get project detail
-  process.stderr.write(`[rootdata] Fetching project detail (ID ${projectId})...\n`);
+  logger?.info?.(`[rootdata] Fetching project detail (ID ${projectId})...`);
   const item = await getItem(projectId, apiKey);
   if (!item) {
-    process.stderr.write(`[rootdata] get_item returned empty for ID ${projectId}\n`);
-    process.exit(1);
+    throw new Error(`get_item returned empty for ID ${projectId}`);
   }
 
   // Step 3: Build canonical aliases
   const socialMedia = item.social_media || {};
   const aliases = buildAliases(displayName, item.project_name || item.name, socialMedia.website);
-  process.stderr.write(`[rootdata] Aliases: ${aliases.join(', ')}\n`);
+  logger?.info?.(`[rootdata] Aliases: ${aliases.join(', ')}`);
 
   // Step 4: Search for people associated with this project
-  process.stderr.write(`[rootdata] Searching for team members...\n`);
+  logger?.info?.(`[rootdata] Searching for team members...`);
   let people = [];
   try {
     people = await searchPeople(displayName, apiKey);
   } catch (e) {
-    process.stderr.write(`[rootdata] People search failed: ${e.message}\n`);
+    logger?.info?.(`[rootdata] People search failed: ${e.message}`);
   }
 
   // Step 5: Score member candidates
   const memberCandidates = scoreMemberCandidates(people, aliases);
-  process.stderr.write(`[rootdata] Member candidates: ${memberCandidates.length} (${memberCandidates.filter(c => c.bucket === 'likely_member').length} likely)\n`);
+  logger?.info?.(`[rootdata] Member candidates: ${memberCandidates.length} (${memberCandidates.filter(c => c.bucket === 'likely_member').length} likely)`);
 
   // Step 6: Build validated overrides
   const validatedOverrides = {};
@@ -332,19 +370,48 @@ async function main() {
     investors_people: investorPeople,
   };
 
-  // Step 9: Assemble and write packet
-  const packet = {
+  // Step 9: Assemble packet
+  return {
     validated_overrides: validatedOverrides,
     anchors,
     member_candidates: memberCandidates,
     api_funding: apiFunding,
   };
+}
+
+// ── CLI entry (legacy, used by run.sh) ────────────────────────────────
+
+async function main() {
+  const apiKey = process.env.ROOTDATA_API_KEY;
+  if (!apiKey) {
+    process.stderr.write('ROOTDATA_API_KEY env var is required\n');
+    process.exit(4);
+  }
+
+  const args = parseArgs(process.argv);
+  const { slug, displayName, rootdataId, output } = args;
+
+  const logger = {
+    info: (m) => process.stderr.write(`${m}\n`),
+    warn: (m) => process.stderr.write(`${m}\n`),
+  };
+
+  const packet = await collectRootDataPacket({
+    slug,
+    displayName,
+    hints: '',
+    rootdataId,
+    apiKey,
+    logger,
+  });
 
   writeFileSync(output, JSON.stringify(packet, null, 2));
   process.stderr.write(`[rootdata] Packet written to ${output}\n`);
 }
 
-main().catch((err) => {
-  process.stderr.write(`[rootdata] Fatal: ${err.message}\n`);
-  process.exit(1);
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    process.stderr.write(`[rootdata] Fatal: ${err.message}\n`);
+    process.exit(1);
+  });
+}
