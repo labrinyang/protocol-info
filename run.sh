@@ -545,7 +545,7 @@ run_one() {
 
   # Validate
   set +e
-  node "$SCRIPT_DIR/framework/schema-validator.mjs" "$rec" > "$schema_err" 2>&1
+  node "$SCRIPT_DIR/framework/schema-validator.mjs" --schema "$SCHEMA_FILE" "$rec" > "$schema_err" 2>&1
   schema_exit=$?
   set -e
 

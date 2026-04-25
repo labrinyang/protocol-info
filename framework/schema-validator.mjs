@@ -1,22 +1,17 @@
 #!/usr/bin/env node
-// Zero-dep schema validator for earn-protocol-info output.
+// Zero-dep, consumer-agnostic JSON schema validator.
 // Usage:
-//   node framework/schema-validator.mjs out/20260422T093012Z/pendle.json
-//   node framework/schema-validator.mjs out/20260422T093012Z/*.json      (glob expanded by shell)
-//   node framework/schema-validator.mjs file.json --schema my-schema.json
-// Exit 0 on all-pass, 1 on any violation, 2 on no files.
+//   node framework/schema-validator.mjs --schema <schema.json> <file.json> [more.json ...]
+//   node framework/schema-validator.mjs --schema my-schema.json out/20260422T093012Z/*.json   (glob expanded by shell)
+// Exit 0 on all-pass, 1 on any violation, 2 on usage errors (missing --schema or no files).
 
 import { readFile } from 'node:fs/promises';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_SCHEMA_PATH = resolve(__dirname, '..', 'schema/earn-protocol-info.schema.json');
+import { resolve } from 'node:path';
 
 // Parse argv: extract --schema <path> from anywhere; remaining tokens are file paths.
 const argv = process.argv.slice(2);
 const files = [];
-let schemaPath = DEFAULT_SCHEMA_PATH;
+let schemaPath = null;
 for (let i = 0; i < argv.length; i++) {
   const arg = argv[i];
   if (arg === '--schema') {
@@ -32,8 +27,13 @@ for (let i = 0; i < argv.length; i++) {
   }
 }
 
+if (!schemaPath) {
+  console.error('error: --schema <path> is required');
+  process.exit(2);
+}
+
 if (files.length === 0) {
-  console.error('usage: node framework/schema-validator.mjs <file.json> [more.json ...] [--schema <path>]');
+  console.error('usage: node framework/schema-validator.mjs --schema <schema.json> <file.json> [more.json ...]');
   process.exit(2);
 }
 
