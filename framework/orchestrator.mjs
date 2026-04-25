@@ -140,32 +140,33 @@ export async function runOne({
   const metaPath = join(slugDir, 'meta.json');
   const rootdataPkt = join(debugDir, 'rootdata.json');
 
-  const rootdataEnabled = !!process.env.ROOTDATA_API_KEY;
+  // ── Phase 1: fetchers (per-fetcher env gating happens inside dispatcher) ─
 
-  // ── Phase 1: fetcher (rootdata) ──────────────────────────────────────────
-
-  let apiExit = 1;
-  if (rootdataEnabled) {
-    const fetchArgs = [
-      '--manifest', manifestPath,
-      '--slug', slug,
-      '--display-name', display,
-      '--hints', hints,
-      '--output', rootdataPkt,
-    ];
-    if (rootdataId) fetchArgs.push('--rootdata-id', rootdataId);
-    const r = await callCli('fetch', fetchArgs);
-    apiExit = r.code;
-    if (r.stderr) {
-      try {
-        await writeFile(join(debugDir, 'rootdata.stderr.log'), r.stderr);
-      } catch { /* best effort */ }
-    }
+  const fetchArgs = [
+    '--manifest', manifestPath,
+    '--slug', slug,
+    '--display-name', display,
+    '--hints', hints,
+    '--output', rootdataPkt,
+  ];
+  if (rootdataId) fetchArgs.push('--rootdata-id', rootdataId);
+  const fetchRes = await callCli('fetch', fetchArgs);
+  const apiExit = fetchRes.code;
+  if (fetchRes.stderr) {
+    try {
+      await writeFile(join(debugDir, 'fetch.stderr.log'), fetchRes.stderr);
+    } catch { /* best effort */ }
   }
 
-  const apiStatus = !rootdataEnabled
-    ? 'disabled'
-    : (apiExit === 0 ? 'ok' : `exit_${apiExit}`);
+  // Read dispatcher's fetcher_status for accurate per-fetcher reporting; the
+  // summary column reflects rootdata specifically (other fetchers' status is
+  // visible inside the packet for debugging).
+  const evidencePacket = await readJsonSafe(rootdataPkt, {});
+  const rootdataStatus = evidencePacket?.fetcher_status?.rootdata || (apiExit === 0 ? 'ok' : `exit_${apiExit}`);
+  const apiStatus = rootdataStatus === 'ok'
+    ? 'ok'
+    : (rootdataStatus.startsWith('skipped') ? 'disabled' : `failed`);
+  const rootdataOk = rootdataStatus === 'ok';
 
   // ── Phase 2: R1 fan-out ──────────────────────────────────────────────────
 
@@ -184,6 +185,8 @@ export async function runOne({
   ];
   if (type) r1Args.push('--type', type);
   if (options.model) r1Args.push('--model', options.model);
+  if (options.maxTurns) r1Args.push('--max-turns', String(options.maxTurns));
+  if (options.maxBudget) r1Args.push('--max-budget', String(options.maxBudget));
 
   const r1Res = await callCli('r1', r1Args);
   const r1Stderr = r1Res.stderr || '';
@@ -197,8 +200,7 @@ export async function runOne({
       process.stderr.write('     --- last stderr lines ---\n');
       process.stderr.write(tailLines(r1Stderr, 20).split('\n').map(l => '     ' + l).join('\n') + '\n\n');
     }
-    const apiCol = rootdataEnabled ? `exit_${apiExit}` : 'disabled';
-    await writeFile(summaryRowFile, `${slug}\tCRAWL_FAIL\t-\t-\t-\t-\tr1\t${apiCol}\n`);
+    await writeFile(summaryRowFile, `${slug}\tCRAWL_FAIL\t-\t-\t-\t-\tr1\t${apiStatus}\n`);
     return { slug, status: 'CRAWL_FAIL' };
   }
 
@@ -211,51 +213,35 @@ export async function runOne({
     return { slug, status: 'CRAWL_FAIL' };
   }
 
-  // ── R1 cost from envelope ────────────────────────────────────────────────
+  // ── R1 telemetry: aggregate across ALL subtask envelopes ────────────────
 
   let r1Cost = 0;
-  const r1Envelope = await readJsonSafe(join(r1DebugDir, 'metadata.envelope.json'), null);
-  if (r1Envelope && typeof r1Envelope.total_cost_usd === 'number') {
-    r1Cost = r1Envelope.total_cost_usd;
-  }
   let r1Turns = 0;
-  if (r1Envelope && typeof r1Envelope.num_turns === 'number') {
-    r1Turns = r1Envelope.num_turns;
-  }
+  try {
+    for (const f of await readdir(r1DebugDir)) {
+      if (!f.endsWith('.envelope.json')) continue;
+      const env = await readJsonSafe(join(r1DebugDir, f), null);
+      if (!env) continue;
+      if (typeof env.total_cost_usd === 'number') r1Cost += env.total_cost_usd;
+      if (typeof env.num_turns === 'number') r1Turns += env.num_turns;
+    }
+  } catch { /* dir may not exist on early failure */ }
 
   let finalSource = 'r1';
   let r2Cost = 0;
   let r2Turns = 0;
-  let overridesApplied = '';
-  const memberCandidatesFed = 0;
-  const fundingSeverity = 'none';
+  const memberCandidatesFed = Array.isArray(evidencePacket?.rootdata?.member_candidates)
+    ? evidencePacket.rootdata.member_candidates.length
+    : 0;
+  let fundingSeverity = 'none';
 
-  // ── Phase 3: validated_overrides patch (inline JS instead of jq) ─────────
-
-  if (rootdataEnabled && apiExit === 0 && existsSync(rootdataPkt)) {
-    const evidence = await readJsonSafe(rootdataPkt, {});
-    const overrides = evidence?.rootdata?.validated_overrides || {};
-    const list = [];
-    const record = await readJsonSafe(recordPath, null);
-    if (record) {
-      if (overrides.providerWebsite) {
-        record.providerWebsite = overrides.providerWebsite;
-        list.push('providerWebsite');
-      }
-      if (overrides.providerXLink) {
-        record.providerXLink = overrides.providerXLink;
-        list.push('providerXLink');
-      }
-      if (list.length > 0) {
-        await writeFile(recordPath, JSON.stringify(record, null, 2));
-      }
-    }
-    overridesApplied = list.join(',');
-  }
+  // (Pre-R2 validated_overrides mutation removed: those overrides remain in
+  // the evidence packet and are arbitrated by R2's audit-first guard, which
+  // honors R1's high-confidence findings via merger.mergeR2.)
 
   // ── Phase 3.5: evidence-diff enrichment ──────────────────────────────────
 
-  if (rootdataEnabled && apiExit === 0 && existsSync(rootdataPkt)) {
+  if (rootdataOk && existsSync(rootdataPkt)) {
     const r = await callCli('evidence-diff', [
       '--evidence-in', rootdataPkt,
       '--record-in', recordPath,
@@ -266,6 +252,8 @@ export async function runOne({
         await writeFile(join(debugDir, 'evidence-diff.stderr.log'), r.stderr);
       } catch { /* best effort */ }
     }
+    const enriched = await readJsonSafe(rootdataPkt, {});
+    fundingSeverity = enriched?.evidence_diff?.funding?.severity || 'none';
   }
 
   // ── Phase 3.6: R2 reconcile ──────────────────────────────────────────────
@@ -288,6 +276,9 @@ export async function runOne({
     '--gaps-out', gapsR2,
     '--debug-dir', r2DebugDir,
   ];
+  if (options.model) r2Args.push('--model', options.model);
+  if (options.maxTurns) r2Args.push('--max-turns', String(options.maxTurns));
+  if (options.maxBudget) r2Args.push('--max-budget', String(options.maxBudget));
   await mkdir(r2DebugDir, { recursive: true });
   const r2Res = await callCli('r2', r2Args);
   if (r2Res.stderr) {
@@ -406,9 +397,6 @@ export async function runOne({
             used: true,
             member_candidates_fed: memberCandidatesFed,
             funding_discrepancy_severity: fundingSeverity,
-            overrides_applied: overridesApplied
-              ? overridesApplied.split(',').filter(Boolean)
-              : [],
           }
         : { used: false, status: apiStatus },
     i18n: null,
@@ -514,6 +502,8 @@ export async function run({
         '--parallel', String(options.i18nParallel ?? 8),
       ];
       if (options.i18nModel) args.push('--model', options.i18nModel);
+      if (options.maxTurns) args.push('--max-turns', String(options.maxTurns));
+      if (options.maxBudget) args.push('--max-budget', String(options.maxBudget));
       const r = await callCli('i18n', args);
       // Mimic run.sh: prefix lines with [<slug>]
       const combined = (r.stdout || '') + (r.stderr || '');

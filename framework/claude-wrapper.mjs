@@ -91,10 +91,20 @@ function spawnAndCollect({
       catch (e) { parseErr = e; }
 
       if (env !== null) {
-        // Resolve with the envelope even on non-zero exit — Claude CLI's `--output-format json`
-        // writes API errors / max-budget / etc. into the envelope (`is_error: true`, `result: <msg>`)
-        // and exits non-zero. Throwing here drops the diagnostic. Downstream parseEnvelope
-        // handles `is_error: true` cases gracefully (returns null slice → ok:false with envelope).
+        // Most envelopes resolve here (including `is_error: true` for permanent errors
+        // like schema mismatches or budget exhaustion — those should NOT retry).
+        // Exception: when `is_error: true` AND the message looks transient (529/503/
+        // overload/timeout), throw so the outer retry path engages — same policy as
+        // a thrown spawn error.
+        if (env.is_error === true) {
+          const txt = typeof env.result === 'string' ? env.result : '';
+          if (TRANSIENT_PATTERNS.some(p => p.test(txt))) {
+            return reject(Object.assign(
+              new Error(`claude transient envelope error: ${txt.slice(0, 300)}`),
+              { code, stderr, stdout, kind: 'transient_envelope', envelope: env }
+            ));
+          }
+        }
         return resolve(env);
       }
 

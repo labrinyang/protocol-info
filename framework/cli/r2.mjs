@@ -36,6 +36,11 @@ const findingsOut = arg('findings-out', null);
 const changesOut = arg('changes-out', null);
 const gapsOut = arg('gaps-out', null);
 const debugDir = arg('debug-dir');
+const model = arg('model', null);
+const maxTurnsCap = arg('max-turns', null);
+const maxBudgetCap = arg('max-budget', null);
+const turnsCap = maxTurnsCap ? Math.max(1, parseInt(maxTurnsCap, 10)) : null;
+const budgetCap = maxBudgetCap ? Math.max(0, Number(maxBudgetCap)) : null;
 const claudeBin = process.env.CLAUDE_BIN || 'claude';
 
 if (!manifestPath || !recordIn || !findingsIn || !gapsIn || !recordOut || !debugDir) {
@@ -83,10 +88,12 @@ function render(t, vars) {
   return Object.entries(vars).reduce((s, [k, v]) => s.replaceAll(`{{${k}}}`, v), t);
 }
 
+const baseTurns = manifest.reconcile.max_turns ?? 30;
+const baseBudget = manifest.reconcile.max_budget_usd ?? 1.50;
 const r2Subtask = {
   name: 'reconcile',
-  max_turns: manifest.reconcile.max_turns ?? 30,
-  max_budget_usd: manifest.reconcile.max_budget_usd ?? 1.50,
+  max_turns: turnsCap != null ? Math.min(baseTurns, turnsCap) : baseTurns,
+  max_budget_usd: budgetCap != null ? Math.min(baseBudget, budgetCap) : baseBudget,
 };
 
 // Lazy-load search fetchers (only those declared with search.enabled=true)
@@ -130,6 +137,7 @@ for (let round = 1; round <= maxRounds; round++) {
     changesSchema,
     gapsSchema,
     outputKey: 'record',
+    model,
     // resumeSession intentionally omitted — fan-out R1 has no single resumable session.
   });
 

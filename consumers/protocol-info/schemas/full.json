@@ -210,7 +210,7 @@
         "lastScannedAt": {
           "type": "string",
           "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
-          "description": "UTC date the audits block was scanned. Claude may leave any YYYY-MM-DD value; run.sh overwrites this with `date -u +%Y-%m-%d` before validation."
+          "description": "UTC date the audits block was scanned. Claude may leave any YYYY-MM-DD value; the protocol-info-final normalizer (consumers/protocol-info/normalizers/final.mjs) overwrites this with today's UTC date before validation."
         }
       }
     },

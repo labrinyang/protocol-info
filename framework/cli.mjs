@@ -11,9 +11,9 @@
 //   --hints <text>            (per-provider; OPTIONAL)
 //   --rootdata-id <int>       (per-provider; OPTIONAL)
 //   --batch                   flush accumulated provider info; allows multiple
-//   --model <name>            applies to every provider's R1
-//   --max-turns <n>           reserved (currently consumed by manifest defaults)
-//   --max-budget <usd>        reserved (currently consumed by manifest defaults)
+//   --model <name>            applies to every provider's R1, R2, and i18n
+//   --max-turns <n>           per-Claude-call cap (clamps manifest default down)
+//   --max-budget <usd>        per-Claude-call USD cap (clamps manifest default down)
 //   --parallel <n>            default 1; dry-run forces 1
 //   --i18n <flag>             "none" | "all" | "zh_CN,ja_JP,..." | empty
 //   --i18n-parallel <n>       default 8
@@ -90,9 +90,9 @@ Per-provider flags (use --batch to separate multiple providers):
   --batch                 flush accumulated provider; start a new one
 
 Run-wide flags:
-  --model <name>          override Claude model
-  --max-turns <n>         reserved
-  --max-budget <usd>      reserved
+  --model <name>          override Claude model (R1+R2+i18n)
+  --max-turns <n>         per-Claude-call turn cap (clamps manifest default)
+  --max-budget <usd>      per-Claude-call USD cap (clamps manifest default)
   --parallel <n>          default 1; dry-run forces 1
   --i18n <flag>           "none" | "all" | "zh_CN,ja_JP,..." | "" (silent skip)
   --i18n-parallel <n>     default 8
@@ -119,6 +119,8 @@ let i18nParallel = 8;
 let i18nModel = '';
 let dryRun = false;
 let manifestPath = DEFAULT_MANIFEST;
+let maxTurnsCap = '';
+let maxBudgetCap = '';
 
 function flush() {
   if (!cur.dn && !cur.type) return;
@@ -158,8 +160,8 @@ for (let i = 0; i < argv.length; i++) {
   switch (a) {
     case '--manifest':       manifestPath = nextArg(); break;
     case '--model':          model = nextArg(); break;
-    case '--max-turns':      nextArg(); /* reserved */ break;
-    case '--max-budget':     nextArg(); /* reserved */ break;
+    case '--max-turns':      maxTurnsCap = nextArg(); break;
+    case '--max-budget':     maxBudgetCap = nextArg(); break;
     case '--parallel':       parallel = parseInt(nextArg(), 10); break;
     case '--i18n':           i18nArg = nextArg(); break;
     case '--i18n-parallel':  i18nParallel = parseInt(nextArg(), 10); break;
@@ -196,6 +198,26 @@ if (!Number.isInteger(parallel) || parallel < 1) {
 if (!Number.isInteger(i18nParallel) || i18nParallel < 1) {
   process.stderr.write(`错误: --i18n-parallel 必须是正整数（当前: ${i18nParallel}）\n`);
   process.exit(1);
+}
+
+let maxTurns = null;
+if (maxTurnsCap !== '') {
+  const n = parseInt(maxTurnsCap, 10);
+  if (!Number.isInteger(n) || n < 1) {
+    process.stderr.write(`错误: --max-turns 必须是正整数（当前: ${maxTurnsCap}）\n`);
+    process.exit(1);
+  }
+  maxTurns = n;
+}
+
+let maxBudget = null;
+if (maxBudgetCap !== '') {
+  const n = Number(maxBudgetCap);
+  if (!Number.isFinite(n) || n <= 0) {
+    process.stderr.write(`错误: --max-budget 必须是正数（当前: ${maxBudgetCap}）\n`);
+    process.exit(1);
+  }
+  maxBudget = n;
 }
 
 // dry-run forces parallel=1
@@ -240,6 +262,8 @@ try {
       i18nArg,
       i18nParallel,
       i18nModel,
+      maxTurns,
+      maxBudget,
     },
   });
 } catch (err) {

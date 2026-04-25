@@ -56,6 +56,8 @@ export async function runI18nStage({
   claudeBin = 'claude',
   modelOverride = null,
   budgetLedger = null,
+  turnsCap = null,
+  budgetCap = null,
   logger = console,
 }) {
   if (!manifest.i18n?.enabled) return { ok: 0, failed: [], translations: {} };
@@ -84,14 +86,16 @@ export async function runI18nStage({
       .replaceAll('{{LOCALE_NAME}}', localeName)
       .replaceAll('{{SOURCE_JSON}}', JSON.stringify(sourceJson, null, 2));
 
+    const baseTurns = 3;
+    const baseBudget = manifest.i18n.max_budget_usd_per_call ?? 0.10;
     try {
       const env = await runClaude({
         claudeBin,
         systemPrompt: sysPrompt,
         userPrompt,
         schemaJson: i18nSchema,
-        maxTurns: 3,
-        maxBudgetUsd: manifest.i18n.max_budget_usd_per_call ?? 0.10,
+        maxTurns: turnsCap != null ? Math.min(baseTurns, turnsCap) : baseTurns,
+        maxBudgetUsd: budgetCap != null ? Math.min(baseBudget, budgetCap) : baseBudget,
         model: modelOverride || manifest.i18n.model_default,
         budgetLedger,
       });

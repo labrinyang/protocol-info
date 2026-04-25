@@ -68,6 +68,77 @@ export const tests = [
     },
   },
   {
+    name: 'retries when envelope reports transient error (is_error + 529)',
+    fn: async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'claude-tenv-'));
+      const counterPath = join(dir, 'count');
+      const claudePath = join(dir, 'claude');
+      await writeFile(counterPath, '0');
+      const script = `#!/bin/bash
+cat > /dev/null
+n=$(cat ${counterPath})
+echo $((n+1)) > ${counterPath}
+if [ "$n" = "0" ]; then
+  echo '{"type":"result","is_error":true,"result":"API Error: 529 overloaded_error","total_cost_usd":0,"num_turns":0,"session_id":"s"}'
+  exit 1
+fi
+echo '{"session_id":"s2","total_cost_usd":0.01,"num_turns":1,"structured_output":{"ok":true}}'
+`;
+      await writeFile(claudePath, script);
+      await chmod(claudePath, 0o755);
+      try {
+        const env = await runClaude({
+          claudeBin: claudePath,
+          userPrompt: 'x',
+          schemaJson: {},
+          maxTurns: 1,
+          maxBudgetUsd: 0.01,
+          retryOnTransient: true,
+          retryDelayMs: 10,
+        });
+        assert.equal(env.session_id, 's2');
+        const count = Number(await readFile(counterPath, 'utf8'));
+        assert.equal(count, 2);
+      } finally {
+        await rm(dir, { recursive: true });
+      }
+    },
+  },
+  {
+    name: 'does NOT retry permanent envelope errors (e.g. 400 invalid_request)',
+    fn: async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'claude-perm-'));
+      const counterPath = join(dir, 'count');
+      const claudePath = join(dir, 'claude');
+      await writeFile(counterPath, '0');
+      const script = `#!/bin/bash
+cat > /dev/null
+n=$(cat ${counterPath})
+echo $((n+1)) > ${counterPath}
+echo '{"type":"result","is_error":true,"result":"API Error: 400 invalid_request_error","total_cost_usd":0,"num_turns":0,"session_id":"s"}'
+exit 1
+`;
+      await writeFile(claudePath, script);
+      await chmod(claudePath, 0o755);
+      try {
+        const env = await runClaude({
+          claudeBin: claudePath,
+          userPrompt: 'x',
+          schemaJson: {},
+          maxTurns: 1,
+          maxBudgetUsd: 0.01,
+          retryOnTransient: true,
+          retryDelayMs: 10,
+        });
+        assert.equal(env.is_error, true);
+        const count = Number(await readFile(counterPath, 'utf8'));
+        assert.equal(count, 1);
+      } finally {
+        await rm(dir, { recursive: true });
+      }
+    },
+  },
+  {
     name: 'retries once on transient 5xx-style failure',
     fn: async () => {
       const dir = await mkdtemp(join(tmpdir(), 'claude-retry-'));

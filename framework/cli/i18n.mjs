@@ -17,6 +17,10 @@ const localesArg = arg('locales', '');
 const outputDir = arg('output-dir');
 const parallelism = parseInt(arg('parallel', '8'), 10);
 const modelOverride = arg('model', null);
+const maxTurnsCap = arg('max-turns', null);
+const maxBudgetCap = arg('max-budget', null);
+const turnsCap = maxTurnsCap ? Math.max(1, parseInt(maxTurnsCap, 10)) : null;
+const budgetCap = maxBudgetCap ? Math.max(0, Number(maxBudgetCap)) : null;
 
 if (!manifestPath || !recordPath || !outputDir) {
   console.error('usage: i18n.mjs --manifest M --record R --locales <comma-list> --output-dir D');
@@ -40,6 +44,7 @@ for (const code of requested) {
 
 const result = await runI18nStage({
   manifest, record, selectedLocales, outputDir, parallelism, modelOverride,
+  turnsCap, budgetCap,
   claudeBin: process.env.CLAUDE_BIN || 'claude',
   logger: { info: m => console.error(`[i18n] ${m}`), warn: m => console.error(`[i18n:warn] ${m}`) },
 });

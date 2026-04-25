@@ -28,11 +28,14 @@ const manifestPath = arg('manifest');
 const slug = arg('slug');
 const provider = arg('provider', slug);
 const displayName = arg('display-name');
-// `type` is OPTIONAL: Phase 4 metadata subtask infers it from evidence.
-// Accepted as a soft hint; when supplied it's surfaced in {{HINTS}} only,
-// never substituted as a fact in metadata's prompt.
+// `type` is OPTIONAL: the metadata subtask infers it from evidence. When
+// supplied via --type, fold into hints as a soft preference — the prompt
+// already documents the override semantics for type tokens in {{HINTS}}.
 const type = arg('type', '');
-const hints = arg('hints', '');
+const rawHints = arg('hints', '');
+const hints = type
+  ? (rawHints ? `${rawHints}; type=${type}` : `type=${type}`)
+  : rawHints;
 const evidencePath = arg('evidence');
 const recordOut = arg('record-out');
 const debugDir = arg('debug-dir');
@@ -42,6 +45,12 @@ const gapsOut = arg('gaps-out');
 const handoffOut = arg('handoff-out');
 const claudeBin = process.env.CLAUDE_BIN || 'claude';
 const concurrency = parseInt(arg('concurrency', '4'), 10);
+
+// Per-call caps clamp manifest defaults *down* (never raise them).
+const maxTurnsCap = arg('max-turns', null);
+const maxBudgetCap = arg('max-budget', null);
+const turnsCap = maxTurnsCap ? Math.max(1, parseInt(maxTurnsCap, 10)) : null;
+const budgetCap = maxBudgetCap ? Math.max(0, Number(maxBudgetCap)) : null;
 
 if (!manifestPath || !slug || !displayName || !recordOut || !debugDir) {
   console.error('usage: r1.mjs --manifest M --slug S --display-name D [--type T] [--provider P] [--hints H] [--model M] --evidence E --record-out R --debug-dir D2 [--findings-out F] [--gaps-out G] [--handoff-out H]');
@@ -79,15 +88,19 @@ const tasks = manifest._abs.subtasks.map(st => async () => {
       SLUG: slug,
       PROVIDER: provider,
       DISPLAY_NAME: displayName,
-      TYPE: type,    // empty string if --type not passed; metadata template doesn't use {{TYPE}} anyway
       HINTS: hints,
       SCHEMA: JSON.stringify(slice, null, 2),
       EVIDENCE: JSON.stringify(evSubset, null, 2),
     });
 
-    console.error(`[r1:${st.name}] starting (max_budget=$${st.max_budget_usd} max_turns=${st.max_turns})`);
+    const effSubtask = {
+      ...st,
+      max_turns: turnsCap != null ? Math.min(st.max_turns, turnsCap) : st.max_turns,
+      max_budget_usd: budgetCap != null ? Math.min(st.max_budget_usd, budgetCap) : st.max_budget_usd,
+    };
+    console.error(`[r1:${st.name}] starting (max_budget=$${effSubtask.max_budget_usd} max_turns=${effSubtask.max_turns})`);
     const r = await runSubtask({
-      claudeBin, subtask: st, systemPrompt, userPrompt, schemaSlice: slice, model,
+      claudeBin, subtask: effSubtask, systemPrompt, userPrompt, schemaSlice: slice, model,
       findingsSchema, gapsSchema,
     });
 

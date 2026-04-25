@@ -41,6 +41,31 @@ export const tests = [
     },
   },
   {
+    name: 'keyless fetcher runs even when sibling needs missing env',
+    fn: async () => {
+      await withFakeFetcher(
+        `export default async () => ({ name: 'rootdata', ok: true, data: {anchors: 1}, cost_usd: 0, fetched_at: 'now' });`,
+        async (rdPath) => {
+          await withFakeFetcher(
+            `export default async () => ({ name: 'defillama', ok: true, data: {category: 'dex'}, cost_usd: 0, fetched_at: 'now' });`,
+            async (dlPath) => {
+              const packet = await dispatchFetchers({
+                fetchers: [
+                  { name: 'rootdata', module_abs: rdPath, optional: true, required_env: ['ROOTDATA_API_KEY'] },
+                  { name: 'defillama', module_abs: dlPath, optional: true, required_env: [] },
+                ],
+                ctx: { slug: 's', displayName: 'S', hints: '', env: {}, logger: { info: () => {}, warn: () => {} } },
+              });
+              assert.match(packet.fetcher_status.rootdata, /^skipped:/);
+              assert.equal(packet.fetcher_status.defillama, 'ok');
+              assert.deepEqual(packet.defillama, { category: 'dex' });
+            },
+          );
+        },
+      );
+    },
+  },
+  {
     name: 'continues when an optional fetcher fails',
     fn: async () => {
       await withFakeFetcher(
