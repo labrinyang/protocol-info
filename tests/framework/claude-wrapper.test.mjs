@@ -69,6 +69,7 @@ echo '{"session_id":"s","total_cost_usd":0.01,"num_turns":1,"structured_output":
           maxTurns: 1,
           maxBudgetUsd: 0.01,
           retryOnTransient: true,
+          retryDelayMs: 10,
         });
         assert.equal(env.session_id, 's');
       } finally {
@@ -100,12 +101,45 @@ exit 1
           maxTurns: 1,
           maxBudgetUsd: 0.01,
           retryOnTransient: true,
+          retryDelayMs: 10,
         }), /529|overloaded|claude exit/);
         const count = Number(await readFile(counterPath, 'utf8'));
         assert.equal(count, 2);
       } finally {
         await rm(dir, { recursive: true });
       }
+    },
+  },
+  {
+    name: 'thrown errors carry err.kind for orchestrator classification',
+    fn: async () => {
+      // arg_invalid
+      await assert.rejects(
+        () => runClaude({ schemaJson: {}, maxTurns: 1, maxBudgetUsd: 0.01 }),
+        (err) => err.kind === 'arg_invalid'
+      );
+      // budget_exhausted (ledger reports 0 remaining)
+      await withStub('cat > /dev/null; echo \'{}\'', async (claudePath) => {
+        const ledger = { remaining: () => 0, record: () => {} };
+        await assert.rejects(
+          () => runClaude({ claudeBin: claudePath, userPrompt: 'x', schemaJson: {}, maxTurns: 1, maxBudgetUsd: 1, budgetLedger: ledger, retryOnTransient: false }),
+          (err) => err.kind === 'budget_exhausted'
+        );
+      });
+      // exit_nonzero
+      await withStub('cat > /dev/null; exit 7', async (claudePath) => {
+        await assert.rejects(
+          () => runClaude({ claudeBin: claudePath, userPrompt: 'x', schemaJson: {}, maxTurns: 1, maxBudgetUsd: 0.01, retryOnTransient: false }),
+          (err) => err.kind === 'exit_nonzero' && err.code === 7
+        );
+      });
+      // stdout_not_json
+      await withStub('cat > /dev/null; echo "not json"', async (claudePath) => {
+        await assert.rejects(
+          () => runClaude({ claudeBin: claudePath, userPrompt: 'x', schemaJson: {}, maxTurns: 1, maxBudgetUsd: 0.01 }),
+          (err) => err.kind === 'stdout_not_json'
+        );
+      });
     },
   },
 ];

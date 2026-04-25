@@ -5,12 +5,12 @@
 import { spawn } from 'node:child_process';
 
 const TRANSIENT_PATTERNS = [
-  /529/i,
-  /overloaded/i,
-  /timeout/i,
-  /ECONNRESET/i,
-  /503/i,
-  /502/i,
+  /\b529\b/,
+  /\boverloaded\b/i,
+  /\btimeout\b/i,
+  /\bECONNRESET\b/,
+  /\b503\b/,
+  /\b502\b/,
 ];
 
 export async function runClaude({
@@ -28,12 +28,12 @@ export async function runClaude({
   retryDelayMs = 2000,
   budgetLedger = null,
 }) {
-  if (!userPrompt) throw new Error('runClaude: userPrompt is required');
-  if (!schemaJson) throw new Error('runClaude: schemaJson is required');
+  if (!userPrompt) throw Object.assign(new Error('runClaude: userPrompt is required'), { kind: 'arg_invalid' });
+  if (!schemaJson) throw Object.assign(new Error('runClaude: schemaJson is required'), { kind: 'arg_invalid' });
 
   const attempt = async () => {
     const attemptBudget = budgetLedger ? Math.min(maxBudgetUsd, budgetLedger.remaining()) : maxBudgetUsd;
-    if (!(attemptBudget > 0)) throw new Error('max-budget exhausted before claude attempt');
+    if (!(attemptBudget > 0)) throw Object.assign(new Error('max-budget exhausted before claude attempt'), { kind: 'budget_exhausted' });
     const env = await spawnAndCollect({
       claudeBin, systemPrompt, userPrompt, schemaJson,
       maxTurns, maxBudgetUsd: attemptBudget, permissionMode, allowedTools, resumeSession, model,
@@ -83,14 +83,14 @@ function spawnAndCollect({
     proc.stderr.setEncoding('utf8');
     proc.stdout.on('data', d => { stdout += d; });
     proc.stderr.on('data', d => { stderr += d; });
-    proc.on('error', err => reject(Object.assign(err, { stderr })));
+    proc.on('error', err => reject(Object.assign(err, { stderr, kind: 'spawn_error' })));
     proc.on('close', code => {
       if (code !== 0) {
-        return reject(Object.assign(new Error(`claude exit ${code}: ${stderr.slice(0, 500)}`), { code, stderr, stdout }));
+        return reject(Object.assign(new Error(`claude exit ${code}: ${stderr.slice(0, 500)}`), { code, stderr, stdout, kind: 'exit_nonzero' }));
       }
       let env;
       try { env = JSON.parse(stdout); }
-      catch (e) { return reject(Object.assign(new Error(`claude stdout not JSON: ${e.message}`), { stdout, stderr })); }
+      catch (e) { return reject(Object.assign(new Error(`claude stdout not JSON: ${e.message}`), { stdout, stderr, kind: 'stdout_not_json' })); }
       resolve(env);
     });
     proc.stdin.end(userPrompt);
