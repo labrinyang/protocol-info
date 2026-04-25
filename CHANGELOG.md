@@ -4,6 +4,80 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] — 2026-04-25
+
+Major migration: monolithic bash crawler → reusable Deep Research framework.
+Standalone CLI and Claude Code plugin behavior preserved; outputs (record.json,
+record.import.json, record.full.json, meta.json) and CLI flags unchanged.
+
+### Added
+- `framework/` — reusable Deep Research engine (manifest-driven, consumer-agnostic):
+  - `framework/cli.mjs` (CLI entry, replaces the bash main loop)
+  - `framework/orchestrator.mjs` (per-provider sequencer)
+  - Per-stage CLI shims under `framework/cli/`: `fetch.mjs`, `r1.mjs`, `r2.mjs`,
+    `evidence-diff.mjs`, `normalize.mjs`, `i18n.mjs`, `post.mjs`
+  - Reusable utilities: `claude-wrapper.mjs`, `parallel-runner.mjs`,
+    `manifest-loader.mjs`, `subtask-runner.mjs`, `merger.mjs`,
+    `i18n-stage.mjs`, `normalizer-stage.mjs`, `search-channel.mjs`,
+    `evidence-diff.mjs`, `schema-validator.mjs`, `json-extract.mjs`
+  - Universal schemas: `findings.schema.json`, `gaps.schema.json`,
+    `changes.schema.json`, `consumer-manifest.schema.json`
+- `consumers/protocol-info/` — protocol-info as the first framework consumer:
+  - `manifest.json` declares fetchers, R1 subtasks, reconcile config, i18n
+    catalog, normalizers, post-processing.
+  - 4 R1 subtask slice schemas (metadata / team / funding / audits) and
+    matching prompt templates.
+  - 4 fetchers (rootdata, defillama).
+  - β-shape output: each subtask returns `{slice, findings, gaps, handoff_notes}`.
+- R1 fan-out: 4 parallel subtasks (metadata / team / funding / audits) merge
+  into a single record. Per-subtask Claude session, per-subtask budget caps.
+- R2 audit-first reconcile: synthesis-and-deepening pass with audit guard
+  (high-confidence R1 fields can't be silently overwritten without provenance);
+  optional RootData search-channel for targeted deepening rounds.
+- Findings/gaps/changes provenance: every record field can carry a finding
+  (source URL + confidence) and a change record (R2 mutations); unresolved
+  fields are tracked as gaps with what was tried. Audit trail is auditable
+  via `findings.json`, `changes.json`, `gaps.json` next to `record.json`.
+- Type inference: `--type` is now optional. The metadata subtask infers it
+  from evidence; previous CLI hint was a leakage source that biased output.
+
+### Changed
+- Bash `run.sh` is now a 37-line shim: .env autoload + `exec node framework/cli.mjs`.
+  All pipeline logic moved to Node. Net: ~600 bash lines deleted.
+- `validated_overrides` (RootData providerWebsite / providerXLink) applied
+  in JS at the orchestrator (no jq dependency).
+- `audits.lastScannedAt` now set by `consumers/protocol-info/normalizers/final.mjs`
+  (deterministic post-R2 stage), not a bash one-liner.
+- Per-subtask budgets default to $1.50 (was $0.50 — proved too tight on
+  PDF-heavy audits subtask).
+- i18n stage and dashboard export ported to Node modules; `record.import.json`
+  byte-shape preserved (modulo `exportedAt` timestamp).
+- Plugin and standalone CLI flag set unchanged: `--display-name`, `--type`,
+  `--slug`, `--hints`, `--rootdata-id`, `--batch`, `--model`, `--parallel`,
+  `--i18n`, `--i18n-parallel`, `--i18n-model`, `--dry-run`.
+
+### Removed
+- Bash functions: `slugify`, `flush_provider`, `run_one`, `i18n_pick_interactive`,
+  `i18n_translate_one`, `i18n_dispatch`, `locale_name_for`,
+  `dashboard_locale_for`, `export_dashboard_record`. All replaced with Node
+  equivalents.
+- The legacy `--resume` session approach for R2: structurally incompatible
+  with fan-out R1 (each subtask has its own session_id). R2 now starts a
+  fresh session per round and receives merged record + full evidence inline.
+- The `jq` runtime dependency.
+
+### Architecture notes
+- A new consumer can be added by writing a manifest + slice schemas + prompt
+  templates + (optionally) fetchers + (optionally) normalizers + post-processing
+  modules. The framework provides everything else.
+- Zero runtime dependencies: pure ESM `.mjs`, Node stdlib only.
+
+### Known limitations
+- Locale catalog has 19 entries; dashboard supports 21. Two locales pending
+  authoritative confirmation.
+- `--max-turns` / `--max-budget` CLI flags accepted but currently overridden
+  by per-subtask manifest values; revisit if a global cap is needed.
+
 ## [0.4.0] — 2026-04-25
 
 ### Added

@@ -1,6 +1,6 @@
 {
   "name": "protocol-info",
-  "version": "0.8.0-wip",
+  "version": "1.0.0",
   "schemas": { "full": "./schemas/full.json" },
   "fetchers": [
     { "name": "rootdata", "module": "./fetchers/rootdata.mjs", "required_env": ["ROOTDATA_API_KEY"], "optional": true, "search": { "enabled": true, "types": ["project", "person"], "max_queries_per_round": 4 } },
