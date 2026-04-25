@@ -334,8 +334,26 @@ run_one() {
   local rootdata_err="$debug_dir/rootdata.stderr.log"
   local schema_err="$debug_dir/schema.stderr.log"
 
-  # ── Phase 1: Parallel execution (Claude Round 1 + RootData API) ──
+  # ── Phase 1: Fetch evidence (must complete before R1 so subtask prompts see it) ──
 
+  api_exit=1
+  if [[ $ROOTDATA_ENABLED -eq 1 ]]; then
+    set +e
+    node "$SCRIPT_DIR/framework/cli/fetch.mjs" \
+      --manifest "$SCRIPT_DIR/consumers/protocol-info/manifest.json" \
+      --slug "$slug" \
+      --display-name "$display" \
+      --hints "$hints" \
+      ${rootdata_id:+--rootdata-id "$rootdata_id"} \
+      --output "$rootdata_pkt" \
+      2> "$rootdata_err"
+    api_exit=$?
+    set -e
+  fi
+
+  # ── Phase 2: R1 fan-out (4 parallel subtasks; evidence now ready on disk) ──
+
+  set +e
   node "$SCRIPT_DIR/framework/cli/r1.mjs" \
     --manifest "$SCRIPT_DIR/consumers/protocol-info/manifest.json" \
     --slug "$slug" \
@@ -347,28 +365,8 @@ run_one() {
     --evidence "$rootdata_pkt" \
     --record-out "$rec" \
     --debug-dir "$debug_dir/r1" \
-    > /dev/null 2> "$r1_err" &
-  pid_claude=$!
-
-  api_exit=1
-  if [[ $ROOTDATA_ENABLED -eq 1 ]]; then
-    node "$SCRIPT_DIR/framework/cli/fetch.mjs" \
-      --manifest "$SCRIPT_DIR/consumers/protocol-info/manifest.json" \
-      --slug "$slug" \
-      --display-name "$display" \
-      --hints "$hints" \
-      ${rootdata_id:+--rootdata-id "$rootdata_id"} \
-      --output "$rootdata_pkt" \
-      2> "$rootdata_err" &
-    pid_api=$!
-  fi
-
-  # Wait for both processes
-  set +e
-  wait $pid_claude; r1_exit=$?
-  if [[ $ROOTDATA_ENABLED -eq 1 ]]; then
-    wait $pid_api; api_exit=$?
-  fi
+    > /dev/null 2> "$r1_err"
+  r1_exit=$?
   set -e
 
   # ── Phase 2: Extract Round 1 result ──
