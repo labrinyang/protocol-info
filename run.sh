@@ -79,7 +79,6 @@ RECONCILE_TMPL_FILE="$SCRIPT_DIR/prompts/reconcile.md.tmpl"
 I18N_SYSTEM_FILE="$SCRIPT_DIR/prompts/i18n.system.md"
 I18N_TMPL_FILE="$SCRIPT_DIR/prompts/i18n.user.md.tmpl"
 I18N_SCHEMA_FILE="$SCRIPT_DIR/schema/i18n.schema.json"
-PREPROCESS_SCRIPT="$SCRIPT_DIR/consumers/protocol-info/fetchers/rootdata.mjs"
 RUN_TS="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_DIR="$SCRIPT_DIR/out/$RUN_TS"
 SUMMARY_FILE="$OUT_DIR/summary.tsv"
@@ -351,14 +350,12 @@ run_one() {
 
   api_exit=1
   if [[ $ROOTDATA_ENABLED -eq 1 ]]; then
-    rootdata_id_flag=()
-    if [[ -n "$rootdata_id" ]]; then
-      rootdata_id_flag=(--rootdata-id "$rootdata_id")
-    fi
-    node "$PREPROCESS_SCRIPT" \
+    node "$SCRIPT_DIR/framework/cli/fetch.mjs" \
+      --manifest "$SCRIPT_DIR/consumers/protocol-info/manifest.json" \
       --slug "$slug" \
       --display-name "$display" \
-      ${rootdata_id_flag[@]+"${rootdata_id_flag[@]}"} \
+      --hints "$hints" \
+      ${rootdata_id:+--rootdata-id "$rootdata_id"} \
       --output "$rootdata_pkt" \
       2> "$rootdata_err" &
     pid_api=$!
@@ -443,16 +440,16 @@ run_one() {
     api_status="ok"
     echo "  -> API packet ready, building Round 2 prompt..."
 
-    # Read API packet sections
-    establishment_value=$(jq -r '.anchors.establishment.value // "unknown"' "$rootdata_pkt")
-    member_candidates_json=$(jq -c '.member_candidates' "$rootdata_pkt")
-    member_candidates_fed=$(jq '.member_candidates | length' "$rootdata_pkt")
+    # Read API packet sections (under .rootdata subtree from the dispatcher)
+    establishment_value=$(jq -r '.rootdata.anchors.establishment.value // "unknown"' "$rootdata_pkt")
+    member_candidates_json=$(jq -c '.rootdata.member_candidates' "$rootdata_pkt")
+    member_candidates_fed=$(jq '.rootdata.member_candidates | length' "$rootdata_pkt")
 
     # Compute investor diff (Step B from §3.4.3)
     # Extract Round 1 investors (normalized: lowercase, strip common suffixes)
     r1_investors=$(jq -r '[.fundingRounds[]?.investors[]?] | map(ascii_downcase | gsub("[[:space:]]+(capital|ventures|labs|fund|partners|investments|group|network)[[:space:]]*$"; "")) | unique | .[]' "$rec" 2>/dev/null || echo "")
     # Use pre-normalized investor names from the API packet (normalized in JS)
-    api_org_investors=$(jq -r '.api_funding.investors_orgs_normalized[]?' "$rootdata_pkt" 2>/dev/null || echo "")
+    api_org_investors=$(jq -r '.rootdata.api_funding.investors_orgs_normalized[]?' "$rootdata_pkt" 2>/dev/null || echo "")
 
     # Compute missing org investors (full-line match to avoid substring false positives)
     missing_orgs=()
@@ -464,8 +461,8 @@ run_one() {
     done <<< "$api_org_investors"
 
     missing_org_count=${#missing_orgs[@]}
-    api_people=$(jq -r '.api_funding.investors_people // []' "$rootdata_pkt")
-    api_total_funding=$(jq -r '.api_funding.total_funding // "unknown"' "$rootdata_pkt")
+    api_people=$(jq -r '.rootdata.api_funding.investors_people // []' "$rootdata_pkt")
+    api_total_funding=$(jq -r '.rootdata.api_funding.total_funding // "unknown"' "$rootdata_pkt")
 
     # Severity classification
     if [[ $missing_org_count -gt 5 ]]; then
@@ -553,8 +550,8 @@ run_one() {
     fi
 
     # Apply validated_overrides via jq patch (AFTER Round 2)
-    override_website=$(jq -r '.validated_overrides.providerWebsite // empty' "$rootdata_pkt")
-    override_xlink=$(jq -r '.validated_overrides.providerXLink // empty' "$rootdata_pkt")
+    override_website=$(jq -r '.rootdata.validated_overrides.providerWebsite // empty' "$rootdata_pkt")
+    override_xlink=$(jq -r '.rootdata.validated_overrides.providerXLink // empty' "$rootdata_pkt")
     overrides_list=()
 
     if [[ -n "$override_website" ]]; then
