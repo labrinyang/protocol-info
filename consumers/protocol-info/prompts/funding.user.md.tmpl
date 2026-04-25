@@ -42,12 +42,20 @@ Return a JSON object with four fields:
   "slice":    { ... <fields per the schema above> ... },
   "findings": [
     {
-      "field":      "JSON path of a field, e.g. 'members[0].oneLiner'",
-      "value":      <the value you put in slice at that path>,
-      "source":     "primary URL where you verified it",
-      "confidence": 0.0-1.0,
-      "method":     "≤200 chars: how you verified, e.g. 'X bio + LinkedIn cross-check'",
-      "supporting_sources": ["optional", "≤5 corroborating URLs"]
+      "field":      "establishment",
+      "value":      2021,
+      "source":     "https://example.xyz/about",
+      "confidence": 0.92,
+      "method":     "official about page",
+      "supporting_sources": ["https://example.xyz/blog/launch"]
+    },
+    {
+      "field":      "members[0].memberPosition",
+      "entity_key": "member:Alice Liu",
+      "value":      "Co-Founder & CEO",
+      "source":     "https://x.com/aliceliu",
+      "confidence": 0.88,
+      "method":     "X bio + LinkedIn cross-check"
     }
   ],
   "gaps": [
@@ -70,6 +78,7 @@ Rules for gaps:
 
 Rules for handoff notes:
 - Use when you discover a useful clue outside your slice. Do not add out-of-scope fields to `slice`; preserve the clue here so R2 can synthesize across slices.
+- `target` must be exactly one of: `metadata`, `team`, `funding`, `audits`, `reconcile` (lowercase, no plurals).
 - Empty array is fine.
 
 No prose. JSON only.
