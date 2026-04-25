@@ -42,4 +42,28 @@ export const tests = [
       assert.equal(warned, true);
     },
   },
+  {
+    name: 'accumulates findings and gaps with stage + subtask tags',
+    fn: async () => {
+      const result = mergeSlices([
+        { name: 'metadata', ok: true, slice: { slug: 's' },
+          findings: [{ field: 'slug', value: 's', source: 'https://x', confidence: 1 }],
+          gaps: [],
+          handoff_notes: [] },
+        { name: 'team', ok: true, slice: { members: [] },
+          findings: [],
+          gaps: [{ field: 'members', reason: 'no team page found', tried: ['website'] }],
+          handoff_notes: [{ target: 'funding', note: 'A appears in seed announcement', source: 'https://example.com/seed' }] },
+      ], { stage: 'r1' });
+      assert.equal(result.findings.length, 1);
+      assert.equal(result.findings[0].subtask, 'metadata');
+      assert.equal(result.findings[0].stage, 'r1');
+      assert.equal(result.gaps.length, 1);
+      assert.equal(result.gaps[0].subtask, 'team');
+      assert.equal(result.gaps[0].stage, 'r1');
+      assert.equal(result.handoff_notes.length, 1);
+      assert.equal(result.handoff_notes[0].subtask, 'team');
+      assert.equal(result.handoff_notes[0].stage, 'r1');
+    },
+  },
 ];
