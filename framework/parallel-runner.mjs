@@ -2,6 +2,12 @@
 // runWithLimit(n, tasks, opts?) — tasks is an array of () => Promise<T>.
 // Returns Promise<T[]> in input order. With opts.collectErrors=true, returns
 // Array<{ok:true,value} | {ok:false,error}> instead of throwing.
+//
+// Without collectErrors, the first thrown task rejects the overall promise
+// and prevents further tasks from being picked up. In-flight tasks complete
+// naturally (you cannot cancel an in-progress await), but their results are
+// discarded. Use collectErrors:true if you want every task to run regardless
+// of sibling failures.
 
 export async function runWithLimit(limit, tasks, opts = {}) {
   if (!Number.isInteger(limit) || limit < 1) {
@@ -9,10 +15,11 @@ export async function runWithLimit(limit, tasks, opts = {}) {
   }
   const results = new Array(tasks.length);
   let next = 0;
+  let failed = false;
   const collectErrors = !!opts.collectErrors;
 
   async function worker() {
-    while (true) {
+    while (!failed) {
       const idx = next++;
       if (idx >= tasks.length) return;
       try {
@@ -22,6 +29,7 @@ export async function runWithLimit(limit, tasks, opts = {}) {
         if (collectErrors) {
           results[idx] = { ok: false, error: err };
         } else {
+          failed = true;
           throw err;
         }
       }

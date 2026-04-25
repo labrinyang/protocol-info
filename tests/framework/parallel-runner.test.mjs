@@ -47,4 +47,28 @@ export const tests = [
       assert.equal(results[2].value, 'c');
     },
   },
+  {
+    name: 'fail-fast: no further tasks picked up after a thrown task',
+    fn: async () => {
+      let started = 0;
+      const N = 20;
+      const tasks = Array.from({ length: N }, (_, i) => async () => {
+        started++;
+        if (i === 0) {
+          // give a sibling worker time to pick up index 1, but reject quickly
+          await new Promise(r => setTimeout(r, 5));
+          throw new Error('task 0 failed');
+        }
+        // hold long enough that the rejection lands first
+        await new Promise(r => setTimeout(r, 50));
+        return i;
+      });
+      await assert.rejects(() => runWithLimit(2, tasks), /task 0 failed/);
+      // wait long enough for any leaked workers to have run
+      await new Promise(r => setTimeout(r, 100));
+      // Two workers were active when the throw happened — both will finish
+      // their current task (index 0 and index 1), but no third pickup.
+      assert.ok(started <= 2, `expected ≤ 2 starts, saw ${started}`);
+    },
+  },
 ];
