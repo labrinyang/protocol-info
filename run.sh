@@ -397,9 +397,16 @@ run_one() {
   member_candidates_fed=0
   funding_severity="none"
 
-  # ── Phase 3: Round 2 reconciliation (only if API succeeded + valid session) ──
+  # ── Phase 3: Round 2 reconciliation (legacy — gated off in Phase 4 per fan-out incompatibility;
+  #     Phase 6 will replace with Node-based synthesis that operates on the merged record) ──
+  # When R2_LEGACY_ENABLED is unset or "0", the R2 reconcile block is skipped entirely.
+  # Set R2_LEGACY_ENABLED=1 to opt back into the legacy single-session resume behavior
+  # (only useful for debugging or running Phase-3-style single-prompt R1).
 
-  if [[ -z "$SESSION_ID" ]]; then
+  if [[ "${R2_LEGACY_ENABLED:-0}" != "1" ]]; then
+    api_status=$(if [[ $ROOTDATA_ENABLED -eq 1 && $api_exit -eq 0 ]]; then echo "ok"; elif [[ $ROOTDATA_ENABLED -eq 1 ]]; then echo "exit_$api_exit"; else echo "disabled"; fi)
+    # final_source stays "r1" (the merged fan-out record is the final record)
+  elif [[ -z "$SESSION_ID" ]]; then
     echo "  -> No session_id in Round 1 response, skipping Round 2"
   elif [[ $ROOTDATA_ENABLED -eq 1 && $api_exit -eq 0 && -f "$rootdata_pkt" ]]; then
     api_status="ok"
@@ -514,7 +521,14 @@ run_one() {
       echo "  -> Round 2 CRAWL_FAIL (exit $r2_exit) — using Round 1 output"
     fi
 
-    # Apply validated_overrides via jq patch (AFTER Round 2)
+  elif [[ $ROOTDATA_ENABLED -eq 1 && $api_exit -ne 0 ]]; then
+    api_status="exit_$api_exit"
+    echo "  -> API_SKIP (exit $api_exit); using Round 1 output only"
+  fi
+
+  # Apply validated_overrides via jq patch (independent of R2 — runs whenever rootdata
+  # produced a packet; preserves Phase-2/3 behavior. Will be re-evaluated in Phase 6.)
+  if [[ $ROOTDATA_ENABLED -eq 1 && $api_exit -eq 0 && -f "$rootdata_pkt" ]]; then
     override_website=$(jq -r '.rootdata.validated_overrides.providerWebsite // empty' "$rootdata_pkt")
     override_xlink=$(jq -r '.rootdata.validated_overrides.providerXLink // empty' "$rootdata_pkt")
     overrides_list=()
@@ -528,10 +542,6 @@ run_one() {
       overrides_list+=("providerXLink")
     fi
     overrides_applied=$(printf '%s,' "${overrides_list[@]}" 2>/dev/null | sed 's/,$//')
-
-  elif [[ $ROOTDATA_ENABLED -eq 1 && $api_exit -ne 0 ]]; then
-    api_status="exit_$api_exit"
-    echo "  -> API_SKIP (exit $api_exit); using Round 1 output only"
   fi
 
   # ── Phase 4: Post-processing (same as original) ──
