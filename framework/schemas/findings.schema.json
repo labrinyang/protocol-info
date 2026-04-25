@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "framework/schemas/findings.schema.json",
+  "type": "array",
+  "maxItems": 200,
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["field", "value", "source", "confidence"],
+    "properties": {
+      "field":      { "type": "string", "minLength": 1, "maxLength": 200 },
+      "entity_key": { "type": "string", "minLength": 1, "maxLength": 200 },
+      "value":      {},
+      "source":     { "type": "string", "format": "uri", "maxLength": 500 },
+      "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+      "method":     { "type": "string", "maxLength": 200 },
+      "supporting_sources": {
+        "type": "array",
+        "maxItems": 5,
+        "items": { "type": "string", "format": "uri", "maxLength": 500 }
+      }
+    }
+  }
+}
