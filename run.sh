@@ -331,7 +331,6 @@ run_one() {
   local r2_err="$debug_dir/r2.stderr.log"
   local rootdata_pkt="$debug_dir/rootdata.json"
   local rootdata_err="$debug_dir/rootdata.stderr.log"
-  local parse_err="$debug_dir/parse.stderr.log"
   local schema_err="$debug_dir/schema.stderr.log"
 
   # ── Phase 1: Parallel execution (Claude Round 1 + RootData API) ──
@@ -386,26 +385,6 @@ run_one() {
     echo "  -> CRAWL_FAIL (no slice produced by r1.mjs); see $r1_env $r1_err"
     tail -20 "$r1_err" 2>/dev/null | sed 's/^/     /' >&2
     printf "%s\tCRAWL_FAIL\t-\t-\t-\t-\tr1\t-\n" "$slug" > "$summary_row_file"
-    return 0
-  fi
-  parse_exit=0
-
-  if [[ $parse_exit -eq 0 ]]; then
-    rm -f "$parse_err"
-  else
-    echo "  -> PARSE_FAIL (no JSON object recoverable); see $parse_err"
-    echo "     --- first 1000 chars of raw payload ---" >&2
-    {
-      if jq -e '.structured_output | type == "string"' "$r1_env" >/dev/null 2>&1; then
-        jq -r '.structured_output' "$r1_env"
-      elif jq -e '.structured_output' "$r1_env" >/dev/null 2>&1; then
-        jq -c '.structured_output' "$r1_env"
-      else
-        jq -r '.result // ""' "$r1_env"
-      fi
-    } 2>/dev/null | head -c 1000 | sed 's/^/     /' >&2
-    echo "" >&2
-    printf "%s\tPARSE_FAIL\t-\t-\t-\t-\tr1\t-\n" "$slug" > "$summary_row_file"
     return 0
   fi
 

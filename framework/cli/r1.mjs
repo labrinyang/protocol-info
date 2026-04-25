@@ -35,8 +35,13 @@ const subtask = manifest._abs.subtasks[0];   // phase 3: single subtask
 const schemaSlice = JSON.parse(await readFile(subtask.schema_slice_abs, 'utf8'));
 const systemPrompt = await readFile(manifest._abs.system_prompt, 'utf8');
 const userTmpl = await readFile(subtask.prompt_abs, 'utf8');
-// evidence is loaded but not injected into the prompt in phase 3 (preserves R1 behavior — evidence is consumed by R2 reconcile only).
-// File may not exist yet at start time (parallel fetcher); swallow and default to {}.
+// Evidence is loaded defensively (try/catch) because in run.sh's parallel pipeline
+// the fetcher writes $rootdata_pkt concurrently with r1.mjs starting; in Phase 3
+// the evidence is not injected into the prompt anyway (R1 behavior preserved).
+//
+// Phase 4 prereq: once subtasks consume evidence_keys to render prompts, run.sh
+// must `wait $pid_api` BEFORE invoking r1.mjs, otherwise R1 silently runs with
+// empty evidence and produces a degraded record with no audit trail.
 let evidence = {};
 if (evidencePath) {
   try { evidence = JSON.parse(await readFile(evidencePath, 'utf8')); }
