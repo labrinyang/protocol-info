@@ -14,7 +14,10 @@ const API = 'https://api.llama.fi';
 let _listCache = null;
 async function fetchProtocolList(logger) {
   if (_listCache) return _listCache;
-  const res = await httpFetch(`${API}/protocols`, { headers: { 'User-Agent': 'protocol-info/1.0' } });
+  const res = await httpFetch(`${API}/protocols`, {
+    headers: { 'User-Agent': 'protocol-info/1.0' },
+    signal: AbortSignal.timeout(30_000),
+  });
   if (!res.ok) throw new Error(`defillama /protocols ${res.status}`);
   _listCache = await res.json();
   return _listCache;
@@ -22,6 +25,7 @@ async function fetchProtocolList(logger) {
 
 export function matchProtocol(list, displayName) {
   const target = displayName.trim().toLowerCase();
+  if (!target) return null;
   // 1. exact name match
   const exact = list.find(p => (p.name || '').toLowerCase() === target);
   if (exact) return exact;
@@ -33,6 +37,7 @@ export function matchProtocol(list, displayName) {
   return null;
 }
 
+// `hints` is accepted but currently unused; reserved for future guided-match use.
 export default async function fetch({ slug, displayName, hints, env, logger }) {
   try {
     const list = await fetchProtocolList(logger);
@@ -44,7 +49,10 @@ export default async function fetch({ slug, displayName, hints, env, logger }) {
         cost_usd: 0, fetched_at: new Date().toISOString(),
       };
     }
-    const detailRes = await httpFetch(`${API}/protocol/${matched.slug}`, { headers: { 'User-Agent': 'protocol-info/1.0' } });
+    const detailRes = await httpFetch(`${API}/protocol/${matched.slug}`, {
+      headers: { 'User-Agent': 'protocol-info/1.0' },
+      signal: AbortSignal.timeout(30_000),
+    });
     if (!detailRes.ok) throw new Error(`defillama /protocol/${matched.slug} ${detailRes.status}`);
     const detail = await detailRes.json();
     return {
