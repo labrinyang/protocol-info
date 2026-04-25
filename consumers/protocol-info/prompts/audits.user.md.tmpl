@@ -30,7 +30,7 @@ Use WebSearch to find the audit page; follow links into the GitHub repo if neede
 - `date`: report date — `YYYY-MM-DD` or `YYYY-MM`.
 - `scope`: brief description (`Core contracts`, `vePENDLE`, `LP token wrapper`). Null if unknown.
 - `reportUrl`: direct PDF or blog post URL.
-- `lastScannedAt`: leave any `YYYY-MM-DD`; will be overwritten by the runner.
+- `lastScannedAt`: emit any valid `YYYY-MM-DD`; the runner overwrites it before validation.
 
 If you genuinely find no audits, return `{"audits": {"items": [], "lastScannedAt": "1970-01-01"}}`. Do not invent.
 
