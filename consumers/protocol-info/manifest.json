@@ -1,6 +1,6 @@
 {
   "name": "protocol-info",
-  "version": "0.6.0-wip",
+  "version": "0.7.0-wip",
   "schemas": { "full": "./schemas/full.json" },
   "fetchers": [
     { "name": "rootdata", "module": "./fetchers/rootdata.mjs", "required_env": ["ROOTDATA_API_KEY"], "optional": true, "search": { "enabled": true, "types": ["project", "person"], "max_queries_per_round": 4 } },
@@ -16,6 +16,36 @@
     "max_research_rounds": 2,
     "max_search_queries_per_round": 4,
     "fast_skip_allowed": false
+  },
+  "i18n": {
+    "enabled": true,
+    "model_default": "claude-haiku-4-5-20251001",
+    "max_budget_usd_per_call": 0.10,
+    "system_prompt": "./prompts/i18n.system.md",
+    "user_prompt": "./prompts/i18n.user.md.tmpl",
+    "schema": "./schemas/i18n.json",
+    "translatable_fields": ["description", "members[].memberPosition", "members[].oneLiner"],
+    "locale_catalog": [
+      { "code": "bn", "name_zh": "孟加拉语", "name_en": "Bengali" },
+      { "code": "de", "name_zh": "德语", "name_en": "German" },
+      { "code": "en_US", "name_zh": "英语(美国)", "name_en": "English (US)" },
+      { "code": "es", "name_zh": "西班牙语", "name_en": "Spanish" },
+      { "code": "fr_FR", "name_zh": "法语", "name_en": "French" },
+      { "code": "hi_IN", "name_zh": "印地语", "name_en": "Hindi" },
+      { "code": "id", "name_zh": "印尼语", "name_en": "Indonesian" },
+      { "code": "it_IT", "name_zh": "意大利语", "name_en": "Italian" },
+      { "code": "ja_JP", "name_zh": "日语", "name_en": "Japanese" },
+      { "code": "ko_KR", "name_zh": "韩语", "name_en": "Korean" },
+      { "code": "pt", "name_zh": "葡萄牙语", "name_en": "Portuguese" },
+      { "code": "pt_BR", "name_zh": "葡萄牙语(巴西)", "name_en": "Portuguese (Brazil)" },
+      { "code": "ru", "name_zh": "俄语", "name_en": "Russian" },
+      { "code": "th_TH", "name_zh": "泰语", "name_en": "Thai" },
+      { "code": "uk_UA", "name_zh": "乌克兰语", "name_en": "Ukrainian" },
+      { "code": "vi", "name_zh": "越南语", "name_en": "Vietnamese" },
+      { "code": "zh_CN", "name_zh": "简体中文", "name_en": "Simplified Chinese" },
+      { "code": "zh_HK", "name_zh": "繁体中文(香港)", "name_en": "Traditional Chinese (Hong Kong)" },
+      { "code": "zh_TW", "name_zh": "繁体中文(台湾)", "name_en": "Traditional Chinese (Taiwan)" }
+    ]
   },
   "normalizers": [
     { "name": "protocol-info-final", "module": "./normalizers/final.mjs" }

@@ -60,8 +60,12 @@ export async function runI18nStage({
 }) {
   if (!manifest.i18n?.enabled) return { ok: 0, failed: [], translations: {} };
   if (selectedLocales.length === 0) return { ok: 0, failed: [], translations: {} };
+  if (manifest._abs?.i18n == null) return { ok: 0, failed: [], translations: {} };
 
   await mkdir(outputDir, { recursive: true });
+
+  // Truncate failures.log at run start so per-run triage isn't polluted by prior errors
+  try { await writeFile(join(outputDir, 'failures.log'), ''); } catch { /* dir may not exist yet */ }
 
   const i18nCfg = manifest._abs.i18n;
   const sysPrompt = await readFile(i18nCfg.system_prompt_abs, 'utf8');
@@ -100,9 +104,10 @@ export async function runI18nStage({
       return { code, ok: true, translation: out, cost_usd: env.total_cost_usd ?? 0 };
     } catch (err) {
       const fl = join(outputDir, 'failures.log');
-      await writeFile(fl, `${code}\t${err.message}\n`, { flag: 'a' });
-      logger?.warn?.(`[i18n:${code}] ${err.message}`);
-      return { code, ok: false, error: err.message };
+      const sanitized = String(err.message || err).replace(/[\r\n]+/g, ' ');
+      await writeFile(fl, `${code}\t${sanitized}\n`, { flag: 'a' });
+      logger?.warn?.(`[i18n:${code}] ${sanitized}`);
+      return { code, ok: false, error: sanitized };
     }
   });
 

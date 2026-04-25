@@ -550,45 +550,8 @@ run_one() {
 }
 
 # ── i18n: 用 Haiku 把主记录翻译成目标语言 ───────────────────────────────
-
-# 交互挑语言（无 --i18n flag + tty 时触发）。每行一个 code 写到 stdout；提示 UI 走 stderr。
-# 调用前已经确认 stdin 是 tty,这里不再自行检测。
-i18n_pick_interactive() {
-  {
-    echo ""
-    echo "Translate successful records to i18n? (Haiku: $I18N_MODEL)"
-    echo "  [a] all ${#I18N_LOCALES[@]} languages"
-    echo "  [s] select (comma-separated codes)"
-    echo "  [n] skip (default)"
-    printf "Choice [n]: "
-  } >&2
-
-  local choice=""
-  read -r choice
-  choice="${choice:-n}"
-
-  local entry code rest cn_name
-  case "$choice" in
-    a|A|all)
-      for entry in "${I18N_LOCALES[@]}"; do echo "${entry%%|*}"; done
-      ;;
-    s|S|select)
-      echo "" >&2
-      echo "Available locales:" >&2
-      for entry in "${I18N_LOCALES[@]}"; do
-        code="${entry%%|*}"
-        rest="${entry#*|}"
-        cn_name="${rest%%|*}"
-        printf "  %-8s %s\n" "$code" "$cn_name" >&2
-      done
-      printf "Codes (comma-separated, e.g. zh_CN,ja_JP,en_US): " >&2
-      local codes_input=""
-      read -r codes_input
-      echo "$codes_input" | tr ',' '\n' | awk 'NF' | sed 's/[[:space:]]//g'
-      ;;
-    *) ;;
-  esac
-}
+# 实际翻译走 framework/cli/i18n.mjs (per slug)。下面只保留 selection 解析,
+# 保证 --i18n flag 行为不变(I18N_SELECTED[] 数组)。
 
 # 解析 I18N_ARG → I18N_SELECTED 数组（含校验和未知 code 过滤）
 i18n_resolve_selection() {
@@ -597,14 +560,9 @@ i18n_resolve_selection() {
   local entry
 
   if [[ -z "$I18N_ARG" ]]; then
-    # tty 下交互问;headless(plugin / CI / </dev/null)下告知并静默跳过
-    if [[ ! -t 0 ]]; then
-      echo "i18n: stdin is not a tty — skipping translation. Pass --i18n all | zh_CN,ja_JP,... | none to control explicitly." >&2
-      return 0
-    fi
-    while IFS= read -r code; do
-      [[ -n "$code" ]] && raw+=("$code")
-    done < <(i18n_pick_interactive)
+    # 没传 --i18n 一律静默跳过(交互式选择已下线;Phase 8 会重新评估)。
+    echo "i18n: no --i18n flag — skipping translation. Pass --i18n all | zh_CN,ja_JP,... | none to control explicitly." >&2
+    return 0
   elif [[ "$I18N_ARG" == "none" ]]; then
     return 0
   elif [[ "$I18N_ARG" == "all" ]]; then
@@ -626,184 +584,6 @@ i18n_resolve_selection() {
       I18N_SELECTED+=("$trimmed")
     else
       echo "warning: unknown locale '$trimmed', skipping" >&2
-    fi
-  done
-}
-
-# 翻一个 (slug, locale)。成功写到 $slug/_debug/i18n/<locale>.json，失败追加 failures.log。
-i18n_translate_one() {
-  local slug="$1"
-  local locale_code="$2"
-  local slug_dir="$OUT_DIR/$slug"
-  local i18n_dir="$slug_dir/_debug/i18n"
-  mkdir -p "$i18n_dir"
-
-  local out="$i18n_dir/$locale_code.json"
-  local envelope="$i18n_dir/$locale_code.envelope.json"
-  local err="$i18n_dir/$locale_code.stderr.log"
-  local rec="$slug_dir/record.json"
-
-  local locale_name
-  locale_name=$(locale_name_for "$locale_code")
-
-  # Extract only the translatable subset
-  local source_json
-  source_json=$(jq -c '{
-    description: .description,
-    members: (.members | map({memberPosition: .memberPosition, oneLiner: .oneLiner}))
-  }' "$rec" 2>/dev/null)
-  if [[ -z "$source_json" ]]; then
-    printf '%s\tsource_extract_fail\n' "$locale_code" >> "$i18n_dir/failures.log"
-    return 1
-  fi
-
-  local user_prompt
-  user_prompt=$(jq -rn \
-    --arg code "$locale_code" \
-    --arg name "$locale_name" \
-    --arg src "$source_json" \
-    --rawfile tmpl "$I18N_TMPL_FILE" \
-    '$tmpl
-      | gsub("{{LOCALE_CODE}}"; $code)
-      | gsub("{{LOCALE_NAME}}"; $name)
-      | gsub("{{SOURCE_JSON}}"; $src)')
-
-  set +e
-  echo "$user_prompt" | "$CLAUDE_BIN" -p - \
-    --model "$I18N_MODEL" \
-    --output-format json \
-    --json-schema "$I18N_SCHEMA_INLINE" \
-    --max-turns 3 \
-    --max-budget-usd "$MAX_BUDGET_I18N" \
-    --permission-mode bypassPermissions \
-    --system-prompt "$I18N_SYSTEM_PROMPT" \
-    > "$envelope" 2> "$err"
-  local exit_code=$?
-  set -e
-
-  if [[ $exit_code -ne 0 ]]; then
-    printf '%s\texit_%d\n' "$locale_code" "$exit_code" >> "$i18n_dir/failures.log"
-    return 1
-  fi
-
-  set +e
-  local parse_exit=1
-  if jq -e '.structured_output | type == "object"' "$envelope" >/dev/null 2>&1; then
-    jq '.structured_output' "$envelope" > "$out" 2>/dev/null
-    parse_exit=$?
-  elif jq -e '.structured_output | type == "string"' "$envelope" >/dev/null 2>&1; then
-    jq -r '.structured_output' "$envelope" | jq . > "$out" 2>/dev/null
-    parse_exit=$?
-  fi
-  set -e
-
-  if [[ $parse_exit -ne 0 ]]; then
-    printf '%s\tparse_fail\n' "$locale_code" >> "$i18n_dir/failures.log"
-    rm -f "$out"
-    return 1
-  fi
-
-  return 0
-}
-
-# 有界并发调度 (#slugs × #locales) 个翻译任务
-i18n_dispatch() {
-  local ok_slugs=("$@")
-  local n_slugs=${#ok_slugs[@]}
-  local n_locales=${#I18N_SELECTED[@]}
-  local total=$((n_slugs * n_locales))
-  [[ $total -eq 0 ]] && return 0
-
-  echo ""
-  echo "=== i18n translation (Haiku) ==="
-  echo "Records:  $n_slugs"
-  echo "Locales:  $n_locales (${I18N_SELECTED[*]})"
-  echo "Jobs:     $total"
-  echo "Parallel: $I18N_PARALLEL"
-  echo "Model:    $I18N_MODEL"
-  echo ""
-
-  local pids=()
-  local job_slug job_locale
-  for job_slug in "${ok_slugs[@]}"; do
-    for job_locale in "${I18N_SELECTED[@]}"; do
-      i18n_translate_one "$job_slug" "$job_locale" &
-      pids+=($!)
-      if [[ ${#pids[@]} -ge $I18N_PARALLEL ]]; then
-        wait "${pids[0]}" || true
-        pids=("${pids[@]:1}")
-      fi
-    done
-  done
-  wait
-
-  # Per-slug: update meta.json .i18n + generate record.full.json
-  local slug slug_dir i18n_dir ok_count cost_sum_usd locales_ok locales_failed
-  for slug in "${ok_slugs[@]}"; do
-    slug_dir="$OUT_DIR/$slug"
-    i18n_dir="$slug_dir/_debug/i18n"
-
-    # Build the i18n map from per-locale json files
-    local map='{}'
-    local f loc
-    shopt -s nullglob
-    for f in "$i18n_dir"/*.json; do
-      loc=$(basename "$f" .json)
-      # skip envelope files and non-locale names
-      [[ "$loc" == *.envelope ]] && continue
-      [[ "$loc" == "failures" ]] && continue
-      if locale_name_for "$loc" >/dev/null 2>&1; then
-        map=$(echo "$map" | jq --arg k "$loc" --slurpfile v "$f" '. + {($k): $v[0]}')
-      fi
-    done
-    shopt -u nullglob
-
-    # Aggregate cost from envelopes (nullglob-safe)
-    shopt -s nullglob
-    local env_files=("$i18n_dir"/*.envelope.json)
-    shopt -u nullglob
-    if [[ ${#env_files[@]} -gt 0 ]]; then
-      cost_sum_usd=$(jq -s 'map(.total_cost_usd // 0) | add // 0' "${env_files[@]}" 2>/dev/null || echo 0)
-    else
-      cost_sum_usd=0
-    fi
-
-    # Success/failure lists
-    locales_ok=$(echo "$map" | jq -c 'keys')
-    if [[ -f "$i18n_dir/failures.log" ]]; then
-      locales_failed=$(awk -F'\t' '{print $1}' "$i18n_dir/failures.log" | sort -u | jq -R . | jq -cs .)
-    else
-      locales_failed='[]'
-    fi
-
-    # record.full.json 仅在至少有一个 locale 成功时生成(若全部失败则不落盘,避免产生空 i18n:{} 的误导性产物)
-    if [[ "$map" != "{}" ]]; then
-      jq --argjson i18n "$map" '. + {i18n: $i18n}' "$slug_dir/record.json" > "$slug_dir/record.full.json"
-    fi
-
-    # Patch meta.json .i18n
-    jq --argjson locales_ok "$locales_ok" \
-       --argjson locales_failed "$locales_failed" \
-       --arg model "$I18N_MODEL" \
-       --argjson cost "$cost_sum_usd" \
-       '.i18n = {
-          model: $model,
-          locales_requested: ($locales_ok + $locales_failed | unique),
-          locales_ok: $locales_ok,
-          locales_failed: $locales_failed,
-          cost_usd: $cost
-        }' "$slug_dir/meta.json" > "$slug_dir/meta.json.tmp" \
-      && mv "$slug_dir/meta.json.tmp" "$slug_dir/meta.json"
-
-    ok_count=$(echo "$locales_ok" | jq 'length')
-    echo "[$slug] i18n done: $ok_count/$n_locales ok"
-
-    # 失败明细回显到 stderr,避免失败被 summary.tsv 的单列悄悄淹没
-    if [[ -f "$i18n_dir/failures.log" ]]; then
-      local n_fail
-      n_fail=$(wc -l < "$i18n_dir/failures.log" | tr -d ' ')
-      echo "[$slug] i18n: $n_fail locale(s) failed — see $i18n_dir/failures.log" >&2
-      sed 's/^/        /' "$i18n_dir/failures.log" >&2
     fi
   done
 }
@@ -912,7 +692,83 @@ shopt -u nullglob
 if [[ "$DRY_RUN" -ne 1 ]]; then
   i18n_resolve_selection
   if [[ ${#OK_SLUGS[@]} -gt 0 && ${#I18N_SELECTED[@]} -gt 0 ]]; then
-    i18n_dispatch "${OK_SLUGS[@]}"
+    I18N_LOCALES_LIST=$(IFS=','; echo "${I18N_SELECTED[*]}")
+    echo ""
+    echo "=== i18n translation (Haiku) ==="
+    echo "Records:  ${#OK_SLUGS[@]}"
+    echo "Locales:  ${#I18N_SELECTED[@]} (${I18N_SELECTED[*]})"
+    echo "Parallel: $I18N_PARALLEL"
+    echo "Model:    $I18N_MODEL"
+    echo ""
+    for _slug in "${OK_SLUGS[@]}"; do
+      node "$SCRIPT_DIR/framework/cli/i18n.mjs" \
+        --manifest "$SCRIPT_DIR/consumers/protocol-info/manifest.json" \
+        --record "$OUT_DIR/$_slug/record.json" \
+        --locales "$I18N_LOCALES_LIST" \
+        --output-dir "$OUT_DIR/$_slug/_debug/i18n" \
+        --parallel "$I18N_PARALLEL" \
+        ${I18N_MODEL:+--model "$I18N_MODEL"} \
+        2>&1 | sed "s/^/[$_slug] /"
+
+      # Recreate meta.json's i18n block from the sidecar files (replicates legacy bash output)
+      i18n_dir="$OUT_DIR/$_slug/_debug/i18n"
+      shopt -s nullglob
+      env_files=("$i18n_dir"/*.envelope.json)
+      ok_files=("$i18n_dir"/*.json)
+      shopt -u nullglob
+
+      # Strip envelope.json from ok_files
+      filtered_ok=()
+      for f in "${ok_files[@]}"; do
+        case "$f" in
+          *.envelope.json|*/failures.log) continue ;;
+        esac
+        filtered_ok+=("$f")
+      done
+
+      cost_sum=0
+      if [[ ${#env_files[@]} -gt 0 ]]; then
+        cost_sum=$(jq -s 'map(.total_cost_usd // 0) | add // 0' "${env_files[@]}" 2>/dev/null || echo 0)
+      fi
+
+      ok_codes='[]'
+      for f in "${filtered_ok[@]}"; do
+        loc=$(basename "$f" .json)
+        ok_codes=$(echo "$ok_codes" | jq --arg c "$loc" '. + [$c]')
+      done
+
+      failed_codes='[]'
+      if [[ -s "$i18n_dir/failures.log" ]]; then
+        failed_codes=$(awk -F'\t' '{print $1}' "$i18n_dir/failures.log" | sort -u | jq -R . | jq -cs .)
+      fi
+
+      jq --argjson ok "$ok_codes" --argjson failed "$failed_codes" --arg model "$I18N_MODEL" --argjson cost "$cost_sum" \
+         '.i18n = {
+            model: $model,
+            locales_requested: ($ok + $failed | unique),
+            locales_ok: $ok,
+            locales_failed: $failed,
+            cost_usd: $cost
+          }' "$OUT_DIR/$_slug/meta.json" > "$OUT_DIR/$_slug/meta.json.tmp" \
+         && mv "$OUT_DIR/$_slug/meta.json.tmp" "$OUT_DIR/$_slug/meta.json"
+
+      # record.full.json (inline i18n map)
+      if [[ ${#filtered_ok[@]} -gt 0 ]]; then
+        map='{}'
+        for f in "${filtered_ok[@]}"; do
+          loc=$(basename "$f" .json)
+          map=$(echo "$map" | jq --arg k "$loc" --slurpfile v "$f" '. + {($k): $v[0]}')
+        done
+        jq --argjson i18n "$map" '. + {i18n: $i18n}' "$OUT_DIR/$_slug/record.json" > "$OUT_DIR/$_slug/record.full.json"
+      fi
+
+      ok_count=${#filtered_ok[@]}
+      echo "[$_slug] i18n done: $ok_count/${#I18N_SELECTED[@]} ok"
+      if [[ -s "$i18n_dir/failures.log" ]]; then
+        sed 's/^/        /' "$i18n_dir/failures.log" >&2
+      fi
+    done
+    unset _slug
   fi
 fi
 
