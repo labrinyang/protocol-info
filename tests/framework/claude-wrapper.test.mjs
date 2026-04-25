@@ -35,13 +35,35 @@ export const tests = [
     },
   },
   {
-    name: 'throws on non-zero exit',
+    name: 'throws on non-zero exit when stdout is not parseable JSON',
     fn: async () => {
       await withStub('cat > /dev/null; echo "boom" >&2; exit 2', async (claudePath) => {
         await assert.rejects(
           () => runClaude({ claudeBin: claudePath, userPrompt: 'x', schemaJson: {}, maxTurns: 1, maxBudgetUsd: 0.01 }),
           /exit 2/
         );
+      });
+    },
+  },
+  {
+    name: 'resolves with envelope when claude exits non-zero but stdout is parseable JSON',
+    fn: async () => {
+      // Claude CLI's `--output-format json` writes API errors (e.g. 400 invalid_request_error,
+      // 529 overloaded, max-budget exceeded) into the envelope and exits non-zero. The wrapper
+      // must preserve that envelope so downstream code can surface the diagnostic.
+      const envJson = '{"type":"result","is_error":true,"result":"API Error: 400 invalid_request_error","total_cost_usd":0,"num_turns":0,"session_id":"s"}';
+      await withStub(`cat > /dev/null; echo '${envJson}'; exit 1`, async (claudePath) => {
+        const env = await runClaude({
+          claudeBin: claudePath,
+          userPrompt: 'x',
+          schemaJson: {},
+          maxTurns: 1,
+          maxBudgetUsd: 0.01,
+          retryOnTransient: false,
+        });
+        assert.equal(env.is_error, true);
+        assert.equal(env.session_id, 's');
+        assert.match(env.result, /400 invalid_request_error/);
       });
     },
   },

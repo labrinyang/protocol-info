@@ -85,13 +85,30 @@ function spawnAndCollect({
     proc.stderr.on('data', d => { stderr += d; });
     proc.on('error', err => reject(Object.assign(err, { stderr, kind: 'spawn_error' })));
     proc.on('close', code => {
-      if (code !== 0) {
-        return reject(Object.assign(new Error(`claude exit ${code}: ${stderr.slice(0, 500)}`), { code, stderr, stdout, kind: 'exit_nonzero' }));
-      }
-      let env;
+      let env = null;
+      let parseErr = null;
       try { env = JSON.parse(stdout); }
-      catch (e) { return reject(Object.assign(new Error(`claude stdout not JSON: ${e.message}`), { stdout, stderr, kind: 'stdout_not_json' })); }
-      resolve(env);
+      catch (e) { parseErr = e; }
+
+      if (env !== null) {
+        // Resolve with the envelope even on non-zero exit — Claude CLI's `--output-format json`
+        // writes API errors / max-budget / etc. into the envelope (`is_error: true`, `result: <msg>`)
+        // and exits non-zero. Throwing here drops the diagnostic. Downstream parseEnvelope
+        // handles `is_error: true` cases gracefully (returns null slice → ok:false with envelope).
+        return resolve(env);
+      }
+
+      // No parseable envelope. Decide error kind by exit code.
+      if (code !== 0) {
+        return reject(Object.assign(
+          new Error(`claude exit ${code}: ${stderr.slice(0, 500) || '(no stderr)'}`),
+          { code, stderr, stdout, kind: 'exit_nonzero' }
+        ));
+      }
+      return reject(Object.assign(
+        new Error(`claude stdout not JSON: ${parseErr?.message || 'unknown'}`),
+        { stdout, stderr, kind: 'stdout_not_json' }
+      ));
     });
     proc.stdin.end(userPrompt);
   });

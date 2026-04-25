@@ -62,8 +62,12 @@ export async function runSubtask({
 
   const slice = parseEnvelope(envelope);
   if (!slice) {
+    let errMsg = 'no structured_output recoverable from envelope';
+    if (envelope.is_error && typeof envelope.result === 'string') {
+      errMsg = `claude api error: ${envelope.result.slice(0, 300)}`;
+    }
     return {
-      ok: false, error: `no structured_output recoverable from envelope`,
+      ok: false, error: errMsg,
       cost_usd: envelope.total_cost_usd ?? 0, turns: envelope.num_turns ?? 0,
       session_id: envelope.session_id ?? null, envelope,
     };
