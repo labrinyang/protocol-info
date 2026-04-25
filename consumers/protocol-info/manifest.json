@@ -17,6 +17,9 @@
     "max_search_queries_per_round": 4,
     "fast_skip_allowed": false
   },
+  "normalizers": [
+    { "name": "protocol-info-final", "module": "./normalizers/final.mjs" }
+  ],
   "subtasks": [
     {
       "name": "metadata",

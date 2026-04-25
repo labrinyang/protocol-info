@@ -467,12 +467,31 @@ run_one() {
     rm -f "$rec.r2" "$slug_dir/findings.json.r2" "$slug_dir/changes.json.r2" "$slug_dir/gaps.json.r2"
   fi
 
-  # ── Phase 4: Post-processing (same as original) ──
+  # ── Phase 4: Deterministic final normalizer (replaces bash audits.lastScannedAt) ──
+  # Safety net: if R2 was skipped/failed, changes.json may not exist yet.
+  [[ -f "$slug_dir/changes.json" ]] || echo "[]" > "$slug_dir/changes.json"
 
-  if jq -e '.audits.items | type == "array"' "$rec" >/dev/null 2>&1; then
-    today=$(date -u +%Y-%m-%d)
-    jq --arg today "$today" '.audits.lastScannedAt = $today' "$rec" \
-      > "$rec.tmp" && mv "$rec.tmp" "$rec"
+  set +e
+  node "$SCRIPT_DIR/framework/cli/normalize.mjs" \
+    --manifest "$SCRIPT_DIR/consumers/protocol-info/manifest.json" \
+    --record-in "$rec" \
+    --evidence "$rootdata_pkt" \
+    --changes-in "$slug_dir/changes.json" \
+    --gaps-in "$slug_dir/gaps.json" \
+    --record-out "$rec.normalized" \
+    --changes-out "$slug_dir/changes.json.normalized" \
+    --gaps-out "$slug_dir/gaps.json.normalized" \
+    2> "$debug_dir/normalize.stderr.log"
+  norm_exit=$?
+  set -e
+
+  if [[ $norm_exit -eq 0 && -s "$rec.normalized" ]]; then
+    mv "$rec.normalized" "$rec"
+    [[ -f "$slug_dir/changes.json.normalized" ]] && mv "$slug_dir/changes.json.normalized" "$slug_dir/changes.json"
+    [[ -f "$slug_dir/gaps.json.normalized" ]] && mv "$slug_dir/gaps.json.normalized" "$slug_dir/gaps.json"
+  else
+    echo "  -> normalizer failed (exit $norm_exit); keeping pre-normalize record" >&2
+    rm -f "$rec.normalized" "$slug_dir/changes.json.normalized" "$slug_dir/gaps.json.normalized"
   fi
 
   # Validate
