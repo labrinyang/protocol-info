@@ -18,7 +18,7 @@
 // behavior matches the bash run.sh exactly. See `framework/cli/*.mjs`.
 
 import { spawn } from 'node:child_process';
-import { readFile, writeFile, mkdir, readdir, stat, rename, unlink } from 'node:fs/promises';
+import { readFile, writeFile, appendFile, mkdir, readdir, stat, rename, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -190,6 +190,12 @@ export function protocolDir(outputRoot, slug) {
 
 export function runIndexDir(outputRoot, runId) {
   return join(outputRoot, '.runs', runId);
+}
+
+export async function appendRunsLog(outputRoot, { runId, slugs, outcome }) {
+  const ts = new Date().toISOString();
+  const line = `${ts}\t${runId}\t${slugs.join(',')}\t${outcome}\n`;
+  await appendFile(join(outputRoot, '.runs.log'), line);
 }
 
 // ── runOne: full per-provider pipeline ──────────────────────────────────────
@@ -695,6 +701,13 @@ export async function run({
     const message = `crawl(${slug}): R1+R2 ok`;
     await commit(outputRoot, { paths: [`${slug}/`], message, runId });
   }
+
+  const failedCount = workerFailures.length + (rawWorkerFailures.length - workerFailures.length);
+  await appendRunsLog(outputRoot, {
+    runId,
+    slugs: providers.map((p) => p.slug),
+    outcome: `${okSlugs.length} OK / ${failedCount} fail`,
+  });
 
   // ── i18n stage ───────────────────────────────────────────────────────────
 

@@ -128,6 +128,43 @@ export const tests = [
     },
   },
   {
+    name: 'appendRunsLog writes one TSV line: ts \\t runId \\t slugs \\t outcome',
+    fn: async () => {
+      const { mkdtemp, readFile } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { appendRunsLog } = await import('../../framework/orchestrator.mjs');
+      const dir = await mkdtemp(join(tmpdir(), 'pi-runs-'));
+      await appendRunsLog(dir, {
+        runId: '20260427T103211Z',
+        slugs: ['pendle', 'morpho'],
+        outcome: '2 OK / 0 fail',
+      });
+      const body = await readFile(join(dir, '.runs.log'), 'utf8');
+      const fields = body.trim().split('\t');
+      assert.equal(fields.length, 4);
+      assert.match(fields[0], /^\d{4}-\d{2}-\d{2}T/); // ISO ts
+      assert.equal(fields[1], '20260427T103211Z');
+      assert.equal(fields[2], 'pendle,morpho');
+      assert.equal(fields[3], '2 OK / 0 fail');
+    },
+  },
+  {
+    name: 'appendRunsLog appends (does not truncate) on second call',
+    fn: async () => {
+      const { mkdtemp, readFile } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { appendRunsLog } = await import('../../framework/orchestrator.mjs');
+      const dir = await mkdtemp(join(tmpdir(), 'pi-runs-'));
+      await appendRunsLog(dir, { runId: 'A', slugs: ['x'], outcome: '1 OK' });
+      await appendRunsLog(dir, { runId: 'B', slugs: ['y'], outcome: '1 OK' });
+      const body = await readFile(join(dir, '.runs.log'), 'utf8');
+      const lines = body.trim().split('\n');
+      assert.equal(lines.length, 2);
+    },
+  },
+  {
     name: 'parallel-safety: 4 slugs committed back-to-back never corrupt the index',
     fn: async () => {
       const { mkdtemp, mkdir, writeFile } = await import('node:fs/promises');
