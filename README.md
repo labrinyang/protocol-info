@@ -1,18 +1,37 @@
 # protocol-info
 
-Claude Code plugin + standalone CLI — 通过 `claude -p` 无头模式抓取 `EarnProtocolInfo` JSON
-记录。配置 RootData API 密钥后管线会运行第二轮对账（Round 2），使用结构化 API 数据提升准确性。
-可选用 Haiku 翻译成 19 种语言。输出经人工审核后通过 `earn-protocol-info.controller.ts` CRUD
-端点导入 dashboard MongoDB。
+English | [简体中文](README.zh-CN.md)
 
-## 作为 Claude Code plugin 安装(推荐)
+`protocol-info` is a Claude Code plugin and standalone CLI for researching DeFi earn/yield/staking protocols and producing schema-validated `EarnProtocolInfo` JSON.
 
-```
+It runs Claude in headless mode, gathers structured evidence from optional fetchers such as RootData and DeFiLlama, reconciles field-level evidence, validates the final record against JSON Schema, and can optionally translate selected fields with Haiku for 19 locales.
+
+The output is intended for human review first, then import into the dashboard through the `earn-protocol-info` import endpoint.
+
+## When To Use It
+
+Use this project when you need a repeatable research pipeline for protocol metadata:
+
+- Protocol description, tags, official website, X, and Discord links
+- Founding year
+- Public team members, roles, social links, and short bios
+- Funding rounds with investors, amount, valuation, and dates
+- Audit reports with auditor, scope, report URL, and scan timestamp
+- Field-level findings, unresolved gaps, and R2 change audit trail
+- Optional localized output for the dashboard import flow
+
+It is not a fully automated publishing system. The crawler produces reviewable records; a human should still verify team, funding, and audit data before promoting records in production.
+
+## Install As A Claude Code Plugin
+
+Recommended installation:
+
+```text
 /plugin marketplace add labrinyang/protocol-info
 /plugin install protocol-info@labrinyang
 ```
 
-**可选:启用 Round 2 对账**(需要 RootData API key):
+Optional RootData configuration:
 
 ```bash
 mkdir -p ~/.config/protocol-info
@@ -20,13 +39,11 @@ echo "ROOTDATA_API_KEY=sk-..." > ~/.config/protocol-info/.env
 chmod 600 ~/.config/protocol-info/.env
 ```
 
-这个路径在 plugin 更新时不会被覆盖。不配置时管线单轮运行,仍然可用。
+This user config path is outside the plugin cache, so plugin updates will not overwrite it. Without `ROOTDATA_API_KEY`, the pipeline still works and simply skips RootData-backed evidence.
 
-安装后你有两种调用方式:
+After installation, you can call the slash command directly:
 
-### 方式 A:显式 slash command
-
-```
+```text
 /protocol-info:protocol-info --display-name "Pendle" --type fixed_rate
 /protocol-info:protocol-info --display-name "Pendle" --type fixed_rate --i18n all
 /protocol-info:protocol-info --parallel 4 --i18n zh_CN,ja_JP \
@@ -34,222 +51,348 @@ chmod 600 ~/.config/protocol-info/.env
   --batch --display-name "Morpho" --type simple_earn
 ```
 
-### 方式 B:自然语言(skill 自动触发)
+You can also trigger the bundled skill with natural language, for example:
 
-直接在对话里说出意图,Claude 会识别并自动派发 `/protocol-info:protocol-info`:
+- "Research Pendle protocol info and translate it into Chinese and Japanese."
+- "Batch crawl Morpho and Aave earn metadata without translation."
+- "Create protocol-info for Lido." The skill may ask one short question if the protocol type is ambiguous.
+- "Crawl protocol info for Morpho and translate to all locales."
 
-- "调研 Pendle 的项目概述,翻成中日英"
-- "批量爬 Morpho 和 Aave 的 earn 信息,不用翻译"
-- "给我做一份 Lido 的 protocol-info"(会先问类型)
-- "crawl protocol info for Morpho, translate to all 19 locales"
+The skill lives at `skills/protocol-info-crawler/SKILL.md` and dispatches to `/protocol-info:protocol-info`.
 
-skill 定义在 `skills/protocol-info-crawler/SKILL.md`,触发词覆盖调研/抓取/批量/翻译等意图。类型不明时会问一句再跑。
+## Use As A Standalone CLI
 
-## 作为独立 CLI 使用
-
-克隆仓库后直接跑 `./run.sh`(plugin 内部也是调它)。下文的所有说明对两种模式都适用。
-
-## 架构(v1.0.0)
-
-`run.sh` 是一个 37 行的 bash shim — 加载 `.env` 后 exec 到 `framework/cli.mjs`。
-真正的管线在 Node 端,由 `framework/`(可复用引擎)+ `consumers/protocol-info/`
-(本仓库的消费者声明)两部分组成:
-
-```
-framework/
-├── cli.mjs                # 入口
-├── orchestrator.mjs       # 每个 provider 的流水线编排
-├── cli/
-│   ├── fetch.mjs          # R0 RootData/DeFiLlama 取证
-│   ├── r1.mjs             # R1 fan-out(4 个 subtask 并行)
-│   ├── evidence-diff.mjs  # R1 与 RootData 的对比信号
-│   ├── r2.mjs             # R2 audit-first 对账(可触发 RootData search)
-│   ├── normalize.mjs      # 决定性规范化(lastScannedAt 等)
-│   ├── i18n.mjs           # Haiku 多语言翻译
-│   └── post.mjs           # 导出 dashboard envelope + record.full.json
-└── schemas/               # findings / gaps / changes / consumer-manifest 通用 schema
-
-consumers/protocol-info/
-├── manifest.json          # 声明 fetcher / R1 subtask / reconcile / i18n / 后处理
-├── schemas/full.json      # 完整 EarnProtocolInfo schema
-├── schemas/{metadata,team,funding,audits}.slice.json
-├── prompts/{metadata,team,funding,audits,reconcile}.user.md.tmpl
-├── fetchers/{rootdata,defillama}.mjs
-├── normalizers/final.mjs
-└── post/{locale-map,dashboard-export}.mjs
-```
-
-每条记录的产物在 `out/<slug>/<run-ts>/`。批量运行的全局索引在
-`out/_runs/<run-ts>/summary.tsv`:
-
-- `record.json`         — 源语言主记录
-- `record.full.json`    — 内联 i18n 翻译(仅有翻译时)
-- `record.import.json`  — dashboard 导入信封
-- `findings.json`       — 每个字段的来源 URL + confidence
-- `gaps.json`           — 未填充字段及其尝试记录
-- `changes.json`        — R2 改动审计
-- `meta.json`           — r1/r2/i18n 成本与状态
-- `_debug/`             — 每轮 envelope、stderr 日志、i18n sidecar
-
-新增一个 consumer 只需写一份 manifest + slice schemas + prompt 模板 +(可选)
-fetchers / normalizers / post-processing 模块,框架负责其余。
-
-## 前置依赖
-
-| 工具                       | 用途                                     |
-| -------------------------- | ---------------------------------------- |
-| `claude` CLI (Claude Code) | 无头 LLM 调用                            |
-| `node` (≥ 18)              | `framework/cli.mjs` 及所有管线模块       |
-
-## 初始设置
+Clone the repository and run the shim:
 
 ```bash
-# 1. 配置 RootData API 密钥（可选，启用 Round 2 对账）
-cp .env.example .env
-# 编辑 .env，填入 ROOTDATA_API_KEY
-
-# 2. 运行
 ./run.sh --display-name "Pendle" --type fixed_rate
 ```
 
-未配置 `.env` 或 `ROOTDATA_API_KEY` 时，管线以单轮模式运行。
+`run.sh` only loads environment variables and delegates to `framework/cli.mjs`. It looks for environment files in this order:
 
-## 用法
+1. `<repo>/.env`
+2. `~/.config/protocol-info/.env`
+
+Required local tools:
+
+| Tool | Purpose |
+| --- | --- |
+| `claude` CLI | Headless Claude calls |
+| `node` >= 18 | Pipeline runtime |
+
+## Common Commands
+
+Single protocol:
 
 ```bash
-# 单个 provider（最少需要 --display-name 和 --type）
 ./run.sh --display-name "f(x)Protocol" --type simple_earn
+```
 
-# 可选参数：指定 slug、hints、rootdata-id
+Specify slug, RootData ID, or research hints:
+
+```bash
 ./run.sh --display-name "Pendle" --type fixed_rate \
-         --slug pendle --hints "Yield trading protocol" --rootdata-id 874
+  --slug pendle \
+  --rootdata-id 874 \
+  --hints "Yield trading protocol with PT/YT markets"
+```
 
-# 批量模式（用 --batch 分隔多组 provider）
-./run.sh \
-  --batch --display-name "Pendle" --type fixed_rate --slug pendle \
-  --batch --display-name "Morpho" --type simple_earn --slug morpho
+Batch run:
 
-# 通用选项
-./run.sh --model sonnet --display-name "Pendle" --type fixed_rate
-./run.sh --max-turns 40 --display-name "Pendle" --type fixed_rate
-./run.sh --max-budget 2.00 --display-name "Pendle" --type fixed_rate
-./run.sh --dry-run --display-name "Pendle" --type fixed_rate
-
-# 并发批跑（顺序执行见默认 --parallel 1）
+```bash
 ./run.sh --parallel 4 \
   --batch --display-name "Pendle" --type fixed_rate \
   --batch --display-name "Morpho" --type simple_earn \
-  --batch --display-name "Aave"   --type simple_earn
-
-# i18n 翻译（跑完主管线后触发 Haiku 翻 status=OK 的记录）
-./run.sh --i18n all --display-name "Pendle" --type fixed_rate           # 全 19 种语言
-./run.sh --i18n zh_CN,ja_JP,en_US --display-name "Pendle" --type fixed_rate  # 指定
-./run.sh --i18n none --display-name "Pendle" --type fixed_rate          # 显式跳过(CI)
-./run.sh --display-name "Pendle" --type fixed_rate                      # tty 下交互问
+  --batch --display-name "Aave" --type simple_earn
 ```
 
-### 参数说明
+i18n:
 
-| 参数 | 必填 | 说明 |
-|------|------|------|
-| `--display-name` | 是 | Provider 显示名称 |
-| `--type` | 是 | 类型：`fixed_rate` / `simple_earn` / `staking` |
-| `--slug` | 否 | 自定义 slug，不传则从 display-name 自动生成 |
-| `--hints` | 否 | 给 Claude 的额外上下文提示 |
-| `--rootdata-id` | 否 | RootData 项目 ID，不传则自动通过 API 按名称搜索 |
-| `--batch` | 否 | 批量分隔符，每个 `--batch` 开始一组新的 provider 参数 |
-| `--model` | 否 | 指定 Claude 模型 |
-| `--max-turns` | 否 | 最大轮数（默认 40） |
-| `--max-budget` | 否 | 每个 provider 的 API 预算上限（默认 $2.00） |
-| `--parallel` | 否 | 同时并发的 provider 数（默认 1；`>1` 时 worker 输出缓冲到日志，结束后按调度顺序汇总打印） |
-| `--i18n` | 否 | `all` / `none` / 逗号分隔 locale(如 `zh_CN,ja_JP`)；不传则 tty 下交互问,非 tty 下自动跳过 |
-| `--i18n-parallel` | 否 | i18n 翻译并发数（默认 8；Haiku 快且便宜） |
-| `--i18n-model` | 否 | i18n 使用的模型（默认 `claude-haiku-4-5-20251001`） |
-| `--dry-run` | 否 | 只打印 prompt，不调用 Claude（会强制 `--parallel 1`，i18n 也跳过） |
-
-## 管线概览
-
-```
-R0 fetch (RootData + DeFiLlama, 并行)
-        │
-        ▼
-R1 fan-out (4 个 subtask 并行,每个独立 session + 预算)
-   ├── metadata   (类型 / 简介 / 链接,推断 type)
-   ├── team       (成员、职位、社媒)
-   ├── funding    (融资轮次、投资方)
-   └── audits     (审计报告 PDF)
-        │
-        ▼
-merge → evidence-diff
-        │
-        ▼
-R2 audit-first reconcile (合成 + 深挖,可选 RootData search)
-        │
-        ▼
-normalize (lastScannedAt 等决定性后处理)
-        │
-        ▼
-post (dashboard 导出) ──→ record.import.json
-        │
-        ▼
-i18n (可选,Haiku 并发) ──→ record.full.json
+```bash
+./run.sh --display-name "Pendle" --type fixed_rate --i18n all
+./run.sh --display-name "Pendle" --type fixed_rate --i18n zh_CN,ja_JP,en_US
+./run.sh --display-name "Pendle" --type fixed_rate --i18n none
 ```
 
-- **R0 fetch**: RootData / DeFiLlama 并行取证,生成结构化 evidence(团队候选、
-  投资方、链接、链/类目)。无 API key 时自动跳过对应 fetcher。
-- **R1 fan-out**: 4 个独立 subtask 并行(metadata / team / funding / audits),
-  每个独立 Claude session、独立预算上限,各自只填自己负责的 schema slice,
-  返回 `{slice, findings, gaps, handoff_notes}`。`--type` 可省略 — 由 metadata
-  subtask 从证据推断。
-- **R2 audit-first reconcile**: 合并 R1 子结果,跑 audit-first 对账。R1 高置信度
-  字段不会被无来源覆盖;R2 可发起最多 2 轮深挖(可附带 RootData search-channel
-  做定向补全),所有改动落 `changes.json`。
-- **后处理**: 应用已校验的 URL overrides,运行 normalizer(`audits.lastScannedAt`
-  等),schema 校验。
-- **i18n**(可选): 主管线结束后,用 Haiku 把 `description` + `members[].{memberPosition, oneLiner}` 翻译到选定 locale,生成 `record.full.json`。
-- 任何 fetcher 不可用或无匹配时,管线自动降级,仍然产出 R1 结果。
+Dry run:
 
-## 可选 i18n locale 清单
+```bash
+./run.sh --dry-run --display-name "Pendle" --type fixed_rate
+```
 
-| Code | 语言 |
-|---|---|
-| `bn` | 孟加拉语 |
-| `de` | 德语 |
-| `en_US` | 英语(美国) |
-| `es` | 西班牙语 |
-| `fr_FR` | 法语 |
-| `hi_IN` | 印地语 |
-| `id` | 印尼语 |
-| `it_IT` | 意大利语 |
-| `ja_JP` | 日语 |
-| `ko_KR` | 韩语 |
-| `pt` | 葡萄牙语 |
-| `pt_BR` | 葡萄牙语(巴西) |
-| `ru` | 俄语 |
-| `th_TH` | 泰语 |
-| `uk_UA` | 乌克兰语 |
-| `vi` | 越南语 |
-| `zh_CN` | 简体中文 |
-| `zh_HK` | 繁体中文(香港) |
-| `zh_TW` | 繁体中文(台湾) |
+## CLI Flags
 
-## 审核与导入
+| Flag | Required | Description |
+| --- | --- | --- |
+| `--display-name <name>` | Yes | Protocol display name. |
+| `--type <type>` | No, recommended | One of `fixed_rate`, `simple_earn`, `staking`. If omitted, the metadata subtask tries to infer it. |
+| `--slug <slug>` | No | Business key. Defaults to a slugified display name. |
+| `--hints <text>` | No | Extra research context passed to Claude. |
+| `--rootdata-id <int>` | No | RootData project ID. If omitted, the fetcher searches by name when `ROOTDATA_API_KEY` is set. |
+| `--batch` | No | Flushes the current provider and starts another one. |
+| `--model <name>` | No | Override model for R1 and R2. |
+| `--max-turns <n>` | No | Per-Claude-call turn cap; clamps manifest defaults down. |
+| `--max-budget <usd>` | No | Total single-provider LLM budget cap. The orchestrator splits it across R1, R2, and i18n. |
+| `--parallel <n>` | No | Number of providers to run concurrently. Default: `1`. |
+| `--i18n <flag>` | No | `none`, `all`, or comma-separated locale codes such as `zh_CN,ja_JP`. Empty means silent skip. |
+| `--i18n-parallel <n>` | No | Locale translation concurrency. Default: `8`. |
+| `--i18n-model <name>` | No | Override i18n model. Manifest default: `claude-haiku-4-5-20251001`. |
+| `--dry-run` | No | Print resolved providers and stop. Forces `--parallel 1`. |
+| `--manifest <path>` | No | Advanced: run a different consumer manifest. |
 
-1. 检查 `out/_runs/<run>/summary.tsv`(含 i18n 成功率列)。
-2. 单协议也可直接检查 `out/<slug>/<run>/summary.tsv`(含 i18n 成功率列)。
-3. 对每个 `out/<slug>/<run>/record.json`: 验证成员、融资、审计信息。
-4. 导入 dashboard 直接用 **`record.import.json`** — 已经是 dashboard 期望的 `{version, exportedAt, data:[...]}` 信封格式,每个 locale 一条记录,`sources` 已 strip:
-   ```bash
-   curl -X POST $DASHBOARD/api/earn-protocol-info/import \
-     -H "Content-Type: application/json" \
-     -d @out/<slug>/<run>/record.import.json
-   ```
-   即使没翻译,`record.import.json` 也包含 1 条 `locale: "en"` 的源语言记录。
-5. **`record.json`** 仍然保留(crawler invariant 严格 schema 通过的源语言记录,人工审核用)。
-6. **`record.full.json`** 仍然保留(嵌套 i18n 的 inline 版本,前端预览方便)。
+## Output Layout
 
-## Schema 约定
+Each protocol run writes artifacts under:
 
-- **`slug` == `provider`**（每个 provider 一条记录）。
-- **`status`** 始终为 `"draft"`，审核后通过 dashboard 提升状态。
-- **`provider`** 字段不再在脚本层面做 enum 硬编码校验，格式要求为 `^[a-z][a-z0-9-]*$`。
+```text
+out/<slug>/<run-id>/
+```
+
+Batch-level indexes are written under:
+
+```text
+out/_runs/<run-id>/
+```
+
+Typical files:
+
+| File | Purpose |
+| --- | --- |
+| `record.json` | Source-language `EarnProtocolInfo` record that passed schema validation. |
+| `record.full.json` | Inline i18n version, present only when translations were generated. |
+| `record.import.json` | Dashboard import envelope: `{ version, exportedAt, data: [...] }`. `sources` is stripped. |
+| `findings.json` | Field-level evidence with source URLs and confidence. |
+| `gaps.json` | Unresolved or weak fields, including attempted search paths. |
+| `changes.json` | R2 reconciliation changes and reasons. |
+| `meta.json` | Run status, RootData usage, budget plan, R1/R2 telemetry, i18n status. |
+| `summary.tsv` | Per-protocol summary row. |
+| `_debug/` | Raw envelopes, stderr logs, intermediate evidence, i18n sidecars. |
+
+The batch summary is:
+
+```text
+out/_runs/<run-id>/summary.tsv
+```
+
+## Pipeline
+
+```text
+R0 fetch
+  RootData + DeFiLlama evidence
+        |
+        v
+R1 fan-out
+  metadata / team / funding / audits
+        |
+        v
+Merge slices + evidence diff
+        |
+        v
+R2 audit-first reconcile
+  optional RootData search channel
+        |
+        v
+Normalize + schema validate
+        |
+        v
+Optional i18n
+        |
+        v
+Post-process dashboard export
+```
+
+### R0 fetch
+
+Fetchers gather structured evidence before Claude synthesis. RootData requires `ROOTDATA_API_KEY`; DeFiLlama is keyless. Missing optional fetchers do not fail the run.
+
+### R1 fan-out
+
+Four independent Claude subtasks run against schema slices:
+
+- `metadata`
+- `team`
+- `funding`
+- `audits`
+
+Each subtask returns:
+
+```json
+{
+  "slice": {},
+  "findings": [],
+  "gaps": [],
+  "handoff_notes": []
+}
+```
+
+### R2 reconcile
+
+R2 merges R1 slices and evidence with an audit-first policy:
+
+- High-confidence R1 fields are not overwritten by uncited R2 changes.
+- R2 can add missing fields when it has cited evidence.
+- Search requests are limited and routed through approved fetcher search channels.
+- Every accepted change is recorded in `changes.json`.
+
+### Normalize And Validate
+
+Consumer normalizers apply deterministic fixes, such as `audits.lastScannedAt`. The final `record.json` must pass `consumers/protocol-info/schemas/full.json`.
+
+### i18n And Export
+
+If `--i18n` is set, Haiku translates configured fields from the manifest:
+
+- `description`
+- `members[].memberPosition`
+- `members[].oneLiner`
+
+Then post-processing writes:
+
+- `record.full.json` for inline preview
+- `record.import.json` for dashboard import
+
+## Schema Summary
+
+The main schema is `consumers/protocol-info/schemas/full.json`.
+
+Top-level fields:
+
+```json
+{
+  "slug": "pendle",
+  "provider": "pendle",
+  "displayName": "Pendle",
+  "type": "fixed_rate",
+  "description": "...",
+  "tags": ["yield", "fixed-rate"],
+  "establishment": 2021,
+  "members": [],
+  "providerWebsite": "https://...",
+  "providerXLink": "https://...",
+  "providerDiscordLink": null,
+  "status": "draft",
+  "fundingRounds": [],
+  "audits": {
+    "items": [],
+    "lastScannedAt": "2026-04-27"
+  },
+  "sources": ["https://..."]
+}
+```
+
+Important constraints:
+
+- `type`: `fixed_rate`, `simple_earn`, or `staking`
+- `status`: crawler output should be `draft`
+- `members`: at least one entry
+- `fundingRounds`: full funding history, newest first
+- `audits.items[].date`: `YYYY-MM` or `YYYY-MM-DD`; bare years are invalid
+- URL fields must be absolute URIs or `null` when nullable
+- `sources` is an audit trail and is stripped from `record.import.json`
+
+## Supported Locales
+
+| Code | Language |
+| --- | --- |
+| `bn` | Bengali |
+| `de` | German |
+| `en_US` | English (US) |
+| `es` | Spanish |
+| `fr_FR` | French |
+| `hi_IN` | Hindi |
+| `id` | Indonesian |
+| `it_IT` | Italian |
+| `ja_JP` | Japanese |
+| `ko_KR` | Korean |
+| `pt` | Portuguese |
+| `pt_BR` | Portuguese (Brazil) |
+| `ru` | Russian |
+| `th_TH` | Thai |
+| `uk_UA` | Ukrainian |
+| `vi` | Vietnamese |
+| `zh_CN` | Simplified Chinese |
+| `zh_HK` | Traditional Chinese (Hong Kong) |
+| `zh_TW` | Traditional Chinese (Taiwan) |
+
+## Review And Import
+
+Recommended review flow:
+
+1. Open `out/_runs/<run-id>/summary.tsv`.
+2. For each `OK` row, review `out/<slug>/<run-id>/record.json`.
+3. Check `findings.json` for source coverage.
+4. Check `gaps.json` for missing or weak fields.
+5. Check `changes.json` when R2 changed R1 output.
+6. Import `record.import.json` after review.
+
+Example import:
+
+```bash
+curl -X POST "$DASHBOARD/api/earn-protocol-info/import" \
+  -H "Content-Type: application/json" \
+  -d @out/<slug>/<run-id>/record.import.json
+```
+
+Even without i18n, `record.import.json` contains one source-language record with dashboard locale `en`.
+
+## Troubleshooting
+
+### `claude CLI not found`
+
+Install Claude Code and ensure `claude` is on `PATH`, or set `CLAUDE_BIN`:
+
+```bash
+CLAUDE_BIN=/path/to/claude ./run.sh --display-name "Pendle" --type fixed_rate
+```
+
+### RootData is disabled
+
+Set `ROOTDATA_API_KEY` in either `<repo>/.env` or `~/.config/protocol-info/.env`. Without it, RootData fetch and search channels are skipped.
+
+### `SCHEMA_FAIL`
+
+Open the protocol directory and inspect:
+
+- `record.json`
+- `gaps.json`
+- `changes.json`
+- `_debug/schema.stderr.log` if present
+
+Common causes are invalid URLs, missing required members, incomplete dates, or audit dates with bare years.
+
+### Partial i18n success
+
+The summary column may show values such as `3/19`. Inspect:
+
+```text
+out/<slug>/<run-id>/_debug/i18n/
+```
+
+Successful locale sidecars are still used by post-processing.
+
+### Output path changed
+
+The current layout is protocol-first:
+
+```text
+out/<slug>/<run-id>/
+out/_runs/<run-id>/summary.tsv
+```
+
+Older docs or generated paths using `out/<run-id>/<slug>/` are stale.
+
+## Development
+
+Run all local checks:
+
+```bash
+node scripts/check-all.mjs
+```
+
+Validate the Claude Code plugin:
+
+```bash
+claude plugin validate .
+```
+
+The framework is intentionally consumer-oriented. To add another consumer, provide a manifest, full schema, slice schemas, prompts, and optional fetchers, normalizers, and post-processing modules. The shared framework handles scheduling, budget splitting, evidence merging, validation, i18n, and summaries.
