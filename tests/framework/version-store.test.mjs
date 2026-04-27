@@ -68,4 +68,55 @@ export const tests = [
       assert.match(status, /pendle\/record\.json/, 'record.json should be untracked-and-visible');
     },
   },
+  {
+    name: 'commit() stages paths and returns sha',
+    fn: async () => {
+      const { ensureRepo, commit } = await import('../../framework/version-store.mjs');
+      const dir = await makeTempOut();
+      await ensureRepo(dir);
+      const { writeFile, mkdir } = await import('node:fs/promises');
+      await mkdir(join(dir, 'pendle'), { recursive: true });
+      await writeFile(join(dir, 'pendle', 'record.json'), '{"name":"Pendle"}\n');
+      const sha = await commit(dir, {
+        paths: ['pendle/'],
+        message: 'crawl(pendle): R1+R2 ok',
+        runId: '20260427T103211Z',
+      });
+      assert.match(sha, /^[0-9a-f]{7,40}$/, `not a sha: ${sha}`);
+    },
+  },
+  {
+    name: 'commit() returns null when nothing is staged',
+    fn: async () => {
+      const { ensureRepo, commit } = await import('../../framework/version-store.mjs');
+      const dir = await makeTempOut();
+      await ensureRepo(dir);
+      const sha = await commit(dir, {
+        paths: ['pendle/'],
+        message: 'noop',
+        runId: '20260427T103211Z',
+      });
+      assert.equal(sha, null);
+    },
+  },
+  {
+    name: 'commit() embeds Run-Id trailer',
+    fn: async () => {
+      const { ensureRepo, commit } = await import('../../framework/version-store.mjs');
+      const { writeFile, mkdir } = await import('node:fs/promises');
+      const { spawn } = await import('node:child_process');
+      const dir = await makeTempOut();
+      await ensureRepo(dir);
+      await mkdir(join(dir, 'pendle'), { recursive: true });
+      await writeFile(join(dir, 'pendle', 'record.json'), '{"x":1}');
+      await commit(dir, { paths: ['pendle/'], message: 'crawl', runId: 'RID-XYZ' });
+      const out = await new Promise((res) => {
+        let buf = '';
+        const p = spawn('git', ['log', '-1', '--format=%(trailers:key=Run-Id,valueonly)'], { cwd: dir });
+        p.stdout.on('data', (b) => { buf += b.toString(); });
+        p.on('close', () => res(buf.trim()));
+      });
+      assert.equal(out, 'RID-XYZ');
+    },
+  },
 ];

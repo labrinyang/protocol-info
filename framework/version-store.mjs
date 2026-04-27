@@ -41,3 +41,28 @@ export async function ensureRepo(outDir) {
   await git(['config', 'user.name', 'protocol-info'], { cwd: outDir });
   await writeFile(join(outDir, '.gitignore'), GITIGNORE_BODY);
 }
+
+export async function commit(outDir, { paths, message, runId }) {
+  for (const p of paths) {
+    try {
+      await git(['add', '--', p], { cwd: outDir });
+    } catch (err) {
+      // Pathspec missing on disk: treat as "nothing to add" for this path.
+      // The empty-staging check below converts the overall call into a no-op.
+      if (!/did not match any files/i.test(err.message)) throw err;
+    }
+  }
+  // Detect empty staging area: `git diff --cached --quiet` exits non-zero
+  // when there ARE staged changes, so we invert.
+  const hasStaged = await new Promise((resolve) => {
+    const proc = spawn('git', ['diff', '--cached', '--quiet'], { cwd: outDir, stdio: 'ignore' });
+    proc.on('close', (code) => resolve(code !== 0));
+  });
+  if (!hasStaged) return null;
+
+  const args = ['commit', '--quiet', '-m', message];
+  if (runId) args.push('--trailer', `Run-Id: ${runId}`);
+  await git(args, { cwd: outDir });
+  const { stdout } = await git(['rev-parse', '--short', 'HEAD'], { cwd: outDir });
+  return stdout.trim();
+}
