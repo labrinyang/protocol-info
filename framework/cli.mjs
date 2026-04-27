@@ -126,9 +126,9 @@ Outputs:
   out/<slug>/record.json
   out/<slug>/record.full.json   (only when --i18n produced translations)
   out/<slug>/meta.json
-  out/<slug>/_debug/             audit / debug artefacts
-  out/<slug>/summary.tsv         per-protocol run summary
-  out/.runs/<run-id>/summary.tsv batch summary
+  out/<slug>/_debug/             audit / debug artefacts (gitignored)
+  out/.runs/<run-id>/summary.tsv batch summary (gitignored)
+  out/.runs.log                  append-only TSV of every batch run (gitignored)
 `;
 
 // Pure argv parser. Does NOT exit the process or print to stdout/stderr —
