@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { loadManifest } from './manifest-loader.mjs';
 import { runWithLimit } from './parallel-runner.mjs';
 import { buildOutBrowser } from './out-browser.mjs';
-import { ensureRepo, commit } from './version-store.mjs';
+import { ensureRepo, commit, isClean } from './version-store.mjs';
 
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_DIR = dirname(FRAMEWORK_DIR);
@@ -198,6 +198,17 @@ export async function appendRunsLog(outputRoot, { runId, slugs, outcome }) {
   await appendFile(join(outputRoot, '.runs.log'), line);
 }
 
+export async function guardClobber(outputRoot, slug, { forceOverwrite }) {
+  if (forceOverwrite) return;
+  const clean = await isClean(outputRoot, { slug });
+  if (!clean) {
+    throw new Error(
+      `${slug}: uncommitted changes in out/${slug}/ — refusing to overwrite. ` +
+      `Commit or discard them first, or pass --force-overwrite.`
+    );
+  }
+}
+
 // ── runOne: full per-provider pipeline ──────────────────────────────────────
 
 export async function runOne({
@@ -244,6 +255,7 @@ export async function runOne({
     return { slug, status: 'DRY_RUN' };
   }
 
+  await guardClobber(outputRoot, slug, { forceOverwrite: !!options.forceOverwrite });
   await mkdir(summaryRowsDir, { recursive: true });
   const slugDir = protocolDir(outputRoot, slug);
   const debugDir = join(slugDir, '_debug');

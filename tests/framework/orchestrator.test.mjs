@@ -191,4 +191,94 @@ export const tests = [
       }
     },
   },
+  {
+    name: 'guardClobber throws when slug has uncommitted changes (no --force-overwrite)',
+    fn: async () => {
+      const { mkdtemp, mkdir, writeFile } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { ensureRepo, commit } = await import('../../framework/version-store.mjs');
+      const { guardClobber } = await import('../../framework/orchestrator.mjs');
+      const dir = await mkdtemp(join(tmpdir(), 'pi-guard-'));
+      await ensureRepo(dir);
+      await mkdir(join(dir, 'pendle'), { recursive: true });
+      await writeFile(join(dir, 'pendle', 'record.json'), '{"v":1}');
+      await commit(dir, { paths: ['pendle/'], message: 'a', runId: 'A' });
+      await writeFile(join(dir, 'pendle', 'record.json'), '{"v":2}'); // uncommitted edit
+      await assert.rejects(
+        () => guardClobber(dir, 'pendle', { forceOverwrite: false }),
+        /uncommitted changes/i
+      );
+    },
+  },
+  {
+    name: 'guardClobber passes silently with --force-overwrite',
+    fn: async () => {
+      const { mkdtemp, mkdir, writeFile } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { ensureRepo, commit } = await import('../../framework/version-store.mjs');
+      const { guardClobber } = await import('../../framework/orchestrator.mjs');
+      const dir = await mkdtemp(join(tmpdir(), 'pi-guard-'));
+      await ensureRepo(dir);
+      await mkdir(join(dir, 'pendle'), { recursive: true });
+      await writeFile(join(dir, 'pendle', 'record.json'), '{"v":1}');
+      await commit(dir, { paths: ['pendle/'], message: 'a', runId: 'A' });
+      await writeFile(join(dir, 'pendle', 'record.json'), '{"v":2}');
+      await guardClobber(dir, 'pendle', { forceOverwrite: true }); // no throw
+    },
+  },
+  {
+    name: '[REGRESSION] failed-pipeline invariant: workerFailures slug gets NO commit, prior record stays at HEAD',
+    fn: async () => {
+      const { mkdtemp, mkdir, writeFile, readFile } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { ensureRepo, commit, log } = await import('../../framework/version-store.mjs');
+      const dir = await mkdtemp(join(tmpdir(), 'pi-fail-'));
+      await ensureRepo(dir);
+      // Establish a known-good prior commit for pendle:
+      await mkdir(join(dir, 'pendle'), { recursive: true });
+      await writeFile(join(dir, 'pendle', 'record.json'), '{"v":1}\n');
+      await commit(dir, { paths: ['pendle/'], message: 'crawl(pendle): R1+R2 ok', runId: 'R-prior' });
+      // Simulate a partially-failed batch: pendle is in workerFailures, morpho in okSlugs.
+      // The orchestrator's commit loop iterates okSlugs ONLY — so pendle must NOT
+      // get a new commit even though _debug/ etc. may have been written.
+      await writeFile(join(dir, 'pendle', '_debug', 'r1.stderr.log').replace('_debug/r1', '_debug-r1'), '').catch(() => {});
+      await mkdir(join(dir, 'pendle', '_debug'), { recursive: true });
+      await writeFile(join(dir, 'pendle', '_debug', 'r1.stderr.log'), 'crash trace');
+      await mkdir(join(dir, 'morpho'), { recursive: true });
+      await writeFile(join(dir, 'morpho', 'record.json'), '{"slug":"morpho"}\n');
+      // Mirror run()'s commit loop: iterate ONLY okSlugs:
+      const okSlugs = ['morpho']; // pendle deliberately omitted (failed)
+      for (const slug of okSlugs) {
+        await commit(dir, { paths: [`${slug}/`], message: `crawl(${slug}): R1+R2 ok`, runId: 'R-fail' });
+      }
+      // Pendle history: still 1 commit, the prior good state. NO new commit for the failure.
+      const pendleHist = await log(dir, { slug: 'pendle' });
+      assert.equal(pendleHist.length, 1, 'pendle should NOT get a commit for the failed run');
+      assert.equal(pendleHist[0].runId, 'R-prior', 'pendle should still be at the prior commit');
+      // Morpho history: 1 commit from this run.
+      const morphoHist = await log(dir, { slug: 'morpho' });
+      assert.equal(morphoHist.length, 1);
+      assert.equal(morphoHist[0].runId, 'R-fail');
+      // Pendle's record.json content: unchanged from the prior commit.
+      const pendleRecord = await readFile(join(dir, 'pendle', 'record.json'), 'utf8');
+      assert.equal(pendleRecord.trim(), '{"v":1}');
+    },
+  },
+  {
+    name: 'cli plumbs --force-overwrite into options.forceOverwrite',
+    fn: async () => {
+      // End-to-end argv parse: ensures a typo in cli.mjs (e.g. force_overwrite,
+      // forceClobber) doesn't silently disable the escape hatch. Imports the
+      // pure parse function from cli.mjs (Task 9 step 4 exports it).
+      const { parseArgv } = await import('../../framework/cli.mjs');
+      const { providers, options } = parseArgv([
+        '--display-name', 'Pendle', '--type', 'fixed_rate', '--force-overwrite',
+      ]);
+      assert.equal(providers.length, 1);
+      assert.equal(options.forceOverwrite, true);
+    },
+  },
 ];

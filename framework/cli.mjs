@@ -18,7 +18,8 @@
 //   --i18n <flag>             "none" | "all" | "zh_CN,ja_JP,..." | empty
 //   --i18n-parallel <n>       default 8
 //   --i18n-model <name>       default Haiku (manifest default)
-//   --dry-run                 list providers + bail (r1.mjs has no --dry-run)
+//   --dry-run                 list providers + bail
+//   --force-overwrite         overwrite an out/<slug>/ that has uncommitted changes
 //   -h, --help                print help
 //
 // .env autoload order (only if ROOTDATA_API_KEY not already set):
@@ -118,190 +119,249 @@ Run-wide flags:
   --i18n-parallel <n>     default 8
   --i18n-model <name>     override i18n model (default haiku)
   --dry-run               list providers and bail
+  --force-overwrite       overwrite an out/<slug>/ that has uncommitted changes
   -h, --help              this help
 
 Outputs:
-  out/<slug>/<run-id>/record.json
-  out/<slug>/<run-id>/record.full.json   (only when --i18n produced translations)
-  out/<slug>/<run-id>/meta.json
-  out/<slug>/<run-id>/_debug/             audit / debug artefacts
-  out/<slug>/<run-id>/summary.tsv         per-protocol run summary
-  out/_runs/<run-id>/summary.tsv          batch summary
+  out/<slug>/record.json
+  out/<slug>/record.full.json   (only when --i18n produced translations)
+  out/<slug>/meta.json
+  out/<slug>/_debug/             audit / debug artefacts
+  out/<slug>/summary.tsv         per-protocol run summary
+  out/.runs/<run-id>/summary.tsv batch summary
 `;
 
-const argv = process.argv.slice(2);
+// Pure argv parser. Does NOT exit the process or print to stdout/stderr —
+// throws on validation errors. Side effect: a `--rootdata-key VALUE` flag
+// updates process.env.ROOTDATA_API_KEY (preserves prior behavior so the
+// fetcher dispatcher picks the key up).
+export function parseArgv(argv) {
+  const providers = [];
+  let cur = { dn: '', type: '', slug: '', hints: '', rid: '' };
+  let manifestPath = DEFAULT_MANIFEST;
+  let model = '';
+  let parallel = 1;
+  let i18nArg = '';
+  let i18nParallel = 8;
+  let i18nModel = '';
+  let dryRun = false;
+  let maxTurnsCap = '';
+  let maxBudgetCap = '';
+  let forceOverwrite = false;
+  let helpRequested = false;
+  let localRootdataKeyOrigin = rootdataKeyOrigin;
 
-const providers = [];
-let cur = { dn: '', type: '', slug: '', hints: '', rid: '' };
-let model = '';
-let parallel = 1;
-let i18nArg = '';
-let i18nParallel = 8;
-let i18nModel = '';
-let dryRun = false;
-let manifestPath = DEFAULT_MANIFEST;
-let maxTurnsCap = '';
-let maxBudgetCap = '';
-
-function flush() {
-  if (!cur.dn && !cur.type) return;
-  if (!cur.dn) {
-    process.stderr.write('错误: --display-name 为必填参数\n');
-    process.exit(1);
-  }
-  const slug = cur.slug || slugify(cur.dn);
-  const provider = {
-    slug,
-    provider: slug,
-    displayName: cur.dn,
-    type: cur.type || '',
-    hints: cur.hints || '',
-  };
-  if (cur.rid) {
-    const n = Number(cur.rid);
-    if (!Number.isFinite(n)) {
-      process.stderr.write(`错误: --rootdata-id 必须是整数 (got ${cur.rid})\n`);
-      process.exit(1);
+  function flush() {
+    if (!cur.dn && !cur.type) return;
+    if (!cur.dn) {
+      throw new Error('--display-name 为必填参数');
     }
-    provider.rootdataId = n;
-  }
-  providers.push(provider);
-  cur = { dn: '', type: '', slug: '', hints: '', rid: '' };
-}
-
-for (let i = 0; i < argv.length; i++) {
-  const a = argv[i];
-  const nextArg = () => {
-    if (i + 1 >= argv.length) {
-      process.stderr.write(`错误: ${a} 缺少参数\n`);
-      process.exit(1);
-    }
-    return argv[++i];
-  };
-  switch (a) {
-    case '--manifest':       manifestPath = nextArg(); break;
-    case '--model':          model = nextArg(); break;
-    case '--rootdata-key': {
-      const key = nextArg().trim();
-      if (key) {
-        process.env.ROOTDATA_API_KEY = key;
-        rootdataKeyOrigin = '--rootdata-key';
+    const slug = cur.slug || slugify(cur.dn);
+    const provider = {
+      slug,
+      provider: slug,
+      displayName: cur.dn,
+      type: cur.type || '',
+      hints: cur.hints || '',
+    };
+    if (cur.rid) {
+      const n = Number(cur.rid);
+      if (!Number.isFinite(n)) {
+        throw new Error(`--rootdata-id 必须是整数 (got ${cur.rid})`);
       }
-      break;
+      provider.rootdataId = n;
     }
-    case '--max-turns':      maxTurnsCap = nextArg(); break;
-    case '--max-budget':     maxBudgetCap = nextArg(); break;
-    case '--parallel':       parallel = parseInt(nextArg(), 10); break;
-    case '--i18n':           i18nArg = nextArg(); break;
-    case '--i18n-parallel':  i18nParallel = parseInt(nextArg(), 10); break;
-    case '--i18n-model':     i18nModel = nextArg(); break;
-    case '--dry-run':        dryRun = true; break;
-    case '--display-name':   cur.dn = nextArg(); break;
-    case '--type':           cur.type = nextArg(); break;
-    case '--slug':           cur.slug = nextArg(); break;
-    case '--hints':          cur.hints = nextArg(); break;
-    case '--rootdata-id':    cur.rid = nextArg(); break;
-    case '--batch':          flush(); break;
-    case '-h':
-    case '--help':
-      process.stdout.write(HELP);
-      process.exit(0);
-    default:
-      process.stderr.write(`未知参数: ${a}\n`);
-      process.exit(1);
+    providers.push(provider);
+    cur = { dn: '', type: '', slug: '', hints: '', rid: '' };
   }
-}
-flush();
 
-if (providers.length === 0) {
-  process.stderr.write('错误: 至少需要提供一个 provider（--display-name + --type）\n');
-  process.stderr.write('用法: node framework/cli.mjs --display-name "Protocol Name" --type simple_earn\n');
-  process.stderr.write('批量: node framework/cli.mjs --batch --display-name "A" --type t1 --batch --display-name "B" --type t2\n');
-  process.exit(1);
-}
-
-if (!Number.isInteger(parallel) || parallel < 1) {
-  process.stderr.write(`错误: --parallel 必须是正整数（当前: ${parallel}）\n`);
-  process.exit(1);
-}
-if (!Number.isInteger(i18nParallel) || i18nParallel < 1) {
-  process.stderr.write(`错误: --i18n-parallel 必须是正整数（当前: ${i18nParallel}）\n`);
-  process.exit(1);
-}
-
-let maxTurns = null;
-if (maxTurnsCap !== '') {
-  const n = parseInt(maxTurnsCap, 10);
-  if (!Number.isInteger(n) || n < 1) {
-    process.stderr.write(`错误: --max-turns 必须是正整数（当前: ${maxTurnsCap}）\n`);
-    process.exit(1);
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    const nextArg = () => {
+      if (i + 1 >= argv.length) {
+        throw new Error(`${a} 缺少参数`);
+      }
+      return argv[++i];
+    };
+    switch (a) {
+      case '--manifest':       manifestPath = nextArg(); break;
+      case '--model':          model = nextArg(); break;
+      case '--rootdata-key': {
+        const key = nextArg().trim();
+        if (key) {
+          process.env.ROOTDATA_API_KEY = key;
+          localRootdataKeyOrigin = '--rootdata-key';
+        }
+        break;
+      }
+      case '--max-turns':      maxTurnsCap = nextArg(); break;
+      case '--max-budget':     maxBudgetCap = nextArg(); break;
+      case '--parallel':       parallel = parseInt(nextArg(), 10); break;
+      case '--i18n':           i18nArg = nextArg(); break;
+      case '--i18n-parallel':  i18nParallel = parseInt(nextArg(), 10); break;
+      case '--i18n-model':     i18nModel = nextArg(); break;
+      case '--dry-run':        dryRun = true; break;
+      case '--force-overwrite': forceOverwrite = true; break;
+      case '--display-name':   cur.dn = nextArg(); break;
+      case '--type':           cur.type = nextArg(); break;
+      case '--slug':           cur.slug = nextArg(); break;
+      case '--hints':          cur.hints = nextArg(); break;
+      case '--rootdata-id':    cur.rid = nextArg(); break;
+      case '--batch':          flush(); break;
+      case '-h':
+      case '--help':
+        helpRequested = true;
+        break;
+      default:
+        throw new Error(`未知参数: ${a}`);
+    }
   }
-  maxTurns = n;
-}
+  flush();
 
-let maxBudget = null;
-if (maxBudgetCap !== '') {
-  const n = Number(maxBudgetCap);
-  if (!Number.isFinite(n) || n <= 0) {
-    process.stderr.write(`错误: --max-budget 必须是正数（当前: ${maxBudgetCap}）\n`);
-    process.exit(1);
-  }
-  maxBudget = n;
-}
-
-// dry-run forces parallel=1
-if (dryRun) parallel = 1;
-
-// ── i18n label for header line ─────────────────────────────────────────────
-let i18nLabel;
-switch (i18nArg) {
-  case '':     i18nLabel = 'skip (no --i18n flag — silent skip)'; break;
-  case 'none': i18nLabel = 'skip'; break;
-  case 'all':  i18nLabel = 'all languages (from manifest catalog)'; break;
-  default:     i18nLabel = i18nArg;
-}
-
-const ROOTDATA_ENABLED = !!process.env.ROOTDATA_API_KEY;
-const RUN_TS = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
-const outputRoot = join(SCRIPT_DIR, 'out');
-const runSummaryDir = join(outputRoot, '_runs', RUN_TS);
-
-const rootdataLabel = ROOTDATA_ENABLED
-  ? `enabled (Round 2) [key from ${rootdataKeyOrigin || 'shell-env'}]`
-  : 'disabled (single-round; no ROOTDATA_API_KEY found — pass --rootdata-key, export the env var, or write ~/.config/protocol-info/.env)';
-
-console.log('=== Protocol-info crawl ===');
-console.log(`Providers:   ${providers.length}`);
-console.log(`Model:       ${model || 'default'}`);
-console.log(`Parallel:    ${parallel}`);
-console.log(`RootData:    ${rootdataLabel}`);
-console.log(`i18n:        ${i18nLabel} [model=${i18nModel || 'default'}, parallel=${i18nParallel}]`);
-console.log(`Run id:      ${RUN_TS}`);
-console.log(`Out root:    ${outputRoot}`);
-console.log(`Summary:     ${join(runSummaryDir, 'summary.tsv')}`);
-console.log('');
-
-// Bail early if claude / node not available?  framework/cli/r1.mjs handles
-// claude-bin discovery itself; we just trust the path.
-
-try {
-  await run({
+  return {
     manifestPath,
     providers,
-    outputRoot,
-    runId: RUN_TS,
-    parallelism: parallel,
-    dryRun,
+    helpRequested,
     options: {
-      model,
+      parallel,
       i18nArg,
       i18nParallel,
       i18nModel,
-      maxTurns,
-      maxBudget,
+      model,
+      dryRun,
+      rootdataKeyOrigin: localRootdataKeyOrigin,
+      maxTurnsCap,
+      maxBudgetCap,
+      forceOverwrite,
     },
-  });
-} catch (err) {
-  process.stderr.write(`orchestrator failed: ${err.stack || err.message}\n`);
-  process.exit(1);
+  };
+}
+
+// ── Main entry (only when run as a script) ──────────────────────────────────
+
+const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+
+if (isMain) {
+  let parsed;
+  try {
+    parsed = parseArgv(process.argv.slice(2));
+  } catch (err) {
+    process.stderr.write(`错误: ${err.message}\n`);
+    process.exit(1);
+  }
+
+  if (parsed.helpRequested) {
+    process.stdout.write(HELP);
+    process.exit(0);
+  }
+
+  const { manifestPath, providers, options } = parsed;
+  const {
+    parallel: parsedParallel,
+    i18nArg,
+    i18nParallel,
+    i18nModel,
+    model,
+    dryRun,
+    rootdataKeyOrigin: parsedRootdataKeyOrigin,
+    maxTurnsCap,
+    maxBudgetCap,
+    forceOverwrite,
+  } = options;
+  let parallel = parsedParallel;
+  rootdataKeyOrigin = parsedRootdataKeyOrigin;
+
+  if (providers.length === 0) {
+    process.stderr.write('错误: 至少需要提供一个 provider（--display-name + --type）\n');
+    process.stderr.write('用法: node framework/cli.mjs --display-name "Protocol Name" --type simple_earn\n');
+    process.stderr.write('批量: node framework/cli.mjs --batch --display-name "A" --type t1 --batch --display-name "B" --type t2\n');
+    process.exit(1);
+  }
+
+  if (!Number.isInteger(parallel) || parallel < 1) {
+    process.stderr.write(`错误: --parallel 必须是正整数（当前: ${parallel}）\n`);
+    process.exit(1);
+  }
+  if (!Number.isInteger(i18nParallel) || i18nParallel < 1) {
+    process.stderr.write(`错误: --i18n-parallel 必须是正整数（当前: ${i18nParallel}）\n`);
+    process.exit(1);
+  }
+
+  let maxTurns = null;
+  if (maxTurnsCap !== '') {
+    const n = parseInt(maxTurnsCap, 10);
+    if (!Number.isInteger(n) || n < 1) {
+      process.stderr.write(`错误: --max-turns 必须是正整数（当前: ${maxTurnsCap}）\n`);
+      process.exit(1);
+    }
+    maxTurns = n;
+  }
+
+  let maxBudget = null;
+  if (maxBudgetCap !== '') {
+    const n = Number(maxBudgetCap);
+    if (!Number.isFinite(n) || n <= 0) {
+      process.stderr.write(`错误: --max-budget 必须是正数（当前: ${maxBudgetCap}）\n`);
+      process.exit(1);
+    }
+    maxBudget = n;
+  }
+
+  // dry-run forces parallel=1
+  if (dryRun) parallel = 1;
+
+  // ── i18n label for header line ───────────────────────────────────────────
+  let i18nLabel;
+  switch (i18nArg) {
+    case '':     i18nLabel = 'skip (no --i18n flag — silent skip)'; break;
+    case 'none': i18nLabel = 'skip'; break;
+    case 'all':  i18nLabel = 'all languages (from manifest catalog)'; break;
+    default:     i18nLabel = i18nArg;
+  }
+
+  const ROOTDATA_ENABLED = !!process.env.ROOTDATA_API_KEY;
+  const RUN_TS = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  const outputRoot = join(SCRIPT_DIR, 'out');
+  const runSummaryDir = join(outputRoot, '.runs', RUN_TS);
+
+  const rootdataLabel = ROOTDATA_ENABLED
+    ? `enabled (Round 2) [key from ${rootdataKeyOrigin || 'shell-env'}]`
+    : 'disabled (single-round; no ROOTDATA_API_KEY found — pass --rootdata-key, export the env var, or write ~/.config/protocol-info/.env)';
+
+  console.log('=== Protocol-info crawl ===');
+  console.log(`Providers:   ${providers.length}`);
+  console.log(`Model:       ${model || 'default'}`);
+  console.log(`Parallel:    ${parallel}`);
+  console.log(`RootData:    ${rootdataLabel}`);
+  console.log(`i18n:        ${i18nLabel} [model=${i18nModel || 'default'}, parallel=${i18nParallel}]`);
+  console.log(`Run id:      ${RUN_TS}`);
+  console.log(`Out root:    ${outputRoot}`);
+  console.log(`Summary:     ${join(runSummaryDir, 'summary.tsv')}`);
+  console.log('');
+
+  // Bail early if claude / node not available?  framework/cli/r1.mjs handles
+  // claude-bin discovery itself; we just trust the path.
+
+  try {
+    await run({
+      manifestPath,
+      providers,
+      outputRoot,
+      runId: RUN_TS,
+      parallelism: parallel,
+      dryRun,
+      options: {
+        model,
+        i18nArg,
+        i18nParallel,
+        i18nModel,
+        maxTurns,
+        maxBudget,
+        forceOverwrite,
+      },
+    });
+  } catch (err) {
+    process.stderr.write(`orchestrator failed: ${err.stack || err.message}\n`);
+    process.exit(1);
+  }
 }
