@@ -53,7 +53,7 @@ export const tests = [
     },
   },
   {
-    name: 'buildOutBrowser writes escaped self-contained html with compare tools',
+    name: 'buildOutBrowser writes escaped self-contained html',
     fn: async () => {
       const dir = await mkdtemp(join(tmpdir(), 'out-browser-'));
       try {
@@ -64,9 +64,6 @@ export const tests = [
         const file = await buildOutBrowser(dir);
         const html = await readFile(file, 'utf8');
         assert.match(html, /protocol-info out/);
-        assert.match(html, /Compare runs/);
-        assert.match(html, /Copy diff/);
-        assert.match(html, /diffArtifacts/);
         assert.doesNotMatch(html, /"content":"<\/script>/);
         assert.match(html, /\\u003c\/script>/);
         const script = html.match(/<script>\n([\s\S]*)<\/script>\n<\/body>/)?.[1];
@@ -122,6 +119,29 @@ export const tests = [
         assert.match(html, /R1/);
         // The legacy "runs as primary nav" markers should be gone:
         assert.doesNotMatch(html, /class="runs-list"/);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: 'buildOutBrowser embeds two-commit diff data per protocol',
+    fn: async () => {
+      const { ensureRepo, commit } = await import('../../framework/version-store.mjs');
+      const dir = await mkdtemp(join(tmpdir(), 'pi-diff-'));
+      try {
+        await ensureRepo(dir);
+        await mkdir(join(dir, 'pendle'), { recursive: true });
+        await writeFile(join(dir, 'pendle', 'record.json'), '{"v":1}\n');
+        await commit(dir, { paths: ['pendle/'], message: 'a', runId: 'A' });
+        await writeFile(join(dir, 'pendle', 'record.json'), '{"v":2}\n');
+        await commit(dir, { paths: ['pendle/'], message: 'b', runId: 'B' });
+
+        await buildOutBrowser(dir);
+        const html = await readFile(join(dir, 'index.html'), 'utf8');
+        // Expect the diff data ("HEAD~1 vs HEAD") to be present in some form:
+        assert.match(html, /"v":1/);
+        assert.match(html, /"v":2/);
       } finally {
         await rm(dir, { recursive: true, force: true });
       }

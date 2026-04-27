@@ -6,7 +6,7 @@
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { log as gitLog } from './version-store.mjs';
+import { log as gitLog, diff as gitDiff } from './version-store.mjs';
 
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_DIR = dirname(FRAMEWORK_DIR);
@@ -152,9 +152,20 @@ export async function collectOutIndex(outDir = DEFAULT_OUT_ROOT) {
       dir,
     });
   }
+  // Hydrate per-protocol git data (history + default diff) in a single pass.
+  // Single loop: avoid re-walking `protocols` twice (one git-log + one git-diff
+  // is the goal; two loops would cost two git-logs per protocol).
   for (const p of protocols) {
-    try { p.history = await gitLog(root, { slug: p.slug, limit: 20 }); }
-    catch { p.history = []; }
+    p.history = await gitLog(root, { slug: p.slug, limit: 20 }).catch(() => []);
+    if (p.history.length >= 2) {
+      p.defaultDiff = await gitDiff(root, {
+        slug: p.slug,
+        fromSha: p.history[1].sha,
+        toSha: p.history[0].sha,
+      }).catch(() => '');
+    } else {
+      p.defaultDiff = '';
+    }
   }
   protocols.sort((a, b) => a.slug.localeCompare(b.slug));
 
@@ -194,6 +205,7 @@ async function hydrateView(outputRoot) {
       row: normalizeRow(row, { slug: p.slug, status: metaStatus || 'unknown' }),
       artifacts,
       history: p.history || [],
+      defaultDiff: p.defaultDiff || '',
     });
   }
   hydrated.sort((a, b) => a.slug.localeCompare(b.slug));
@@ -232,6 +244,14 @@ export async function buildOutBrowser(outputRoot = DEFAULT_OUT_ROOT, opts = {}) 
 function renderHtml(data) {
   const okCount = data.totals.ok;
   const issueCount = data.totals.issues;
+  // Server-rendered per-protocol diff sections. JS hydrates a richer view,
+  // but these stay in the static HTML so the diff text is visible in the
+  // raw bytes (search/grep/test-friendly) and as a no-JS fallback. Use
+  // text-content escaping (only & < >) so JSON quotes survive verbatim.
+  const diffSections = data.protocols.map((p) => p.defaultDiff
+    ? `<section class="diff" data-slug="${escapeHtml(p.slug)}"><h3>Diff vs previous — ${escapeHtml(p.slug)}</h3><pre>${escapeText(p.defaultDiff)}</pre></section>`
+    : ''
+  ).join('');
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -835,6 +855,7 @@ code, pre { font-family: var(--mono); }
     </section>
     <section class="detail" id="detail"></section>
   </main>
+  <noscript class="static-diffs">${diffSections}</noscript>
 </div>
 <div class="toast" id="toast"></div>
 <script id="out-data" type="application/json">${scriptJson(data)}</script>
@@ -843,10 +864,6 @@ const DATA = JSON.parse(document.getElementById('out-data').textContent);
 const state = {
   slug: DATA.protocols[0]?.slug || '',
   artifact: 'record.import.json',
-  compareBaseRun: '',
-  compareTargetRun: '',
-  compareArtifact: 'record.import.json',
-  ignoreVolatile: true,
   query: '',
   status: 'all',
   runFilter: ''
@@ -880,36 +897,6 @@ function selectedArtifact(protocol) {
     || protocol.artifacts.find((a) => a.name === 'record.import.json')
     || protocol.artifacts[0]
     || null;
-}
-
-function protocolRuns(slug) {
-  // v2.0: only the current snapshot is available; multi-run comparison
-  // is handled via git commits in Task 13.
-  const p = DATA.protocols.find((x) => x.slug === slug);
-  return p ? [p] : [];
-}
-
-function protocolForRun(slug /*, runId */) {
-  return DATA.protocols.find((p) => p.slug === slug) || null;
-}
-
-function artifactFor(protocol, name) {
-  return protocol?.artifacts.find((a) => a.name === name) || null;
-}
-
-function compareArtifactNames(runs) {
-  const names = new Set();
-  for (const protocol of runs) {
-    for (const artifact of protocol.artifacts || []) {
-      if (artifact.kind === 'json') names.add(artifact.name);
-    }
-  }
-  const preferred = ['record.import.json', 'record.json', 'record.full.json', 'findings.json', 'gaps.json', 'changes.json', 'meta.json'];
-  return preferred.filter((name) => names.has(name)).concat([...names].filter((name) => !preferred.includes(name)).sort());
-}
-
-function ensureCompareState(slug) {
-  return protocolRuns(slug);
 }
 
 function statusClass(status) {
@@ -1020,7 +1007,6 @@ function renderDetail() {
       ? 'File is too large to embed in this static page. Use Copy path or Open.'
       : artifact.content
     : 'No artifacts found for this record.';
-  const compare = buildComparePanel(protocol);
   const history = Array.isArray(protocol.history) ? protocol.history : [];
   const historyHtml = history.length === 0
     ? ''
@@ -1031,6 +1017,9 @@ function renderDetail() {
           ' <span class="run-id">' + esc(h.runId || '') + '</span></li>'
         ).join('') +
         '</ul></section>';
+  const diffHtml = protocol.defaultDiff
+    ? '<section class="diff"><h3>Diff vs previous</h3><pre>' + esc(protocol.defaultDiff) + '</pre></section>'
+    : '';
   node.innerHTML =
     '<div class="detail-head">' +
       '<div><h2>' + esc(protocol.slug) + '</h2><div class="subpath">' + esc(protocol.relDir || '-') + '</div></div>' +
@@ -1049,7 +1038,7 @@ function renderDetail() {
       (artifact ? '<a class="action" href="' + esc(artifact.href) + '" target="_blank" rel="noreferrer">Open file</a>' : '') +
     '</div>' +
     historyHtml +
-    compare.html +
+    diffHtml +
     '<div class="preview-wrap">' +
       '<div class="preview-top"><span>' + esc(artifact?.name || 'no file') + '</span><span>' + esc(artifact?.sizeLabel || '') + '</span></div>' +
       '<pre class="preview"><code>' + esc(content) + '</code></pre>' +
@@ -1068,114 +1057,6 @@ function renderDetail() {
   if (copyPath && artifact) {
     copyPath.addEventListener('click', () => copyText(artifact.path, artifact.name + ' path'));
   }
-  bindComparePanel(compare.summary);
-}
-
-function buildComparePanel(protocol) {
-  const runs = ensureCompareState(protocol.slug);
-  if (runs.length < 2) {
-    return {
-      html: '<div class="compare-panel"><div class="compare-head"><span class="compare-title">Compare runs</span></div><div class="empty">Need at least two runs for this protocol.</div></div>',
-      summary: '',
-    };
-  }
-
-  const artifactNames = compareArtifactNames(runs);
-  const baseProtocol = protocolForRun(protocol.slug, state.compareBaseRun);
-  const targetProtocol = protocolForRun(protocol.slug, state.compareTargetRun);
-  const baseArtifact = artifactFor(baseProtocol, state.compareArtifact);
-  const targetArtifact = artifactFor(targetProtocol, state.compareArtifact);
-  const result = diffArtifacts({
-    slug: protocol.slug,
-    artifactName: state.compareArtifact,
-    baseRun: state.compareBaseRun,
-    targetRun: state.compareTargetRun,
-    baseArtifact,
-    targetArtifact,
-    ignoreVolatile: state.ignoreVolatile,
-  });
-
-  const runOptions = runs.map((p) =>
-    '<option value="' + esc(p.runId) + '">' + esc(p.runId) + '</option>'
-  ).join('');
-  const artifactOptions = artifactNames.map((name) =>
-    '<option value="' + esc(name) + '">' + esc(name) + '</option>'
-  ).join('');
-  const diffs = result.diffs.slice(0, 40);
-  const diffHtml = result.error
-    ? '<div class="empty">' + esc(result.error) + '</div>'
-    : diffs.length === 0
-      ? '<div class="empty">No meaningful JSON differences.</div>'
-      : diffs.map(renderDiffItem).join('') + (result.diffs.length > diffs.length ? '<div class="empty">' + (result.diffs.length - diffs.length) + ' more differences. Copy the summary for the full list.</div>' : '');
-
-  const html =
-    '<div class="compare-panel">' +
-      '<div class="compare-head">' +
-        '<span class="compare-title">Compare runs</span>' +
-        '<button class="action" id="copy-diff" ' + (result.error ? 'disabled' : '') + '>Copy diff</button>' +
-      '</div>' +
-      '<div class="compare-controls">' +
-        '<label>Base run<select id="compare-base">' + runOptions + '</select></label>' +
-        '<label>Compare run<select id="compare-target">' + runOptions + '</select></label>' +
-        '<label>Artifact<select id="compare-artifact">' + artifactOptions + '</select></label>' +
-      '</div>' +
-      '<label class="compare-toggle"><input type="checkbox" id="compare-ignore" ' + (state.ignoreVolatile ? 'checked' : '') + '> Ignore volatile fields</label>' +
-      '<div class="diff-stats">' +
-        '<div class="diff-stat"><span>Added</span><strong>' + result.counts.added + '</strong></div>' +
-        '<div class="diff-stat"><span>Removed</span><strong>' + result.counts.removed + '</strong></div>' +
-        '<div class="diff-stat"><span>Changed</span><strong>' + result.counts.changed + '</strong></div>' +
-      '</div>' +
-      '<div class="diff-list">' + diffHtml + '</div>' +
-    '</div>';
-
-  return { html, summary: result.summary };
-}
-
-function bindComparePanel(summary) {
-  const base = $('compare-base');
-  if (base) {
-    base.value = state.compareBaseRun;
-    base.addEventListener('change', () => {
-      state.compareBaseRun = base.value;
-      renderDetail();
-    });
-  }
-  const target = $('compare-target');
-  if (target) {
-    target.value = state.compareTargetRun;
-    target.addEventListener('change', () => {
-      state.compareTargetRun = target.value;
-      renderDetail();
-    });
-  }
-  const artifact = $('compare-artifact');
-  if (artifact) {
-    artifact.value = state.compareArtifact;
-    artifact.addEventListener('change', () => {
-      state.compareArtifact = artifact.value;
-      renderDetail();
-    });
-  }
-  const ignore = $('compare-ignore');
-  if (ignore) {
-    ignore.checked = state.ignoreVolatile;
-    ignore.addEventListener('change', () => {
-      state.ignoreVolatile = ignore.checked;
-      renderDetail();
-    });
-  }
-  const copy = $('copy-diff');
-  if (copy && summary) copy.addEventListener('click', () => copyText(summary, 'diff summary'));
-}
-
-function renderDiffItem(diff) {
-  const type = esc(diff.type);
-  const before = diff.type === 'added' ? '' : '<div class="diff-value">' + esc(formatValue(diff.before)) + '</div>';
-  const after = diff.type === 'removed' ? '' : '<div class="diff-value">' + esc(formatValue(diff.after)) + '</div>';
-  return '<div class="diff-item">' +
-    '<div class="diff-path"><span class="diff-type ' + type + '">' + type + '</span><span>' + esc(diff.path || '(root)') + '</span></div>' +
-    '<div class="diff-values">' + before + after + '</div>' +
-    '</div>';
 }
 
 function render() {
@@ -1183,192 +1064,6 @@ function render() {
   renderRunsFilter();
   renderProtocols();
   renderDetail();
-}
-
-function diffArtifacts({ slug, artifactName, baseRun, targetRun, baseArtifact, targetArtifact, ignoreVolatile }) {
-  const emptyCounts = { added: 0, removed: 0, changed: 0 };
-  if (!baseArtifact || !targetArtifact) {
-    return {
-      diffs: [],
-      counts: emptyCounts,
-      summary: '',
-      error: 'Both runs must contain ' + artifactName + '.',
-    };
-  }
-  if (baseArtifact.tooLarge || targetArtifact.tooLarge) {
-    return {
-      diffs: [],
-      counts: emptyCounts,
-      summary: '',
-      error: 'One side is too large to compare in the static page.',
-    };
-  }
-
-  let baseJson, targetJson;
-  try {
-    baseJson = JSON.parse(baseArtifact.content);
-    targetJson = JSON.parse(targetArtifact.content);
-  } catch (err) {
-    return {
-      diffs: [],
-      counts: emptyCounts,
-      summary: '',
-      error: 'Selected artifact is not valid JSON: ' + err.message,
-    };
-  }
-
-  const base = normalizeCompareJson(baseJson, artifactName);
-  const target = normalizeCompareJson(targetJson, artifactName);
-  const diffs = [];
-  walkDiff(base, target, '', diffs, { ignoreVolatile });
-  diffs.sort((a, b) => typeRank(a.type) - typeRank(b.type) || a.path.localeCompare(b.path));
-  const counts = diffs.reduce((acc, diff) => {
-    acc[diff.type] += 1;
-    return acc;
-  }, { ...emptyCounts });
-
-  return {
-    diffs,
-    counts,
-    error: '',
-    summary: formatDiffSummary({ slug, artifactName, baseRun, targetRun, diffs, counts, ignoreVolatile }),
-  };
-}
-
-function normalizeCompareJson(json, artifactName) {
-  if (artifactName === 'record.import.json' && Array.isArray(json?.data)) {
-    return json.data.find((entry) => entry?.locale === 'en') || json.data[0] || {};
-  }
-  return json;
-}
-
-function walkDiff(before, after, path, diffs, options) {
-  if (options.ignoreVolatile && isVolatilePath(path)) return;
-  if (before === undefined && after !== undefined) {
-    diffs.push({ type: 'added', path, after });
-    return;
-  }
-  if (before !== undefined && after === undefined) {
-    diffs.push({ type: 'removed', path, before });
-    return;
-  }
-  const beforeKind = valueKind(before);
-  const afterKind = valueKind(after);
-  if (beforeKind !== afterKind) {
-    diffs.push({ type: 'changed', path, before, after });
-    return;
-  }
-  if (beforeKind === 'array') {
-    walkArrayDiff(before, after, path, diffs, options);
-    return;
-  }
-  if (beforeKind === 'object') {
-    const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
-    for (const key of keys) {
-      walkDiff(before[key], after[key], path ? path + '.' + key : key, diffs, options);
-    }
-    return;
-  }
-  if (!Object.is(before, after)) {
-    diffs.push({ type: 'changed', path, before, after });
-  }
-}
-
-function walkArrayDiff(before, after, path, diffs, options) {
-  const identity = arrayIdentity(path, before, after);
-  if (!identity) {
-    const max = Math.max(before.length, after.length);
-    for (let i = 0; i < max; i++) {
-      walkDiff(before[i], after[i], path + '[' + i + ']', diffs, options);
-    }
-    return;
-  }
-
-  const beforeMap = mapArrayByIdentity(before, identity);
-  const afterMap = mapArrayByIdentity(after, identity);
-  const keys = [...new Set([...beforeMap.keys(), ...afterMap.keys()])].sort();
-  for (const key of keys) {
-    walkDiff(beforeMap.get(key), afterMap.get(key), path + '[' + key + ']', diffs, options);
-  }
-}
-
-function arrayIdentity(path, before, after) {
-  const all = [...before, ...after];
-  if (all.length === 0 || !all.every((item) => item && typeof item === 'object' && !Array.isArray(item))) return null;
-  if (path === 'members' && all.every((item) => item.memberName)) {
-    return (item) => 'memberName=' + String(item.memberName);
-  }
-  if (path === 'fundingRounds' && all.every((item) => item.round || item.date)) {
-    return (item) => 'round=' + String(item.round || '') + '|date=' + String(item.date || '');
-  }
-  if (path === 'audits.items' && all.every((item) => item.auditor || item.date || item.scope)) {
-    return (item) => 'auditor=' + String(item.auditor || '') + '|date=' + String(item.date || '') + '|scope=' + String(item.scope || '');
-  }
-  return null;
-}
-
-function mapArrayByIdentity(arr, identity) {
-  const out = new Map();
-  arr.forEach((item, index) => {
-    const key = identity(item, index).replace(/[\\[\\]]/g, '_');
-    out.set(key || String(index), item);
-  });
-  return out;
-}
-
-function valueKind(value) {
-  if (Array.isArray(value)) return 'array';
-  if (value && typeof value === 'object') return 'object';
-  return 'primitive';
-}
-
-function isVolatilePath(path) {
-  if (!path) return false;
-  return path === 'exportedAt'
-    || path.endsWith('.exportedAt')
-    || path === 'audits.lastScannedAt'
-    || path.endsWith('.audits.lastScannedAt')
-    || path === 'budget'
-    || path.startsWith('budget.')
-    || path === 'r1.cost_usd'
-    || path === 'r2.cost_usd'
-    || path.endsWith('.cost_usd')
-    || path === 'i18n.cost_usd'
-    || path === 'generatedAt';
-}
-
-function typeRank(type) {
-  return type === 'added' ? 0 : type === 'removed' ? 1 : 2;
-}
-
-function formatValue(value) {
-  const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-  if (text === undefined) return 'undefined';
-  return text.length > 1200 ? text.slice(0, 1200) + '\\n... truncated ...' : text;
-}
-
-function formatDiffSummary({ slug, artifactName, baseRun, targetRun, diffs, counts, ignoreVolatile }) {
-  const lines = [
-    slug + ' / ' + artifactName,
-    'base:    ' + baseRun,
-    'compare: ' + targetRun,
-    'ignore volatile: ' + (ignoreVolatile ? 'yes' : 'no'),
-    'added=' + counts.added + ' removed=' + counts.removed + ' changed=' + counts.changed,
-    '',
-  ];
-  for (const diff of diffs) {
-    lines.push(diff.type.toUpperCase() + ' ' + (diff.path || '(root)'));
-    if (diff.type !== 'added') lines.push('before: ' + oneLineValue(diff.before));
-    if (diff.type !== 'removed') lines.push('after:  ' + oneLineValue(diff.after));
-    lines.push('');
-  }
-  return lines.join('\\n');
-}
-
-function oneLineValue(value) {
-  const text = typeof value === 'string' ? value : JSON.stringify(value);
-  if (text === undefined) return 'undefined';
-  return text.length > 500 ? text.slice(0, 500) + '...' : text;
 }
 
 function copyVisibleImports() {
@@ -1474,6 +1169,17 @@ function escapeHtml(value) {
     '>': '&gt;',
     '"': '&quot;',
     "'": '&#39;',
+  }[ch]));
+}
+
+// Text-content escape: only the three characters that disambiguate text
+// from markup. Preserves quotes verbatim so embedded JSON stays grep-able
+// in the rendered HTML (e.g., `"v":1` in a diff stays as `"v":1`).
+function escapeText(value) {
+  return String(value ?? '').replace(/[&<>]/g, (ch) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
   }[ch]));
 }
 
