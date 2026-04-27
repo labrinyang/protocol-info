@@ -66,3 +66,34 @@ export async function commit(outDir, { paths, message, runId }) {
   const { stdout } = await git(['rev-parse', '--short', 'HEAD'], { cwd: outDir });
   return stdout.trim();
 }
+
+const LOG_SEP = '\x1f'; // ASCII Unit Separator
+const LOG_REC = '\x1e'; // ASCII Record Separator
+
+export async function log(outDir, { slug, limit = 50 }) {
+  const format = ['%H', '%ct', '%s', '%(trailers:key=Run-Id,valueonly)'].join(LOG_SEP) + LOG_REC;
+  let stdout = '';
+  try {
+    ({ stdout } = await git(
+      ['log', `-${limit}`, `--format=${format}`, '--', `${slug}/`],
+      { cwd: outDir }
+    ));
+  } catch (err) {
+    // Empty repo: git log exits 128. Treat as no history.
+    if (/does not have any commits yet|unknown revision/i.test(err.message)) return [];
+    throw err;
+  }
+  return stdout
+    .split(LOG_REC)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((rec) => {
+      const [sha, ct, message, runId] = rec.split(LOG_SEP);
+      return {
+        sha: sha.slice(0, 12),
+        ts: new Date(Number(ct) * 1000).toISOString(),
+        message,
+        runId: runId.trim() || null,
+      };
+    });
+}

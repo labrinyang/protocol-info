@@ -119,4 +119,40 @@ export const tests = [
       assert.equal(out, 'RID-XYZ');
     },
   },
+  {
+    name: 'log() returns commits scoped to slug, newest first',
+    fn: async () => {
+      const { ensureRepo, commit, log } = await import('../../framework/version-store.mjs');
+      const { writeFile, mkdir } = await import('node:fs/promises');
+      const dir = await makeTempOut();
+      await ensureRepo(dir);
+      await mkdir(join(dir, 'pendle'), { recursive: true });
+      await mkdir(join(dir, 'morpho'), { recursive: true });
+      await writeFile(join(dir, 'pendle', 'record.json'), '{"v":1}');
+      await commit(dir, { paths: ['pendle/'], message: 'crawl(pendle)', runId: 'R1' });
+      await writeFile(join(dir, 'morpho', 'record.json'), '{"v":1}');
+      await commit(dir, { paths: ['morpho/'], message: 'crawl(morpho)', runId: 'R2' });
+      await writeFile(join(dir, 'pendle', 'record.json'), '{"v":2}');
+      await commit(dir, { paths: ['pendle/'], message: 'set(pendle) v', runId: 'R3' });
+
+      const entries = await log(dir, { slug: 'pendle', limit: 10 });
+      assert.equal(entries.length, 2);
+      assert.equal(entries[0].message, 'set(pendle) v');
+      assert.equal(entries[1].message, 'crawl(pendle)');
+      assert.equal(entries[0].runId, 'R3');
+      assert.equal(entries[1].runId, 'R1');
+      assert.match(entries[0].sha, /^[0-9a-f]{7,40}$/);
+      assert.ok(entries[0].ts);
+    },
+  },
+  {
+    name: 'log() returns [] on a fresh repo with no commits',
+    fn: async () => {
+      const { ensureRepo, log } = await import('../../framework/version-store.mjs');
+      const dir = await makeTempOut();
+      await ensureRepo(dir);
+      const entries = await log(dir, { slug: 'pendle' });
+      assert.deepEqual(entries, []);
+    },
+  },
 ];
