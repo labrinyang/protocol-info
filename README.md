@@ -199,6 +199,15 @@ The batch summary is:
 out/_runs/<run-id>/summary.tsv
 ```
 
+### Upgrading from 1.x
+
+v2.0 changed the output layout from `out/<runId>/<slug>/` to `out/<slug>/`, and `out/` is now a local git repo (`out/.git/`). Each successful crawl is one commit; `out/.runs.log` tracks batch metadata.
+
+If you have existing v1.x output:
+- Old `out/<runId>/<slug>/` directories are left untouched but no longer surfaced in the browser. Remove them when you're ready: `rm -rf out/2026*/` (the run-id format).
+- Your records start fresh on the new flat layout.
+- Manually-edited records: if you've hand-edited a `record.json` between crawls, v2.0 will refuse to overwrite it. Commit your edits inside `out/` (`cd out && git add . && git commit -m "manual edits"`) or pass `--force-overwrite` to discard them.
+
 ## Pipeline
 
 ```text

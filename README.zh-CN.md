@@ -199,6 +199,15 @@ out/index.html
 out/_runs/<run-id>/summary.tsv
 ```
 
+### 从 1.x 升级
+
+v2.0 把输出结构从 `out/<runId>/<slug>/` 改为 `out/<slug>/`，并且 `out/` 现在是一个本地 git 仓库（`out/.git/`）。每次成功抓取对应一个 commit；批量元数据记录在 `out/.runs.log` 中。
+
+如果你已经有 v1.x 的输出：
+- 旧的 `out/<runId>/<slug>/` 目录不会被动到，但浏览器里也不会再展示。需要清理时再执行：`rm -rf out/2026*/`（按 run-id 前缀）。
+- 新记录会以扁平结构重新开始落盘。
+- 手动编辑过的记录：如果你在两次抓取之间手动改过 `record.json`，v2.0 会拒绝覆盖。请进入 `out/` 提交改动（`cd out && git add . && git commit -m "manual edits"`），或者加 `--force-overwrite` 直接丢弃。
+
 ## 管线
 
 ```text
