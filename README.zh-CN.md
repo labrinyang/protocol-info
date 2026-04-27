@@ -127,6 +127,24 @@ i18n：
 ./run.sh --display-name "Pendle" --type fixed_rate --i18n none
 ```
 
+基于已有 `out/<slug>/` 的工作流命令：
+
+```bash
+./run.sh get pendle description
+./run.sh set pendle description '"更新后的源语言描述"'
+./run.sh analyze pendle fundingRounds --query "verify latest funding rounds"
+./run.sh analyze pendle fundingRounds --query "verify latest funding rounds" --apply
+./run.sh i18n pendle --locales zh_CN,ja_JP
+./run.sh refresh pendle funding
+./run.sh history pendle
+./run.sh diff pendle HEAD~1 HEAD
+./run.sh restore pendle <sha>
+```
+
+写入类命令都会校验完整记录，运行 post-processing 以保持
+`record.import.json` 同步，在 `out/` 的本地 git 仓库里生成一个 commit，
+并刷新 `out/index.html`。不带 `--apply` 的 `analyze` 只输出提案，不写文件。
+
 Dry run：
 
 ```bash
@@ -152,20 +170,37 @@ Dry run：
 | `--i18n-parallel <n>` | 否 | locale 翻译并发数，默认 `8`。 |
 | `--i18n-model <name>` | 否 | 覆盖 i18n 模型。manifest 默认值为 `claude-haiku-4-5-20251001`。 |
 | `--dry-run` | 否 | 打印解析后的 provider 后退出，并强制 `--parallel 1`。 |
+| `--force-overwrite` | 否 | 覆盖存在未提交改动的协议目录。不加时，v2 会拒绝覆盖手动修改。 |
 | `--manifest <path>` | 否 | 高级用法：运行其他 consumer manifest。 |
+
+## 工作流命令
+
+这些命令作用于已有 crawl 生成的 canonical `out/<slug>/record.json`。它们不会为同一个协议创建第二份展示版本；历史、diff 和回滚都由 `out/` 内部的 git 仓库负责。
+
+| 命令 | 写入？ | 用途 |
+| --- | --- | --- |
+| `get <slug> <jsonpath>` | 否 | 以 JSON 打印一个字段值。 |
+| `set <slug> <jsonpath> <json>` | 是 | 手动替换一个字段，校验、post-process、commit。 |
+| `analyze <slug> <jsonpath> --query <text>` | 否 | 调研一个字段，输出带证据的提案。 |
+| `analyze <slug> <jsonpath> --query <text> --apply` | 是 | 把提案应用到同一个路径，校验、post-process、commit。 |
+| `i18n <slug> [--locales LIST]` | 是 | 基于当前记录重新生成翻译 sidecar 和导出文件。 |
+| `refresh <slug> <metadata|team|funding|audits>` | 是 | 重跑一个大的 R1 subtask，并通过 audit-first guard 合并。 |
+| `history <slug> [--limit N]` | 否 | 查看单个协议的本地 git 历史。 |
+| `diff <slug> [from] [to]` | 否 | 查看单个协议的 unified diff。 |
+| `restore <slug> <sha>` | 是 | 恢复到过去的有效版本，post-process 后 commit。 |
 
 ## 输出结构
 
-每个协议运行输出到：
+每个协议的 canonical 产物输出到：
 
 ```text
-out/<slug>/<run-id>/
+out/<slug>/
 ```
 
-批量索引输出到：
+`out/` 是一个本地 git 仓库。每次成功抓取会为变更的协议目录生成一个 commit，批次 run id 写在 `Run-Id:` git trailer 中。批量 scratch 文件输出到：
 
 ```text
-out/_runs/<run-id>/
+out/.runs/<run-id>/
 ```
 
 每次完整运行结束后还会刷新：
@@ -174,15 +209,15 @@ out/_runs/<run-id>/
 out/index.html
 ```
 
-`out/index.html` 是一个自包含的本地管理页。可以直接用浏览器打开，用来筛选 run、查看关键产物、对同一个 protocol 的不同 run 做路径级 JSON diff、复制绝对路径、复制单个 `record.import.json`，或为当前可见记录复制一份合并后的 import JSON。它只嵌入审核用的关键产物；Claude/debug 原始日志仍保留在 `_debug/`。
+`out/index.html` 是一个自包含的本地管理页。可以直接用浏览器打开，用来查看协议产物、按 `.runs.log` 中的近期 run 过滤、查看每个协议的 git history、比较最新 commit 和上一 commit、复制绝对路径、复制单个 `record.import.json`，或为当前可见记录复制一份合并后的 import JSON。它只嵌入审核用的关键产物；Claude/debug 原始日志仍保留在 `_debug/`。
 
-![out/index.html 三栏布局：左侧 run 列表、中间 record 表格、右侧产物 tab（Import JSON / Record / Summary / Findings / Gaps / Changes / Meta），以及跨 run 路径级 JSON diff 的 Compare runs 面板](docs/images/out-browser.png)
+![out/index.html 本地管理页：协议导航、产物 tab、git history、run filter、commit diff 视图](docs/images/out-browser.png)
 
 常见文件：
 
 | 文件 | 用途 |
 | --- | --- |
-| `../index.html` | 静态本地管理页，用于筛选 run、对比同协议 JSON，并复制关键输出。 |
+| `../index.html` | 静态本地管理页，用于查看协议产物、历史和 commit diff，并复制关键输出。 |
 | `record.json` | 通过 schema 校验的源语言 `EarnProtocolInfo` 记录。用于审核/schema audit，不是 dashboard 导入信封。 |
 | `record.full.json` | 内联 i18n 版本，仅在生成翻译时存在。 |
 | `record.import.json` | Dashboard 导入信封：`{ version, exportedAt, data: [...] }`。导入时使用这个文件，已移除 `sources`。 |
@@ -190,13 +225,13 @@ out/index.html
 | `gaps.json` | 未解决或弱证据字段，以及已尝试的搜索路径。 |
 | `changes.json` | R2 对账改动及原因。 |
 | `meta.json` | 运行状态、RootData 使用情况、预算计划、R1/R2 telemetry、i18n 状态。 |
-| `summary.tsv` | 单协议 summary row。 |
+| `summary.tsv` | 供本地管理页使用的单协议生成 summary row。Gitignored。 |
 | `_debug/` | 原始 envelope、stderr 日志、中间 evidence、i18n sidecar。 |
 
 批量 summary：
 
 ```text
-out/_runs/<run-id>/summary.tsv
+out/.runs/<run-id>/summary.tsv
 ```
 
 ### 从 1.x 升级
@@ -357,8 +392,8 @@ Consumer normalizer 会做决定性后处理：
 
 推荐审核流程：
 
-1. 打开 `out/_runs/<run-id>/summary.tsv`。
-2. 对每个 `OK` row，检查 `out/<slug>/<run-id>/record.json`。
+1. 打开 `out/index.html` 或 `out/.runs/<run-id>/summary.tsv`。
+2. 对每个 `OK` row，检查 `out/<slug>/record.json`。
 3. 查看 `findings.json`，确认来源覆盖。
 4. 查看 `gaps.json`，确认缺失或弱证据字段。
 5. 如果 R2 修改过 R1 输出，查看 `changes.json`。
@@ -369,7 +404,7 @@ Consumer normalizer 会做决定性后处理：
 ```bash
 curl -X POST "$DASHBOARD/api/earn-protocol-info/import" \
   -H "Content-Type: application/json" \
-  -d @out/<slug>/<run-id>/record.import.json
+  -d @out/<slug>/record.import.json
 ```
 
 即使没有 i18n，`record.import.json` 也会包含一条 dashboard locale 为 `en` 的源语言记录。
@@ -404,7 +439,7 @@ CLAUDE_BIN=/path/to/claude ./run.sh --display-name "Pendle" --type fixed_rate
 Summary 中可能出现 `3/19` 这类结果。检查：
 
 ```text
-out/<slug>/<run-id>/_debug/i18n/
+out/<slug>/_debug/i18n/
 ```
 
 成功生成的 locale sidecar 仍会被 post-processing 使用。
@@ -414,8 +449,8 @@ out/<slug>/<run-id>/_debug/i18n/
 当前结构是 protocol-first：
 
 ```text
-out/<slug>/<run-id>/
-out/_runs/<run-id>/summary.tsv
+out/<slug>/
+out/.runs/<run-id>/summary.tsv
 ```
 
 旧文档或旧产物中的 `out/<run-id>/<slug>/` 路径已经过期。

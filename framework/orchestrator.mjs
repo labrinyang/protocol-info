@@ -25,7 +25,8 @@ import { fileURLToPath } from 'node:url';
 import { loadManifest } from './manifest-loader.mjs';
 import { runWithLimit } from './parallel-runner.mjs';
 import { buildOutBrowser } from './out-browser.mjs';
-import { ensureRepo, commit, isClean } from './version-store.mjs';
+import { ensureRepo, commit, isClean, resetSlugToHead } from './version-store.mjs';
+import { invalidateI18nArtifacts } from './i18n-cache.mjs';
 
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_DIR = dirname(FRAMEWORK_DIR);
@@ -209,6 +210,21 @@ export async function guardClobber(outputRoot, slug, { forceOverwrite }) {
   }
 }
 
+async function rollbackFailedSlug(outputRoot, slug) {
+  await resetSlugToHead(outputRoot, { slug });
+}
+
+async function commitOkSlugs(outputRoot, okSlugs, runId) {
+  // INVARIANT: this loop runs SEQUENTIALLY, AFTER the parallel runWithLimit
+  // call above and AFTER post-processing has produced all canonical artifacts.
+  // Do NOT inline these commits into runOne() or wrap them in Promise.all() —
+  // concurrent writes to out/.git/index will race under --parallel >1.
+  for (const slug of okSlugs) {
+    const message = `crawl(${slug}): R1+R2 ok`;
+    await commit(outputRoot, { paths: [`${slug}/`], message, runId });
+  }
+}
+
 // ── runOne: full per-provider pipeline ──────────────────────────────────────
 
 export async function runOne({
@@ -241,6 +257,8 @@ export async function runOne({
   const indexLabel = String(index).padStart(4, '0');
   const summaryRowsDir = join(runMetaDir, '.summary-rows');
   const summaryRowFile = join(summaryRowsDir, `${indexLabel}-${slug}.tsv`);
+  const callStage = options.callCli || callCli;
+  const callSchemaValidator = options.callValidator || callValidator;
 
   if (type) {
     console.log(`[${index}/${total}] ${slug} (${type})`);
@@ -283,7 +301,7 @@ export async function runOne({
     '--output', rootdataPkt,
   ];
   if (rootdataId) fetchArgs.push('--rootdata-id', rootdataId);
-  const fetchRes = await callCli('fetch', fetchArgs);
+  const fetchRes = await callStage('fetch', fetchArgs);
   const apiExit = fetchRes.code;
   if (fetchRes.stderr) {
     try {
@@ -359,7 +377,7 @@ export async function runOne({
   const r1SubtaskCount = (manifest._abs?.subtasks || manifest.subtasks || []).length;
   const r1Budget = options.budgetPlan?.effective?.r1_total;
   logProvider(slug, `R1 fan-out started: ${r1SubtaskCount} subtasks${r1Budget ? `, budget=${formatUsd(r1Budget)}` : ''}`);
-  const r1Res = await callCli('r1', r1Args, { progressLabel: `[${slug}] R1 fan-out` });
+  const r1Res = await callStage('r1', r1Args, { progressLabel: `[${slug}] R1 fan-out` });
   const r1Stderr = r1Res.stderr || '';
   try {
     await writeFile(join(debugDir, 'r1.stderr.log'), r1Stderr);
@@ -376,6 +394,7 @@ export async function runOne({
     }
     await writeFile(summaryRowFile, `${slug}\tCRAWL_FAIL\t-\t-\t-\t-\tr1\t${apiStatus}\n`);
     await writeMeta('CRAWL_FAIL', { failure_stage: 'r1', error: `r1 exit ${r1Res.code}` });
+    await rollbackFailedSlug(outputRoot, slug);
     return { slug, status: 'CRAWL_FAIL' };
   }
 
@@ -389,6 +408,7 @@ export async function runOne({
     }
     await writeFile(summaryRowFile, `${slug}\tCRAWL_FAIL\t-\t-\t-\t-\tr1\t-\n`);
     await writeMeta('CRAWL_FAIL', { failure_stage: 'r1', error: 'r1 produced no record' });
+    await rollbackFailedSlug(outputRoot, slug);
     return { slug, status: 'CRAWL_FAIL' };
   }
 
@@ -414,7 +434,7 @@ export async function runOne({
   // ── Phase 3.5: evidence-diff enrichment ──────────────────────────────────
 
   if (rootdataOk && existsSync(rootdataPkt)) {
-    const r = await callCli('evidence-diff', [
+    const r = await callStage('evidence-diff', [
       '--evidence-in', rootdataPkt,
       '--record-in', recordPath,
       '--evidence-out', rootdataPkt,
@@ -457,7 +477,7 @@ export async function runOne({
   await mkdir(r2DebugDir, { recursive: true });
   const r2Budget = options.budgetPlan?.effective?.r2_total;
   logProvider(slug, `R2 reconcile started${r2Budget ? `: budget=${formatUsd(r2Budget)}` : ''}`);
-  const r2Res = await callCli('r2', r2Args, { progressLabel: `[${slug}] R2 reconcile` });
+  const r2Res = await callStage('r2', r2Args, { progressLabel: `[${slug}] R2 reconcile` });
   if (r2Res.stderr) {
     try {
       await writeFile(join(debugDir, 'r2.stderr.log'), r2Res.stderr);
@@ -498,7 +518,7 @@ export async function runOne({
   const changesNorm = changesPath + '.normalized';
   const gapsNorm = gapsPath + '.normalized';
 
-  const normRes = await callCli('normalize', [
+  const normRes = await callStage('normalize', [
     '--manifest', manifestPath,
     '--record-in', recordPath,
     '--evidence', rootdataPkt,
@@ -528,7 +548,7 @@ export async function runOne({
   // ── Schema validation ────────────────────────────────────────────────────
 
   const schemaPath = manifest._abs.full_schema;
-  const schemaRes = await callValidator(['--schema', schemaPath, recordPath]);
+  const schemaRes = await callSchemaValidator(['--schema', schemaPath, recordPath]);
   // Validator emits OK/FAIL on stdout; preserve stderr+stdout for debug.
   const schemaCombined = (schemaRes.stdout || '') + (schemaRes.stderr || '');
 
@@ -562,6 +582,9 @@ export async function runOne({
   // ── meta.json ───────────────────────────────────────────────────────────
 
   await writeMeta(status, { schema: schemaRes.code === 0 ? 'pass' : 'fail' });
+  if (status !== 'OK') {
+    await rollbackFailedSlug(outputRoot, slug);
+  }
 
   return { slug, status, members, funding, audits, source: finalSource, api_status: apiStatus };
 }
@@ -627,6 +650,7 @@ export async function run({
   const total = providers.length;
   const effectiveParallelism = dryRun ? 1 : Math.max(1, parallelism | 0);
   const i18nSelected = resolveI18nSelection(options.i18nArg, manifest);
+  const callStage = options.callCli || callCli;
   const budgetPlan = computeBudgetPlan(manifest, {
     maxBudget: options.maxBudget,
     i18nLocaleCount: i18nSelected.length,
@@ -685,6 +709,7 @@ export async function run({
       budget: budgetPlan,
       i18n: null,
     }, null, 2));
+    await rollbackFailedSlug(outputRoot, slug);
     workerFailures.push({ slug, error });
   }
 
@@ -702,18 +727,6 @@ export async function run({
     if (cols[1] === 'OK') okSlugs.push(cols[0]);
   }
 
-  // ── Commit phase ─────────────────────────────────────────────────────────
-  // INVARIANT: this loop runs SEQUENTIALLY, AFTER the parallel runWithLimit
-  // call above. Do NOT inline these commits into runOne() or wrap them in
-  // Promise.all() — concurrent writes to out/.git/index will throw
-  // "Unable to create '.git/index.lock'" intermittently under --parallel >1.
-  // The "parallel-safety" regression test in orchestrator.test.mjs asserts
-  // this behavior. See plan 2026-04-27-v2.0-layout-and-git-layer.md → A1.
-  for (const slug of okSlugs) {
-    const message = `crawl(${slug}): R1+R2 ok`;
-    await commit(outputRoot, { paths: [`${slug}/`], message, runId });
-  }
-
   const failedCount = workerFailures.length + (rawWorkerFailures.length - workerFailures.length);
   await appendRunsLog(outputRoot, {
     runId,
@@ -722,6 +735,10 @@ export async function run({
   });
 
   // ── i18n stage ───────────────────────────────────────────────────────────
+
+  for (const slug of okSlugs) {
+    await invalidateI18nArtifacts(protocolDir(outputRoot, slug), { manifest });
+  }
 
   if (okSlugs.length > 0 && i18nSelected.length > 0) {
     console.log('');
@@ -743,7 +760,7 @@ export async function run({
       if (options.maxTurns) args.push('--max-turns', String(options.maxTurns));
       if (budgetPlan.effective.i18n_total) args.push('--max-budget', String(budgetPlan.effective.i18n_total));
       logProvider(slug, `i18n started: ${i18nSelected.length} locales`);
-      const r = await callCli('i18n', args, { progressLabel: `[${slug}] i18n` });
+      const r = await callStage('i18n', args, { progressLabel: `[${slug}] i18n` });
       const combined = (r.stdout || '') + (r.stderr || '');
       const i18nLines = combined.split('\n').filter(Boolean);
       const summaryLine = [...i18nLines].reverse().find((line) => line.startsWith('[i18n] ') && line.includes(' ok;'));
@@ -764,7 +781,7 @@ export async function run({
 
   if (okSlugs.length > 0) {
     for (const slug of okSlugs) {
-      const r = await callCli('post', [
+      const r = await callStage('post', [
         '--manifest', manifestPath,
         '--slug-dir', protocolDir(outputRoot, slug),
       ]);
@@ -810,6 +827,9 @@ export async function run({
     await writeFile(join(slugDir, 'summary.tsv'), `${lines[0]}\n${row}\n`);
   }
 
+  // ── Commit phase ─────────────────────────────────────────────────────────
+  await commitOkSlugs(outputRoot, okSlugs, runId);
+
   let outBrowserFile = null;
   try {
     outBrowserFile = await buildOutBrowser(outputRoot);
@@ -822,8 +842,8 @@ export async function run({
   console.log('=== Summary ===');
   printPadded(lines);
   console.log('');
-  console.log(`Review source: ${outputRoot}/<slug>/${runId}/record.json`);
-  console.log(`Import JSON:   ${outputRoot}/<slug>/${runId}/record.import.json`);
+  console.log(`Review source: ${outputRoot}/<slug>/record.json`);
+  console.log(`Import JSON:   ${outputRoot}/<slug>/record.import.json`);
   console.log(`Batch summary: ${summaryFile}`);
   if (outBrowserFile) console.log(`Out browser: ${outBrowserFile}`);
 

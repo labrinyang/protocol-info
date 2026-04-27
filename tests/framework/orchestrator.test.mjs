@@ -128,6 +128,143 @@ export const tests = [
     },
   },
   {
+    name: 'run() commits post/i18n artifacts and leaves successful slug clean',
+    fn: async () => {
+      const { mkdtemp, mkdir, readFile, writeFile } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { spawn } = await import('node:child_process');
+      const { isClean, log } = await import('../../framework/version-store.mjs');
+      const dir = await mkdtemp(join(tmpdir(), 'pi-run-ok-'));
+      const manifestPath = join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json');
+      const arg = (args, name) => {
+        const i = args.indexOf(`--${name}`);
+        return i === -1 ? null : args[i + 1];
+      };
+      const copyJson = async (from, to) => {
+        await writeFile(to, await readFile(from, 'utf8'));
+      };
+      const fakeCallCli = async (name, args) => {
+        if (name === 'fetch') {
+          await writeFile(arg(args, 'output'), JSON.stringify({ fetcher_status: { rootdata: 'skipped_missing_env', defillama: 'ok' } }));
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        if (name === 'r1') {
+          await writeFile(arg(args, 'record-out'), JSON.stringify({ name: 'Pendle', description: 'AMM', members: [], fundingRounds: [], audits: { items: [] } }));
+          await writeFile(arg(args, 'findings-out'), '[]');
+          await writeFile(arg(args, 'gaps-out'), '[]');
+          await writeFile(arg(args, 'handoff-out'), '[]');
+          await writeFile(join(arg(args, 'debug-dir'), 'r1-status.json'), JSON.stringify({ subtasks: [], failed_subtasks: [] }));
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        if (name === 'evidence-diff') return { code: 0, stdout: '', stderr: '' };
+        if (name === 'r2') return { code: 1, stdout: '', stderr: 'skip r2 in test' };
+        if (name === 'normalize') {
+          await copyJson(arg(args, 'record-in'), arg(args, 'record-out'));
+          await copyJson(arg(args, 'changes-in'), arg(args, 'changes-out'));
+          await copyJson(arg(args, 'gaps-in'), arg(args, 'gaps-out'));
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        if (name === 'i18n') {
+          const outDir = arg(args, 'output-dir');
+          await mkdir(outDir, { recursive: true });
+          await writeFile(join(outDir, 'zh_CN.json'), JSON.stringify({ description: 'AMM zh' }));
+          return { code: 0, stdout: '[i18n] 1/1 ok; failed: none\n', stderr: '' };
+        }
+        if (name === 'post') {
+          const slugDir = arg(args, 'slug-dir');
+          const record = JSON.parse(await readFile(join(slugDir, 'record.json'), 'utf8'));
+          await writeFile(join(slugDir, 'record.import.json'), JSON.stringify({ data: [{ slug: 'pendle', locale: 'en' }] }));
+          await writeFile(join(slugDir, 'record.full.json'), JSON.stringify({ ...record, i18n: { zh_CN: { description: 'AMM zh' } } }));
+          const meta = JSON.parse(await readFile(join(slugDir, 'meta.json'), 'utf8'));
+          meta.i18n = { locales_ok: ['zh_CN'], locales_failed: [] };
+          await writeFile(join(slugDir, 'meta.json'), JSON.stringify(meta, null, 2));
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        throw new Error(`unexpected cli ${name}`);
+      };
+      const fakeValidator = async () => ({ code: 0, stdout: 'OK\n', stderr: '' });
+
+      await run({
+        manifestPath,
+        providers: [{ slug: 'pendle', provider: 'pendle', displayName: 'Pendle', type: 'fixed_rate' }],
+        outputRoot: dir,
+        runId: 'R-ok',
+        parallelism: 1,
+        options: { i18nArg: 'zh_CN', callCli: fakeCallCli, callValidator: fakeValidator },
+      });
+
+      const show = async (path) => new Promise((resolve, reject) => {
+        let stdout = '';
+        let stderr = '';
+        const p = spawn('git', ['show', `HEAD:${path}`], { cwd: dir });
+        p.stdout.on('data', (b) => { stdout += b.toString(); });
+        p.stderr.on('data', (b) => { stderr += b.toString(); });
+        p.on('close', (code) => code === 0 ? resolve(stdout) : reject(new Error(stderr)));
+      });
+      assert.match(await show('pendle/record.import.json'), /"locale":"en"/);
+      assert.match(await show('pendle/record.full.json'), /zh_CN/);
+      assert.match(await show('pendle/meta.json'), /locales_ok/);
+      assert.equal(await isClean(dir, { slug: 'pendle' }), true);
+      const hist = await log(dir, { slug: 'pendle' });
+      assert.equal(hist.length, 1);
+      assert.equal(hist[0].message, 'crawl(pendle): R1+R2 ok');
+    },
+  },
+  {
+    name: 'run() rolls schema-failed slug back to clean canonical state',
+    fn: async () => {
+      const { mkdtemp, mkdir, readFile, writeFile } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { existsSync } = await import('node:fs');
+      const { isClean, log } = await import('../../framework/version-store.mjs');
+      const dir = await mkdtemp(join(tmpdir(), 'pi-run-fail-'));
+      const manifestPath = join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json');
+      const arg = (args, name) => {
+        const i = args.indexOf(`--${name}`);
+        return i === -1 ? null : args[i + 1];
+      };
+      const fakeCallCli = async (name, args) => {
+        if (name === 'fetch') {
+          await writeFile(arg(args, 'output'), JSON.stringify({ fetcher_status: { rootdata: 'skipped_missing_env', defillama: 'ok' } }));
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        if (name === 'r1') {
+          await writeFile(arg(args, 'record-out'), JSON.stringify({ bad: true }));
+          await writeFile(arg(args, 'findings-out'), '[]');
+          await writeFile(arg(args, 'gaps-out'), '[]');
+          await writeFile(arg(args, 'handoff-out'), '[]');
+          await writeFile(join(arg(args, 'debug-dir'), 'r1-status.json'), JSON.stringify({ subtasks: [], failed_subtasks: [] }));
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        if (name === 'evidence-diff') return { code: 0, stdout: '', stderr: '' };
+        if (name === 'r2') return { code: 1, stdout: '', stderr: 'skip r2 in test' };
+        if (name === 'normalize') {
+          await writeFile(arg(args, 'record-out'), await readFile(arg(args, 'record-in'), 'utf8'));
+          await writeFile(arg(args, 'changes-out'), await readFile(arg(args, 'changes-in'), 'utf8'));
+          await writeFile(arg(args, 'gaps-out'), await readFile(arg(args, 'gaps-in'), 'utf8'));
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        throw new Error(`unexpected cli ${name}`);
+      };
+      const fakeValidator = async () => ({ code: 1, stdout: 'FAIL\n', stderr: '' });
+
+      await run({
+        manifestPath,
+        providers: [{ slug: 'pendle', provider: 'pendle', displayName: 'Pendle', type: 'fixed_rate' }],
+        outputRoot: dir,
+        runId: 'R-fail',
+        parallelism: 1,
+        options: { i18nArg: 'none', callCli: fakeCallCli, callValidator: fakeValidator },
+      });
+
+      assert.equal(existsSync(join(dir, 'pendle', 'record.json')), false);
+      assert.equal(await isClean(dir, { slug: 'pendle' }), true);
+      assert.deepEqual(await log(dir, { slug: 'pendle' }), []);
+    },
+  },
+  {
     name: 'appendRunsLog writes one TSV line: ts \\t runId \\t slugs \\t outcome',
     fn: async () => {
       const { mkdtemp, readFile } = await import('node:fs/promises');

@@ -4,11 +4,33 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] — 2026-04-27
+
+### Added
+- Workflow subcommands on existing canonical records:
+  `get`, `set`, `analyze`, `i18n`, `refresh`, `history`, `diff`, and
+  `restore`.
+- Importable `schema-validator.mjs` helpers (`validate`, `validateFile`,
+  `validateRecord`) so write commands can validate in-process without
+  spawning the CLI.
+- Transaction helpers for write commands: dirty-slug preflight, rollback to
+  `HEAD`, post-processing, one logical commit, and browser rebuild.
+- Field-level `analyze`: proposal-only by default; `--apply` writes only the
+  requested JSONPath after full-record validation.
+
+### Changed
+- `i18n <slug>` now operates on the current `out/<slug>/record.json`, writes
+  locale sidecars through the existing i18n stage, then runs post-processing
+  before committing `record.full.json`, `record.import.json`, and `meta.json`.
+- `refresh <slug> <subtask>` uses the existing R1 subtask prompt path and
+  merges refreshed slices through the same audit-first `mergeR2` envelope
+  contract used by crawl reconciliation.
+
 ## [2.0.0] — 2026-04-27
 
 **Breaking change.** Output layout flipped from `out/<runId>/<slug>/` to
 `out/<slug>/`. `out/` is now a local git repo (`out/.git/`) with one
-commit per successful crawl, edit, or restore.
+commit per successful crawl.
 
 ### Added
 - `framework/version-store.mjs`: real-git wrapper providing `ensureRepo`,
@@ -18,6 +40,9 @@ commit per successful crawl, edit, or restore.
 - Per-slug auto-commit on successful crawl. Each crawl produces one
   commit, e.g. `crawl(pendle): R1+R2 ok`, with a `Run-Id:` git trailer
   carrying the batch identifier.
+- Failed crawls roll the protocol directory back to HEAD, keeping only
+  ignored `_debug/` debris for triage. A failed first crawl leaves no
+  canonical `record.json`.
 - `out/.runs.log`: append-only TSV of (timestamp, runId, slugs, outcome).
   Powers the runs filter in the browser without putting run-id back in
   any data path.
@@ -45,7 +70,9 @@ commit per successful crawl, edit, or restore.
   (`buildComparePanel`, `bindComparePanel`, `diffArtifacts`, `walkDiff`,
   `arrayIdentity`, `isVolatilePath`, `formatDiffSummary`,
   `renderDiffItem`).
-- Per-slug `summary.tsv` (was never written; help text was stale).
+- Per-slug `summary.tsv` from version history. It may still be generated
+  for the local browser, but it is gitignored and not part of canonical
+  protocol history.
 
 ### Migration
 Old `out/<runId>/<slug>/` directories are left untouched but invisible
@@ -54,8 +81,7 @@ New records land at `out/<slug>/` automatically. See README's
 "Upgrading from 1.x" subsection for details.
 
 ### Deferred to v2.1.0
-The seven user-facing stage CLIs (`i18n`, `get`, `set`, `history`,
-`diff`, `restore`, `refresh`). v2.0 ships the foundation; v2.1 adds the
+The user-facing workflow CLIs. v2.0 ships the foundation; v2.1 adds the
 decoupled commands that run on top of an existing `out/<slug>/`.
 
 ## [1.2.1] — 2026-04-27

@@ -23,8 +23,8 @@
 //   -h, --help                print help
 //
 // .env autoload order (only if ROOTDATA_API_KEY not already set):
-//   1. <SCRIPT_DIR>/.env
-//   2. $HOME/.config/protocol-info/.env
+//   1. $HOME/.config/protocol-info/.env
+//   2. <SCRIPT_DIR>/.env
 
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -35,6 +35,16 @@ import { run, slugify } from './orchestrator.mjs';
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_DIR = dirname(FRAMEWORK_DIR);
 const DEFAULT_MANIFEST = join(SCRIPT_DIR, 'consumers', 'protocol-info', 'manifest.json');
+export const WORKFLOW_COMMANDS = {
+  get: () => import('./commands/get.mjs'),
+  set: () => import('./commands/set.mjs'),
+  analyze: () => import('./commands/analyze.mjs'),
+  i18n: () => import('./commands/i18n.mjs'),
+  refresh: () => import('./commands/refresh.mjs'),
+  history: () => import('./commands/history.mjs'),
+  diff: () => import('./commands/diff.mjs'),
+  restore: () => import('./commands/restore.mjs'),
+};
 
 // ── .env autoload (tolerant: skip if run.sh already loaded vars) ────────────
 
@@ -129,7 +139,90 @@ Outputs:
   out/<slug>/_debug/             audit / debug artefacts (gitignored)
   out/.runs/<run-id>/summary.tsv batch summary (gitignored)
   out/.runs.log                  append-only TSV of every batch run (gitignored)
+
+Workflow commands (v2.1):
+  get <slug> <jsonpath>          print one value from out/<slug>/record.json
+  set <slug> <jsonpath> <json>   edit one value with validation + commit
+  analyze <slug> <jsonpath> --query <text> [--apply]
+                              research one value; apply validates + commits
+  i18n <slug> [--locales LIST]   translate current record, post-process, commit
+  refresh <slug> <subtask>       rerun metadata/team/funding/audits and merge
+  history <slug> [--limit N]     show git history for one protocol
+  diff <slug> [from] [to]        show git diff for one protocol (default HEAD~1..HEAD)
+  restore <slug> <sha>           restore a previous commit, validate, commit
 `;
+
+export async function dispatchWorkflowCommand(argv, {
+  commandMap = WORKFLOW_COMMANDS,
+  context = {},
+} = {}) {
+  const parsed = parseWorkflowArgv(argv, commandMap);
+  if (!parsed) return null;
+  const mod = await commandMap[parsed.name]();
+  const fn = mod.default;
+  if (typeof fn !== 'function') {
+    throw new Error(`workflow command ${parsed.name} has no default export`);
+  }
+  return await fn(parsed.args, {
+    outputRoot: join(SCRIPT_DIR, 'out'),
+    manifestPath: DEFAULT_MANIFEST,
+    ...parsed.context,
+    ...context,
+  });
+}
+
+export function parseWorkflowArgv(argv, commandMap = WORKFLOW_COMMANDS) {
+  let name = null;
+  const args = [];
+  const context = {};
+
+  const nextArg = (i, flag) => {
+    if (i + 1 >= argv.length) {
+      throw new Error(`${flag} 缺少参数`);
+    }
+    return argv[i + 1];
+  };
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === '--force-overwrite') {
+      context.forceOverwrite = true;
+      continue;
+    }
+    if (a === '--manifest') {
+      context.manifestPath = nextArg(i, a);
+      i += 1;
+      continue;
+    }
+    if (a === '--model') {
+      context.model = nextArg(i, a);
+      i += 1;
+      continue;
+    }
+    if (a === '--i18n-model') {
+      context.i18nModel = nextArg(i, a);
+      i += 1;
+      continue;
+    }
+    if (a === '--rootdata-key') {
+      const key = nextArg(i, a).trim();
+      if (key) process.env.ROOTDATA_API_KEY = key;
+      i += 1;
+      continue;
+    }
+
+    if (!name) {
+      if (a in commandMap) {
+        name = a;
+        continue;
+      }
+      return null;
+    }
+    args.push(a);
+  }
+
+  return name ? { name, args, context } : null;
+}
 
 // Pure argv parser. Does NOT exit the process or print to stdout/stderr —
 // throws on validation errors. Side effect: a `--rootdata-key VALUE` flag
@@ -242,9 +335,20 @@ export function parseArgv(argv) {
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 
 if (isMain) {
+  const rawArgv = process.argv.slice(2);
+  try {
+    const workflowCode = await dispatchWorkflowCommand(rawArgv);
+    if (workflowCode != null) {
+      process.exit(workflowCode);
+    }
+  } catch (err) {
+    process.stderr.write(`workflow command failed: ${err.stack || err.message}\n`);
+    process.exit(1);
+  }
+
   let parsed;
   try {
-    parsed = parseArgv(process.argv.slice(2));
+    parsed = parseArgv(rawArgv);
   } catch (err) {
     process.stderr.write(`错误: ${err.message}\n`);
     process.exit(1);

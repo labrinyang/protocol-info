@@ -127,6 +127,25 @@ i18n:
 ./run.sh --display-name "Pendle" --type fixed_rate --i18n none
 ```
 
+Workflow commands on an existing `out/<slug>/`:
+
+```bash
+./run.sh get pendle description
+./run.sh set pendle description '"Updated source-language description"'
+./run.sh analyze pendle fundingRounds --query "verify latest funding rounds"
+./run.sh analyze pendle fundingRounds --query "verify latest funding rounds" --apply
+./run.sh i18n pendle --locales zh_CN,ja_JP
+./run.sh refresh pendle funding
+./run.sh history pendle
+./run.sh diff pendle HEAD~1 HEAD
+./run.sh restore pendle <sha>
+```
+
+Write commands validate the full record, run post-processing so
+`record.import.json` stays aligned, create one local git commit in `out/`,
+and refresh `out/index.html`. `analyze` without `--apply` is proposal-only
+and writes nothing.
+
 Dry run:
 
 ```bash
@@ -152,20 +171,41 @@ Dry run:
 | `--i18n-parallel <n>` | No | Locale translation concurrency. Default: `8`. |
 | `--i18n-model <name>` | No | Override i18n model. Manifest default: `claude-haiku-4-5-20251001`. |
 | `--dry-run` | No | Print resolved providers and stop. Forces `--parallel 1`. |
+| `--force-overwrite` | No | Overwrite a protocol directory that has uncommitted edits. Without this, v2 refuses to clobber manual changes. |
 | `--manifest <path>` | No | Advanced: run a different consumer manifest. |
+
+## Workflow Commands
+
+These commands operate on the canonical `out/<slug>/record.json` created by a
+previous crawl. They do not create a second displayed copy of the protocol;
+history and rollback are handled by the nested git repo under `out/`.
+
+| Command | Writes? | Purpose |
+| --- | --- | --- |
+| `get <slug> <jsonpath>` | No | Print one value as JSON. |
+| `set <slug> <jsonpath> <json>` | Yes | Manually replace one value, validate, post-process, commit. |
+| `analyze <slug> <jsonpath> --query <text>` | No | Research one field and print a proposed value with evidence. |
+| `analyze <slug> <jsonpath> --query <text> --apply` | Yes | Apply the proposal at the same path, validate, post-process, commit. |
+| `i18n <slug> [--locales LIST]` | Yes | Re-run translation sidecars and export files from the current record. |
+| `refresh <slug> <metadata|team|funding|audits>` | Yes | Re-run one broad R1 subtask and merge through the audit-first guard. |
+| `history <slug> [--limit N]` | No | Show local git history for one protocol. |
+| `diff <slug> [from] [to]` | No | Show a unified diff for one protocol. |
+| `restore <slug> <sha>` | Yes | Restore a previous valid version, post-process, commit. |
 
 ## Output Layout
 
-Each protocol run writes artifacts under:
+Each protocol writes its canonical artifacts under:
 
 ```text
-out/<slug>/<run-id>/
+out/<slug>/
 ```
 
-Batch-level indexes are written under:
+`out/` is a local git repo. Each successful crawl creates one commit for the
+changed protocol directories, with the batch run id stored as a `Run-Id:` git
+trailer. Batch scratch files are written under:
 
 ```text
-out/_runs/<run-id>/
+out/.runs/<run-id>/
 ```
 
 Every completed run also refreshes:
@@ -174,15 +214,15 @@ Every completed run also refreshes:
 out/index.html
 ```
 
-`out/index.html` is a self-contained local browser for the output tree. Open it directly in a browser to filter runs, inspect key artifacts, compare the same protocol across runs with a path-level JSON diff, copy absolute file paths, copy one `record.import.json`, or copy one merged import JSON for the visible records. It embeds only review artifacts; raw Claude/debug logs stay under `_debug/`.
+`out/index.html` is a self-contained local browser for the output tree. Open it directly in a browser to inspect protocol artifacts, filter by recent runs from `.runs.log`, view per-protocol git history, compare the latest commit with the previous commit, copy absolute file paths, copy one `record.import.json`, or copy one merged import JSON for the visible records. It embeds only review artifacts; raw Claude/debug logs stay under `_debug/`.
 
-![out/index.html — three-pane local browser: runs list, records table, per-record artifact tabs (Import JSON / Record / Summary / Findings / Gaps / Changes / Meta) and a Compare runs panel for path-level JSON diffs](docs/images/out-browser.png)
+![out/index.html — local browser with protocol navigation, artifact tabs, git history, run filter, and commit diff view](docs/images/out-browser.png)
 
 Typical files:
 
 | File | Purpose |
 | --- | --- |
-| `../index.html` | Static local browser for filtering runs, comparing protocol JSON across runs, and copying key outputs. |
+| `../index.html` | Static local browser for reviewing protocol artifacts, history, commit diffs, and copying key outputs. |
 | `record.json` | Source-language `EarnProtocolInfo` record that passed schema validation. Review/audit file, not the dashboard import envelope. |
 | `record.full.json` | Inline i18n version, present only when translations were generated. |
 | `record.import.json` | Dashboard import envelope: `{ version, exportedAt, data: [...] }`. Use this for import. `sources` is stripped. |
@@ -190,13 +230,13 @@ Typical files:
 | `gaps.json` | Unresolved or weak fields, including attempted search paths. |
 | `changes.json` | R2 reconciliation changes and reasons. |
 | `meta.json` | Run status, RootData usage, budget plan, R1/R2 telemetry, i18n status. |
-| `summary.tsv` | Per-protocol summary row. |
+| `summary.tsv` | Per-protocol generated summary row for the local browser. Gitignored. |
 | `_debug/` | Raw envelopes, stderr logs, intermediate evidence, i18n sidecars. |
 
 The batch summary is:
 
 ```text
-out/_runs/<run-id>/summary.tsv
+out/.runs/<run-id>/summary.tsv
 ```
 
 ### Upgrading from 1.x
@@ -357,8 +397,8 @@ Important constraints:
 
 Recommended review flow:
 
-1. Open `out/_runs/<run-id>/summary.tsv`.
-2. For each `OK` row, review `out/<slug>/<run-id>/record.json`.
+1. Open `out/index.html` or `out/.runs/<run-id>/summary.tsv`.
+2. For each `OK` row, review `out/<slug>/record.json`.
 3. Check `findings.json` for source coverage.
 4. Check `gaps.json` for missing or weak fields.
 5. Check `changes.json` when R2 changed R1 output.
@@ -369,7 +409,7 @@ Example import:
 ```bash
 curl -X POST "$DASHBOARD/api/earn-protocol-info/import" \
   -H "Content-Type: application/json" \
-  -d @out/<slug>/<run-id>/record.import.json
+  -d @out/<slug>/record.import.json
 ```
 
 Even without i18n, `record.import.json` contains one source-language record with dashboard locale `en`.
@@ -404,7 +444,7 @@ Common causes are invalid URLs, missing required members, incomplete dates, or a
 The summary column may show values such as `3/19`. Inspect:
 
 ```text
-out/<slug>/<run-id>/_debug/i18n/
+out/<slug>/_debug/i18n/
 ```
 
 Successful locale sidecars are still used by post-processing.
@@ -414,8 +454,8 @@ Successful locale sidecars are still used by post-processing.
 The current layout is protocol-first:
 
 ```text
-out/<slug>/<run-id>/
-out/_runs/<run-id>/summary.tsv
+out/<slug>/
+out/.runs/<run-id>/summary.tsv
 ```
 
 Older docs or generated paths using `out/<run-id>/<slug>/` are stale.

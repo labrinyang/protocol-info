@@ -7,64 +7,82 @@
 
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-// Parse argv: extract --schema <path> from anywhere; remaining tokens are file paths.
-const argv = process.argv.slice(2);
-const files = [];
-let schemaPath = null;
-for (let i = 0; i < argv.length; i++) {
-  const arg = argv[i];
-  if (arg === '--schema') {
-    const next = argv[i + 1];
-    if (!next) {
-      console.error('error: --schema requires a path argument');
-      process.exit(2);
+async function loadSchema(schemaOrPath) {
+  if (typeof schemaOrPath === 'string') {
+    return JSON.parse(await readFile(resolve(schemaOrPath), 'utf8'));
+  }
+  if (schemaOrPath && typeof schemaOrPath === 'object') {
+    if (schemaOrPath._abs?.full_schema) {
+      return JSON.parse(await readFile(schemaOrPath._abs.full_schema, 'utf8'));
     }
-    schemaPath = resolve(next);
-    i += 1;
-  } else {
-    files.push(arg);
+    return schemaOrPath;
   }
+  throw new Error('schema is required');
 }
 
-if (!schemaPath) {
-  console.error('error: --schema <path> is required');
-  process.exit(2);
-}
-
-if (files.length === 0) {
-  console.error('usage: node framework/schema-validator.mjs --schema <schema.json> <file.json> [more.json ...]');
-  process.exit(2);
-}
-
-const schema = JSON.parse(await readFile(schemaPath, 'utf8'));
-
-let failed = 0;
-for (const file of files) {
-  const errors = await validateFile(file);
-  if (errors.length === 0) {
-    console.log(`OK    ${file}`);
-  } else {
-    failed += 1;
-    console.log(`FAIL  ${file}`);
-    for (const e of errors) console.log(`        - ${e}`);
-  }
-}
-
-process.exit(failed === 0 ? 0 : 1);
-
-async function validateFile(file) {
+export async function validateFile(file, schemaOrPath) {
   let data;
   try {
     data = JSON.parse(await readFile(file, 'utf8'));
   } catch (e) {
     return [`not parseable JSON: ${e.message}`];
   }
+  const schema = await loadSchema(schemaOrPath);
   return validate(data, schema, '$');
 }
 
+export async function validateRecord(record, manifestOrSchema) {
+  const schema = await loadSchema(manifestOrSchema);
+  const errors = validate(record, schema, '$');
+  return { ok: errors.length === 0, errors };
+}
+
+export async function main(argv = process.argv.slice(2)) {
+  const files = [];
+  let schemaPath = null;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--schema') {
+      const next = argv[i + 1];
+      if (!next) {
+        console.error('error: --schema requires a path argument');
+        return 2;
+      }
+      schemaPath = resolve(next);
+      i += 1;
+    } else {
+      files.push(arg);
+    }
+  }
+
+  if (!schemaPath) {
+    console.error('error: --schema <path> is required');
+    return 2;
+  }
+
+  if (files.length === 0) {
+    console.error('usage: node framework/schema-validator.mjs --schema <schema.json> <file.json> [more.json ...]');
+    return 2;
+  }
+
+  let failed = 0;
+  for (const file of files) {
+    const errors = await validateFile(file, schemaPath);
+    if (errors.length === 0) {
+      console.log(`OK    ${file}`);
+    } else {
+      failed += 1;
+      console.log(`FAIL  ${file}`);
+      for (const e of errors) console.log(`        - ${e}`);
+    }
+  }
+  return failed === 0 ? 0 : 1;
+}
+
 // --- Minimal JSON Schema subset (draft-07) covering what our schema uses ---
-function validate(value, node, path) {
+export function validate(value, node, path = '$') {
   const errs = [];
 
   // nullable handling: type may be an array including "null"
@@ -167,4 +185,9 @@ function isUri(s) {
   } catch {
     return false;
   }
+}
+
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+if (isMain) {
+  process.exit(await main(process.argv.slice(2)));
 }

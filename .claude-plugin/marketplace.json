@@ -11,7 +11,7 @@
     {
       "name": "protocol-info",
       "source": "./",
-      "version": "2.0.0",
+      "version": "2.1.0",
       "description": "Crawl DeFi protocol metadata via Claude into schema-validated EarnProtocolInfo JSON, with optional Haiku i18n translation for 19 locales",
       "author": {
         "name": "labrinyang",
