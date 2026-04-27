@@ -172,4 +172,36 @@ export const tests = [
       assert.match(out, /\+{"v":2}/);
     },
   },
+  {
+    name: 'restore() reverts files in slug to a previous sha',
+    fn: async () => {
+      const { ensureRepo, commit, restore } = await import('../../framework/version-store.mjs');
+      const { writeFile, mkdir, readFile } = await import('node:fs/promises');
+      const dir = await makeTempOut();
+      await ensureRepo(dir);
+      await mkdir(join(dir, 'pendle'), { recursive: true });
+      await writeFile(join(dir, 'pendle', 'record.json'), '{"v":1}\n');
+      const sha1 = await commit(dir, { paths: ['pendle/'], message: 'a', runId: 'A' });
+      await writeFile(join(dir, 'pendle', 'record.json'), '{"v":2}\n');
+      await commit(dir, { paths: ['pendle/'], message: 'b', runId: 'B' });
+      await restore(dir, { slug: 'pendle', sha: sha1 });
+      const after = await readFile(join(dir, 'pendle', 'record.json'), 'utf8');
+      assert.equal(after.trim(), '{"v":1}');
+    },
+  },
+  {
+    name: 'isClean() returns true when slug has no uncommitted changes',
+    fn: async () => {
+      const { ensureRepo, commit, isClean } = await import('../../framework/version-store.mjs');
+      const { writeFile, mkdir } = await import('node:fs/promises');
+      const dir = await makeTempOut();
+      await ensureRepo(dir);
+      await mkdir(join(dir, 'pendle'), { recursive: true });
+      await writeFile(join(dir, 'pendle', 'record.json'), '{"v":1}');
+      await commit(dir, { paths: ['pendle/'], message: 'a', runId: 'A' });
+      assert.equal(await isClean(dir, { slug: 'pendle' }), true);
+      await writeFile(join(dir, 'pendle', 'record.json'), '{"v":2}');
+      assert.equal(await isClean(dir, { slug: 'pendle' }), false);
+    },
+  },
 ];

@@ -105,3 +105,15 @@ export async function diff(outDir, { slug, fromSha, toSha }) {
   );
   return stdout;
 }
+
+export async function restore(outDir, { slug, sha }) {
+  await git(['checkout', sha, '--', `${slug}/`], { cwd: outDir });
+}
+
+export async function isClean(outDir, { slug }) {
+  const { stdout } = await git(
+    ['status', '--porcelain', '--', `${slug}/`],
+    { cwd: outDir }
+  );
+  return stdout.trim() === '';
+}
