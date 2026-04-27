@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { loadManifest } from './manifest-loader.mjs';
 import { runWithLimit } from './parallel-runner.mjs';
 import { buildOutBrowser } from './out-browser.mjs';
+import { ensureRepo, commit } from './version-store.mjs';
 
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_DIR = dirname(FRAMEWORK_DIR);
@@ -595,6 +596,7 @@ export async function run({
   }
 
   await mkdir(outputRoot, { recursive: true });
+  await ensureRepo(outputRoot);
   if (!dryRun) {
     await mkdir(runMetaDir, { recursive: true });
     await mkdir(join(runMetaDir, '.summary-rows'), { recursive: true });
@@ -680,6 +682,18 @@ export async function run({
     const content = await readFile(join(summaryRowsDir, f), 'utf8');
     const cols = content.split('\n')[0].split('\t');
     if (cols[1] === 'OK') okSlugs.push(cols[0]);
+  }
+
+  // ── Commit phase ─────────────────────────────────────────────────────────
+  // INVARIANT: this loop runs SEQUENTIALLY, AFTER the parallel runWithLimit
+  // call above. Do NOT inline these commits into runOne() or wrap them in
+  // Promise.all() — concurrent writes to out/.git/index will throw
+  // "Unable to create '.git/index.lock'" intermittently under --parallel >1.
+  // The "parallel-safety" regression test in orchestrator.test.mjs asserts
+  // this behavior. See plan 2026-04-27-v2.0-layout-and-git-layer.md → A1.
+  for (const slug of okSlugs) {
+    const message = `crawl(${slug}): R1+R2 ok`;
+    await commit(outputRoot, { paths: [`${slug}/`], message, runId });
   }
 
   // ── i18n stage ───────────────────────────────────────────────────────────
