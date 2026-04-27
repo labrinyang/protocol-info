@@ -154,10 +154,19 @@ out/<slug>/<run-id>/
 out/_runs/<run-id>/
 ```
 
+每次完整运行结束后还会刷新：
+
+```text
+out/index.html
+```
+
+`out/index.html` 是一个自包含的本地管理页。可以直接用浏览器打开，用来筛选 run、查看关键产物、复制绝对路径、复制单个 `record.import.json`，或为当前可见记录复制一份合并后的 import JSON。它只嵌入审核用的关键产物；Claude/debug 原始日志仍保留在 `_debug/`。
+
 常见文件：
 
 | 文件 | 用途 |
 | --- | --- |
+| `../index.html` | 静态本地管理页，用于筛选 run 和复制关键输出。 |
 | `record.json` | 通过 schema 校验的源语言 `EarnProtocolInfo` 记录。 |
 | `record.full.json` | 内联 i18n 版本，仅在生成翻译时存在。 |
 | `record.import.json` | Dashboard 导入信封：`{ version, exportedAt, data: [...] }`，已移除 `sources`。 |

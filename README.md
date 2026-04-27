@@ -154,10 +154,19 @@ Batch-level indexes are written under:
 out/_runs/<run-id>/
 ```
 
+Every completed run also refreshes:
+
+```text
+out/index.html
+```
+
+`out/index.html` is a self-contained local browser for the output tree. Open it directly in a browser to filter runs, inspect key artifacts, copy absolute file paths, copy one `record.import.json`, or copy one merged import JSON for the visible records. It embeds only review artifacts; raw Claude/debug logs stay under `_debug/`.
+
 Typical files:
 
 | File | Purpose |
 | --- | --- |
+| `../index.html` | Static local browser for filtering runs and copying key outputs. |
 | `record.json` | Source-language `EarnProtocolInfo` record that passed schema validation. |
 | `record.full.json` | Inline i18n version, present only when translations were generated. |
 | `record.import.json` | Dashboard import envelope: `{ version, exportedAt, data: [...] }`. `sources` is stripped. |

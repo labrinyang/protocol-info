@@ -24,14 +24,38 @@ import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadManifest } from './manifest-loader.mjs';
 import { runWithLimit } from './parallel-runner.mjs';
+import { buildOutBrowser } from './out-browser.mjs';
 
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_DIR = dirname(FRAMEWORK_DIR);
+// Low-frequency plain-text heartbeat for Claude Code / terminal runs. Avoid
+// ANSI, carriage returns, or progress bars because slash commands capture text.
+const DEFAULT_PROGRESS_HEARTBEAT_MS = 60_000;
 
 // ── child_process helpers ───────────────────────────────────────────────────
 
+function formatElapsed(ms) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
 function runNode(scriptPath, args, opts = {}) {
   return new Promise((resolvePromise) => {
+    const startedAt = Date.now();
+    let heartbeat = null;
+    const heartbeatMs = opts.heartbeatMs ?? DEFAULT_PROGRESS_HEARTBEAT_MS;
+    if (opts.progressLabel && heartbeatMs > 0) {
+      heartbeat = setInterval(() => {
+        process.stderr.write(`${opts.progressLabel} still running (${formatElapsed(Date.now() - startedAt)})\n`);
+      }, heartbeatMs);
+      heartbeat.unref?.();
+    }
+    const finish = (result) => {
+      if (heartbeat) clearInterval(heartbeat);
+      resolvePromise(result);
+    };
     const proc = spawn('node', [scriptPath, ...args], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, ...(opts.env || {}) },
@@ -46,8 +70,8 @@ function runNode(scriptPath, args, opts = {}) {
       stderr += d.toString();
       if (opts.passthroughStderr) process.stderr.write(d);
     });
-    proc.on('close', (code) => resolvePromise({ code: code ?? 1, stdout, stderr }));
-    proc.on('error', (err) => resolvePromise({ code: 1, stdout, stderr: stderr + err.message }));
+    proc.on('close', (code) => finish({ code: code ?? 1, stdout, stderr }));
+    proc.on('error', (err) => finish({ code: 1, stdout, stderr: stderr + err.message }));
   });
 }
 
@@ -62,6 +86,14 @@ function tailLines(s, n) {
   if (!s) return '';
   const lines = s.split('\n');
   return lines.slice(Math.max(0, lines.length - n)).join('\n');
+}
+
+function logProvider(slug, message) {
+  console.log(`  [${slug}] ${message}`);
+}
+
+function formatUsd(n) {
+  return `$${(Number(n) || 0).toFixed(4)}`;
 }
 
 async function fileNonEmpty(path) {
@@ -219,9 +251,11 @@ export async function runOne({
   const changesPath = join(slugDir, 'changes.json');
   const metaPath = join(slugDir, 'meta.json');
   const rootdataPkt = join(debugDir, 'rootdata.json');
+  logProvider(slug, `output: ${slugDir}`);
 
   // ── Phase 1: fetchers (per-fetcher env gating happens inside dispatcher) ─
 
+  logProvider(slug, 'R0 fetch evidence started');
   const fetchArgs = [
     '--manifest', manifestPath,
     '--slug', slug,
@@ -247,6 +281,8 @@ export async function runOne({
     ? 'ok'
     : (rootdataStatus.startsWith('skipped') ? 'disabled' : `failed`);
   const rootdataOk = rootdataStatus === 'ok';
+  const defillamaStatus = evidencePacket?.fetcher_status?.defillama || 'unknown';
+  logProvider(slug, `R0 fetch evidence done: rootdata=${apiStatus}, defillama=${defillamaStatus}`);
   let finalSource = 'r1';
   let r1Cost = 0;
   let r1Turns = 0;
@@ -301,7 +337,10 @@ export async function runOne({
     r1Args.push('--max-budget', String(options.budgetPlan.effective.r1_total));
   }
 
-  const r1Res = await callCli('r1', r1Args);
+  const r1SubtaskCount = (manifest._abs?.subtasks || manifest.subtasks || []).length;
+  const r1Budget = options.budgetPlan?.effective?.r1_total;
+  logProvider(slug, `R1 fan-out started: ${r1SubtaskCount} subtasks${r1Budget ? `, budget=${formatUsd(r1Budget)}` : ''}`);
+  const r1Res = await callCli('r1', r1Args, { progressLabel: `[${slug}] R1 fan-out` });
   const r1Stderr = r1Res.stderr || '';
   try {
     await writeFile(join(debugDir, 'r1.stderr.log'), r1Stderr);
@@ -339,6 +378,15 @@ export async function runOne({
   const r1Telemetry = await sumEnvelopeTelemetry(r1DebugDir);
   r1Cost = r1Telemetry.cost_usd;
   r1Turns = r1Telemetry.turns;
+  const r1Status = await readJsonSafe(join(r1DebugDir, 'r1-status.json'), null);
+  const r1Ok = Array.isArray(r1Status?.subtasks) ? r1Status.subtasks.filter((s) => s.ok).length : null;
+  const r1Total = Array.isArray(r1Status?.subtasks) ? r1Status.subtasks.length : null;
+  const r1ResultText = r1Ok == null ? 'completed' : `${r1Ok}/${r1Total} subtasks ok`;
+  logProvider(slug, `R1 fan-out done: ${r1ResultText}, cost=${formatUsd(r1Cost)}, turns=${r1Turns}`);
+  if (Array.isArray(r1Status?.failed_subtasks) && r1Status.failed_subtasks.length > 0) {
+    const failed = r1Status.failed_subtasks.map((f) => f.name).filter(Boolean).join(', ');
+    if (failed) logProvider(slug, `R1 partial gaps: failed subtasks=${failed}`);
+  }
 
   // (Pre-R2 validated_overrides mutation removed: those overrides remain in
   // the evidence packet and are arbitrated by R2's audit-first guard, which
@@ -359,6 +407,7 @@ export async function runOne({
     }
     const enriched = await readJsonSafe(rootdataPkt, {});
     fundingSeverity = enriched?.evidence_diff?.funding?.severity || 'none';
+    logProvider(slug, `evidence diff done: funding_discrepancy=${fundingSeverity}`);
   }
 
   // ── Phase 3.6: R2 reconcile ──────────────────────────────────────────────
@@ -387,7 +436,9 @@ export async function runOne({
     r2Args.push('--max-budget', String(options.budgetPlan.effective.r2_total));
   }
   await mkdir(r2DebugDir, { recursive: true });
-  const r2Res = await callCli('r2', r2Args);
+  const r2Budget = options.budgetPlan?.effective?.r2_total;
+  logProvider(slug, `R2 reconcile started${r2Budget ? `: budget=${formatUsd(r2Budget)}` : ''}`);
+  const r2Res = await callCli('r2', r2Args, { progressLabel: `[${slug}] R2 reconcile` });
   if (r2Res.stderr) {
     try {
       await writeFile(join(debugDir, 'r2.stderr.log'), r2Res.stderr);
@@ -406,10 +457,12 @@ export async function runOne({
     const t = await sumEnvelopeTelemetry(r2DebugDir, /^reconcile\.round\d+\.envelope\.json$/);
     r2Cost = t.cost_usd;
     r2Turns = t.turns;
+    logProvider(slug, `R2 reconcile done: promoted R2 record, cost=${formatUsd(r2Cost)}, turns=${r2Turns}`);
   } else {
     const t = await sumEnvelopeTelemetry(r2DebugDir, /^reconcile\.round\d+\.envelope\.json$/);
     r2Cost = t.cost_usd;
     r2Turns = t.turns;
+    logProvider(slug, `R2 reconcile fallback: keeping R1 record, cost=${formatUsd(r2Cost)}, turns=${r2Turns}`);
     process.stderr.write(`  -> R2 reconcile failed (exit ${r2Res.code}); keeping R1 record\n`);
     for (const p of [recordR2, findingsR2, changesR2, gapsR2]) {
       try { await unlink(p); } catch { /* best effort */ }
@@ -643,13 +696,18 @@ export async function run({
       if (options.i18nModel) args.push('--model', options.i18nModel);
       if (options.maxTurns) args.push('--max-turns', String(options.maxTurns));
       if (budgetPlan.effective.i18n_total) args.push('--max-budget', String(budgetPlan.effective.i18n_total));
-      const r = await callCli('i18n', args);
-      // Mimic run.sh: prefix lines with [<slug>]
+      logProvider(slug, `i18n started: ${i18nSelected.length} locales`);
+      const r = await callCli('i18n', args, { progressLabel: `[${slug}] i18n` });
       const combined = (r.stdout || '') + (r.stderr || '');
-      if (combined) {
-        for (const line of combined.split('\n')) {
-          if (line) process.stderr.write(`[${slug}] ${line}\n`);
-        }
+      const i18nLines = combined.split('\n').filter(Boolean);
+      const summaryLine = [...i18nLines].reverse().find((line) => line.startsWith('[i18n] ') && line.includes(' ok;'));
+      if (summaryLine) {
+        process.stderr.write(`[${slug}] ${summaryLine}\n`);
+      } else {
+        logProvider(slug, `i18n finished: exit=${r.code}`);
+      }
+      for (const line of i18nLines.filter((line) => line.includes('[i18n:warn]') || line.includes('unknown locale')).slice(0, 5)) {
+        process.stderr.write(`[${slug}] ${line}\n`);
       }
     }
   } else if (!options.i18nArg) {
@@ -667,6 +725,8 @@ export async function run({
       if (r.code !== 0) {
         process.stderr.write(`[post] ${slug} failed; record.import.json may be missing\n`);
         if (r.stderr) process.stderr.write(r.stderr);
+      } else {
+        logProvider(slug, 'post export done: record.import.json');
       }
     }
   }
@@ -704,6 +764,13 @@ export async function run({
     await writeFile(join(slugDir, 'summary.tsv'), `${lines[0]}\n${row}\n`);
   }
 
+  let outBrowserFile = null;
+  try {
+    outBrowserFile = await buildOutBrowser(outputRoot);
+  } catch (err) {
+    process.stderr.write(`out browser: failed to refresh index.html: ${err.message}\n`);
+  }
+
   // ── Print summary table (plain TSV → padded by computing column widths) ──
   console.log('');
   console.log('=== Summary ===');
@@ -711,6 +778,7 @@ export async function run({
   console.log('');
   console.log(`Next: review ${outputRoot}/<slug>/${runId}/record.json (or record.full.json if i18n).`);
   console.log(`Batch summary: ${summaryFile}`);
+  if (outBrowserFile) console.log(`Out browser: ${outBrowserFile}`);
 
   if (workerFailures.length > 0) {
     throw new Error(`${workerFailures.length} provider worker(s) crashed; see ${join(runMetaDir, '.worker-logs')}`);

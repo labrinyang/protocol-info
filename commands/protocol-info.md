@@ -24,13 +24,27 @@ bash "${CLAUDE_PLUGIN_ROOT}/run.sh" $ARGUMENTS
 
 Do not re-parse the args or transform them — pass through verbatim. If the user omits required arguments, the script will error clearly; don't pre-validate.
 
+## Runtime output in Claude Code
+
+Claude Code captures Bash stdout/stderr as plain text command output, not rich markdown. The runner therefore prints only low-frequency key lines:
+
+- one line when each provider starts
+- output directory
+- R0/R1/R2/i18n/post stage start or completion
+- one heartbeat per long-running R1/R2/i18n stage, at most once per minute
+- final `=== Summary ===` table
+- an `Out browser:` path to `out/index.html`
+
+Do not ask the script to stream raw Claude/debug logs. They are written under `out/<slug>/<run-id>/_debug/`. The generated `out/index.html` is a static local page for filtering runs and copying key artifacts.
+
 ## After the run finishes
 
 1. **Read the "=== Summary ===" block** from stdout and relay it verbatim to the user
 2. For each row where `status=OK`, point to:
    - `out/<slug>/<run-id>/record.json` — source-language record for DB import
    - `out/<slug>/<run-id>/record.full.json` — inline-i18n merged version (only if translations ran)
-3. If any row shows `CRAWL_FAIL`, `PARSE_FAIL`, or `SCHEMA_FAIL`, call it out explicitly — stderr already dumped details, no need to re-investigate unless the user asks
+   - `out/index.html` — local browser for filtering runs and copying paths/JSON
+3. If any row shows `CRAWL_FAIL`, `PARSE_FAIL`, or `SCHEMA_FAIL`, call it out explicitly — stderr already dumped the key failure details, no need to re-investigate unless the user asks
 4. If `i18n` column shows partial failures (e.g. `3/19`), mention which locales failed (read `out/<slug>/<run-id>/_debug/i18n/failures.log` if needed)
 
 ## Do not
@@ -65,4 +79,4 @@ echo "ROOTDATA_API_KEY=sk-..." > ~/.config/protocol-info/.env
 chmod 600 ~/.config/protocol-info/.env
 ```
 
-Pipeline needs `claude`, `jq`, `node` on PATH. The user has Claude Code installed, so `claude` is available.
+Pipeline needs `claude` and `node` on PATH. The user has Claude Code installed, so `claude` is usually available.
