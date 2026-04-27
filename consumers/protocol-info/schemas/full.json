@@ -190,8 +190,9 @@
               },
               "date": {
                 "type": "string",
-                "pattern": "^\\d{4}-\\d{2}(-\\d{2})?$",
-                "description": "YYYY-MM (Figma precision) or YYYY-MM-DD when the exact date is known."
+                "pattern": "^\\d{4}-(0[1-9]|1[0-2])(-(0[1-9]|[12]\\d|3[01]))?$",
+                "description": "Audit report date. Must be YYYY-MM or YYYY-MM-DD; bare years are invalid. If only a year appears in an audit folder name, open the report or announcement to recover the month.",
+                "examples": ["2024-05", "2022-11-15", "2024-01"]
               },
               "scope": {
                 "type": ["string", "null"],
