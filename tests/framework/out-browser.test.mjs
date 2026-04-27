@@ -101,4 +101,30 @@ export const tests = [
       }
     },
   },
+  {
+    name: 'buildOutBrowser HTML lists protocols as primary nav, runs as filter',
+    fn: async () => {
+      const { ensureRepo, commit } = await import('../../framework/version-store.mjs');
+      const dir = await mkdtemp(join(tmpdir(), 'pi-html-'));
+      try {
+        await ensureRepo(dir);
+        await mkdir(join(dir, 'pendle'), { recursive: true });
+        await writeFile(join(dir, 'pendle', 'record.json'), '{"name":"Pendle"}');
+        await commit(dir, { paths: ['pendle/'], message: 'crawl(pendle): R1+R2 ok', runId: 'R1' });
+        const { writeFile: wf } = await import('node:fs/promises');
+        await wf(join(dir, '.runs.log'), '2026-04-27T10:00:00Z\tR1\tpendle\t1 OK / 0 fail\n');
+
+        await buildOutBrowser(dir);
+        const html = await readFile(join(dir, 'index.html'), 'utf8');
+        assert.match(html, /Protocols/i);
+        assert.match(html, /pendle/);
+        // Run-id should appear in the filter section, not as a directory link.
+        assert.match(html, /R1/);
+        // The legacy "runs as primary nav" markers should be gone:
+        assert.doesNotMatch(html, /class="runs-list"/);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  },
 ];

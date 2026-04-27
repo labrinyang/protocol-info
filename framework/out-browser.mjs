@@ -13,7 +13,6 @@ const SCRIPT_DIR = dirname(FRAMEWORK_DIR);
 const DEFAULT_OUT_ROOT = join(SCRIPT_DIR, 'out');
 const MAX_EMBED_BYTES = 1_500_000;
 const RUN_ID_RE = /^\d{8}T\d{6}Z$/;
-const SYNTHETIC_RUN_ID = 'current';
 
 const ARTIFACTS = [
   { name: 'record.import.json', label: 'Import JSON', kind: 'json' },
@@ -175,25 +174,21 @@ async function readRunsLog(outDir) {
   }
 }
 
-// Build the legacy view shape consumed by renderHtml. Tasks 11/12 will
-// restructure renderHtml to consume the flat protocol list directly; until
-// then this adapter walks the new flat layout and synthesizes a single
-// "current" run grouping so existing template logic keeps working.
-async function collectLegacyView(outputRoot) {
+// Hydrate the protocols list from `collectOutIndex` with per-protocol
+// artifacts, summary row, and meta status, in the protocols-first shape
+// consumed by renderHtml.
+async function hydrateView(outputRoot) {
   outputRoot = resolve(outputRoot);
   await mkdir(outputRoot, { recursive: true });
-  const { protocols } = await collectOutIndex(outputRoot);
+  const idx = await collectOutIndex(outputRoot);
 
-  const run = { runId: SYNTHETIC_RUN_ID, summary: null, rows: [], protocols: [] };
-  const summaryRows = [];
-  for (const p of protocols) {
+  const hydrated = [];
+  for (const p of idx.protocols) {
     const artifacts = await collectArtifacts(outputRoot, p.dir);
     const row = await readProtocolRow(p.dir, p.slug);
-    if (row) summaryRows.push(row);
     const metaStatus = await readMetaStatus(p.dir);
-    run.protocols.push({
+    hydrated.push({
       slug: p.slug,
-      runId: SYNTHETIC_RUN_ID,
       dir: p.dir,
       relDir: relPath(outputRoot, p.dir),
       row: normalizeRow(row, { slug: p.slug, status: metaStatus || 'unknown' }),
@@ -201,17 +196,19 @@ async function collectLegacyView(outputRoot) {
       history: p.history || [],
     });
   }
-  run.rows = summaryRows;
-  run.protocols.sort((a, b) => a.slug.localeCompare(b.slug));
+  hydrated.sort((a, b) => a.slug.localeCompare(b.slug));
 
-  const runList = run.protocols.length === 0 ? [] : [run];
+  const okCount = hydrated.filter((p) => p.row?.status === 'OK').length;
   return {
     generatedAt: new Date().toISOString(),
     outputRoot,
-    runs: runList,
+    protocols: hydrated,
+    runsLog: idx.runsLog,
     totals: {
-      runs: runList.length,
-      protocols: run.protocols.length,
+      protocols: hydrated.length,
+      ok: okCount,
+      issues: Math.max(0, hydrated.length - okCount),
+      runs: idx.runsLog.length,
     },
   };
 }
@@ -225,7 +222,7 @@ function scriptJson(data) {
 
 export async function buildOutBrowser(outputRoot = DEFAULT_OUT_ROOT, opts = {}) {
   outputRoot = resolve(outputRoot);
-  const data = await collectLegacyView(outputRoot);
+  const data = await hydrateView(outputRoot);
   const outputFile = opts.outputFile ? resolve(opts.outputFile) : join(outputRoot, 'index.html');
   await mkdir(dirname(outputFile), { recursive: true });
   await writeFile(outputFile, renderHtml(data));
@@ -233,9 +230,8 @@ export async function buildOutBrowser(outputRoot = DEFAULT_OUT_ROOT, opts = {}) 
 }
 
 function renderHtml(data) {
-  const okCount = data.runs.reduce((sum, run) =>
-    sum + run.protocols.filter((p) => p.row?.status === 'OK').length, 0);
-  const issueCount = Math.max(0, data.totals.protocols - okCount);
+  const okCount = data.totals.ok;
+  const issueCount = data.totals.issues;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -810,8 +806,12 @@ code, pre { font-family: var(--mono); }
   </header>
   <main class="layout">
     <aside class="rail">
-      <div class="panel-head"><p class="section-title">Runs</p><span class="count">${data.totals.runs}</span></div>
-      <div id="runs"></div>
+      <div class="panel-head"><p class="section-title">Protocols</p><span class="count">${data.totals.protocols}</span></div>
+      <ul class="protocols-list" id="protocols-nav"></ul>
+      <details class="runs-filter">
+        <summary>Filter by recent run</summary>
+        <ul id="runs-filter-list"></ul>
+      </details>
     </aside>
     <section class="list">
       <div class="panel-head"><p class="section-title">Records</p><span class="count" id="record-count"></span></div>
@@ -841,28 +841,28 @@ code, pre { font-family: var(--mono); }
 <script>
 const DATA = JSON.parse(document.getElementById('out-data').textContent);
 const state = {
-  runId: DATA.runs[0]?.runId || '',
-  slug: DATA.runs[0]?.protocols[0]?.slug || '',
+  slug: DATA.protocols[0]?.slug || '',
   artifact: 'record.import.json',
   compareBaseRun: '',
   compareTargetRun: '',
   compareArtifact: 'record.import.json',
   ignoreVolatile: true,
   query: '',
-  status: 'all'
+  status: 'all',
+  runFilter: ''
 };
 
 const $ = (id) => document.getElementById(id);
 
-function currentRun() {
-  return DATA.runs.find((run) => run.runId === state.runId) || DATA.runs[0] || null;
-}
-
 function visibleProtocols() {
-  const run = currentRun();
-  if (!run) return [];
   const q = state.query.trim().toLowerCase();
-  return run.protocols.filter((p) => {
+  let pool = DATA.protocols;
+  if (state.runFilter) {
+    const entry = (DATA.runsLog || []).find((r) => r.runId === state.runFilter);
+    const slugs = entry ? new Set(entry.slugs) : null;
+    if (slugs) pool = pool.filter((p) => slugs.has(p.slug));
+  }
+  return pool.filter((p) => {
     const status = p.row?.status || '';
     const haystack = [p.slug, status, p.row?.source, p.row?.api_status].join(' ').toLowerCase();
     return (!q || haystack.includes(q)) && (state.status === 'all' || status === state.status);
@@ -883,15 +883,14 @@ function selectedArtifact(protocol) {
 }
 
 function protocolRuns(slug) {
-  return DATA.runs
-    .map((run) => run.protocols.find((p) => p.slug === slug))
-    .filter(Boolean)
-    .sort((a, b) => b.runId.localeCompare(a.runId));
+  // v2.0: only the current snapshot is available; multi-run comparison
+  // is handled via git commits in Task 13.
+  const p = DATA.protocols.find((x) => x.slug === slug);
+  return p ? [p] : [];
 }
 
-function protocolForRun(slug, runId) {
-  const run = DATA.runs.find((r) => r.runId === runId);
-  return run?.protocols.find((p) => p.slug === slug) || null;
+function protocolForRun(slug /*, runId */) {
+  return DATA.protocols.find((p) => p.slug === slug) || null;
 }
 
 function artifactFor(protocol, name) {
@@ -910,18 +909,7 @@ function compareArtifactNames(runs) {
 }
 
 function ensureCompareState(slug) {
-  const runs = protocolRuns(slug);
-  if (runs.length === 0) return runs;
-  const runIds = runs.map((p) => p.runId);
-  if (!runIds.includes(state.compareTargetRun)) state.compareTargetRun = state.runId || runIds[0];
-  if (!runIds.includes(state.compareTargetRun)) state.compareTargetRun = runIds[0];
-  if (!runIds.includes(state.compareBaseRun) || state.compareBaseRun === state.compareTargetRun) {
-    const targetIndex = runIds.indexOf(state.compareTargetRun);
-    state.compareBaseRun = runIds[targetIndex + 1] || runIds.find((id) => id !== state.compareTargetRun) || state.compareTargetRun;
-  }
-  const names = compareArtifactNames(runs);
-  if (!names.includes(state.compareArtifact)) state.compareArtifact = names[0] || 'record.import.json';
-  return runs;
+  return protocolRuns(slug);
 }
 
 function statusClass(status) {
@@ -930,24 +918,51 @@ function statusClass(status) {
   return 'other';
 }
 
-function renderRuns() {
-  const node = $('runs');
-  if (DATA.runs.length === 0) {
-    node.innerHTML = '<div class="empty">No runs found.</div>';
+function renderProtocolsNav() {
+  const node = $('protocols-nav');
+  if (!node) return;
+  if (DATA.protocols.length === 0) {
+    node.innerHTML = '<li class="empty">No protocols found.</li>';
     return;
   }
-  node.innerHTML = DATA.runs.map((run) => {
-    const active = run.runId === state.runId ? ' active' : '';
-    return '<button class="run-button' + active + '" data-run="' + esc(run.runId) + '">' +
-      '<span class="run-id">' + esc(run.runId) + '</span>' +
-      '<span class="run-meta"><span>' + run.protocols.length + ' records</span><span>' + countStatus(run, 'OK') + ' OK</span></span>' +
-      '</button>';
+  node.innerHTML = DATA.protocols.map((p) => {
+    const active = p.slug === state.slug ? ' active' : '';
+    const histCount = (p.history || []).length;
+    return '<li><button class="run-button' + active + '" data-nav-slug="' + esc(p.slug) + '">' +
+      '<span class="run-id">' + esc(p.slug) + '</span>' +
+      '<span class="run-meta"><span>' + histCount + ' commits</span><span>' + esc(p.row?.status || '-') + '</span></span>' +
+      '</button></li>';
   }).join('');
-  node.querySelectorAll('[data-run]').forEach((button) => {
+  node.querySelectorAll('[data-nav-slug]').forEach((button) => {
     button.addEventListener('click', () => {
-      state.runId = button.dataset.run;
-      state.slug = currentRun()?.protocols[0]?.slug || '';
+      state.slug = button.dataset.navSlug;
       state.artifact = 'record.import.json';
+      render();
+    });
+  });
+}
+
+function renderRunsFilter() {
+  const node = $('runs-filter-list');
+  if (!node) return;
+  const entries = (DATA.runsLog || []).slice(-20).reverse();
+  if (entries.length === 0) {
+    node.innerHTML = '<li class="empty">No runs logged.</li>';
+    return;
+  }
+  const clearItem = state.runFilter
+    ? '<li><button class="run-button" data-run-filter="">clear filter</button></li>'
+    : '';
+  node.innerHTML = clearItem + entries.map((r) => {
+    const active = r.runId === state.runFilter ? ' active' : '';
+    return '<li><button class="run-button' + active + '" data-run-filter="' + esc(r.runId) + '">' +
+      '<span class="run-id">' + esc(r.runId) + '</span>' +
+      '<span class="run-meta"><span>' + esc(r.outcome || '') + '</span><span>' + (r.slugs?.length || 0) + '</span></span>' +
+      '</button></li>';
+  }).join('');
+  node.querySelectorAll('[data-run-filter]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.runFilter = button.dataset.runFilter;
       render();
     });
   });
@@ -1164,13 +1179,10 @@ function renderDiffItem(diff) {
 }
 
 function render() {
-  renderRuns();
+  renderProtocolsNav();
+  renderRunsFilter();
   renderProtocols();
   renderDetail();
-}
-
-function countStatus(run, status) {
-  return (run?.protocols || []).filter((p) => p.row?.status === status).length;
 }
 
 function diffArtifacts({ slug, artifactName, baseRun, targetRun, baseArtifact, targetArtifact, ignoreVolatile }) {
@@ -1385,8 +1397,14 @@ function copyVisibleImports() {
 }
 
 function copyRunSummary() {
-  const run = currentRun();
-  copyText(run?.summary?.content || '', 'run summary');
+  // Build a TSV-shaped summary across visible protocols.
+  const rows = visibleProtocols().map((p) => p.row || {});
+  if (rows.length === 0) return copyText('', 'run summary');
+  const headers = ['slug', 'status', 'members', 'funding', 'audits', 'schema', 'source', 'api_status', 'i18n'];
+  const tsv = [headers.join('\\t')]
+    .concat(rows.map((r) => headers.map((h) => r[h] ?? '').join('\\t')))
+    .join('\\n');
+  copyText(tsv, 'run summary');
 }
 
 async function copyText(text, label) {
