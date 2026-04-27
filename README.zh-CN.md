@@ -31,7 +31,14 @@
 /plugin install protocol-info@labrinyang
 ```
 
-可选 RootData 配置：
+可选 RootData 配置。每次运行时按以下顺序解析 key：
+
+1. `--rootdata-key <key>` CLI 参数（一次性，不写入磁盘）
+2. 调用 shell 中导出的 `ROOTDATA_API_KEY`
+3. `~/.config/protocol-info/.env`（推荐：插件用户使用，更新插件时不会被覆盖）
+4. `<repo>/.env`（仅独立 CLI；安装为插件时该路径在只读缓存里，会被忽略）
+
+把 key 持久化到插件可读的位置：
 
 ```bash
 mkdir -p ~/.config/protocol-info
@@ -39,7 +46,13 @@ echo "ROOTDATA_API_KEY=sk-..." > ~/.config/protocol-info/.env
 chmod 600 ~/.config/protocol-info/.env
 ```
 
-这个用户配置路径不在插件缓存目录内，插件更新不会覆盖它。不配置 `ROOTDATA_API_KEY` 时，管线仍然可用，只会跳过 RootData 证据。
+或者临时使用一次：
+
+```bash
+/protocol-info:protocol-info --rootdata-key sk-... --display-name "Pendle" --type fixed_rate
+```
+
+启动横幅的第一行会标明 key 的来源（`shell-env`、`--rootdata-key`，或解析到的 `.env` 路径）。不配置 `ROOTDATA_API_KEY` 时，管线仍然可用，只会跳过 RootData 证据。
 
 安装后可以直接调用 slash command：
 
@@ -130,7 +143,8 @@ Dry run：
 | `--hints <text>` | 否 | 传给 Claude 的额外调研上下文。 |
 | `--rootdata-id <int>` | 否 | RootData 项目 ID。不填时，如果设置了 `ROOTDATA_API_KEY`，fetcher 会按名称搜索。 |
 | `--batch` | 否 | 结束当前 provider，开始下一个 provider。 |
-| `--model <name>` | 否 | 覆盖 R1 和 R2 使用的模型。 |
+| `--model <name>` | 否 | 覆盖 R1 和 R2 使用的模型。manifest 默认值为 `claude-sonnet-4-6`。 |
+| `--rootdata-key <key>` | 否 | 本次运行的 RootData API key，优先于 shell env 和 `.env` 文件，不会写入磁盘。 |
 | `--max-turns <n>` | 否 | 每次 Claude 调用的 turn 上限，会向下 clamp manifest 默认值。 |
 | `--max-budget <usd>` | 否 | 单个 provider 的总 LLM 预算上限，由 orchestrator 分配给 R1、R2、i18n。 |
 | `--parallel <n>` | 否 | 并发 provider 数量，默认 `1`。 |
@@ -356,7 +370,7 @@ CLAUDE_BIN=/path/to/claude ./run.sh --display-name "Pendle" --type fixed_rate
 
 ### RootData disabled
 
-在 `<repo>/.env` 或 `~/.config/protocol-info/.env` 中设置 `ROOTDATA_API_KEY`。不设置时，RootData fetch 和 search channel 会被跳过。
+本次运行可加 `--rootdata-key sk-...`，或在 shell 中 `export ROOTDATA_API_KEY=...`，或写到 `~/.config/protocol-info/.env`（推荐）/ `<repo>/.env`。启动横幅会显示 key 来源。不配置时，RootData fetch 和 search channel 会被跳过。
 
 ### `SCHEMA_FAIL`
 

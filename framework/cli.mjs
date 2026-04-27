@@ -38,36 +38,56 @@ const DEFAULT_MANIFEST = join(SCRIPT_DIR, 'consumers', 'protocol-info', 'manifes
 // ── .env autoload (tolerant: skip if run.sh already loaded vars) ────────────
 
 function loadEnvFile(path) {
-  if (!existsSync(path)) return false;
+  if (!existsSync(path)) return { found: false, setKeys: [] };
+  let raw;
   try {
-    const raw = readFileSync(path, 'utf8');
-    for (const line of raw.split('\n')) {
-      const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
-      if (!m) continue;
-      const key = m[1];
-      let val = m[2].trim();
-      // Strip surrounding quotes
-      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-        val = val.slice(1, -1);
-      }
-      // Already-set env wins (matches bash `set -a` + `source` semantics where
-      // an exported var in the calling shell would take precedence)
-      if (process.env[key] === undefined) process.env[key] = val;
-    }
-    return true;
+    raw = readFileSync(path, 'utf8');
   } catch {
-    return false;
+    return { found: true, setKeys: [], error: 'unreadable' };
   }
+  const setKeys = [];
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!m) continue;
+    const key = m[1];
+    let val = m[2].trim();
+    // Strip surrounding quotes
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    // Treat blank values as missing — avoids shadowing a real key set in a
+    // later .env or stomping the existing process env with empty string.
+    if (val === '') continue;
+    // Already-set env wins (matches bash `set -a` + `source` semantics where
+    // an exported var in the calling shell would take precedence).
+    if (process.env[key] === undefined) {
+      process.env[key] = val;
+      setKeys.push(key);
+    }
+  }
+  return { found: true, setKeys };
 }
 
-// Skip .env autoload if ROOTDATA_API_KEY already set (e.g. exported by user
-// or sourced by run.sh). Match bash precedence.
-if (process.env.ROOTDATA_API_KEY === undefined) {
-  for (const candidate of [
-    join(SCRIPT_DIR, '.env'),
-    join(homedir(), '.config', 'protocol-info', '.env'),
-  ]) {
-    if (loadEnvFile(candidate)) break;
+// Lookup order for ROOTDATA_API_KEY (highest priority first):
+//   1. --rootdata-key CLI flag (handled in argv loop below)
+//   2. existing process.env.ROOTDATA_API_KEY
+//   3. ~/.config/protocol-info/.env  ← user-writable, survives plugin updates
+//   4. <SCRIPT_DIR>/.env             ← standalone repo only (read-only when
+//                                       installed as a Claude Code plugin)
+const ROOTDATA_ENV_CANDIDATES = [
+  join(homedir(), '.config', 'protocol-info', '.env'),
+  join(SCRIPT_DIR, '.env'),
+];
+let rootdataKeyOrigin = process.env.ROOTDATA_API_KEY ? 'shell-env' : null;
+if (!process.env.ROOTDATA_API_KEY) {
+  for (const candidate of ROOTDATA_ENV_CANDIDATES) {
+    const r = loadEnvFile(candidate);
+    if (r.found && r.setKeys.includes('ROOTDATA_API_KEY')) {
+      rootdataKeyOrigin = candidate;
+      break;
+    }
   }
 }
 
@@ -89,7 +109,8 @@ Per-provider flags (use --batch to separate multiple providers):
   --batch                 flush accumulated provider; start a new one
 
 Run-wide flags:
-  --model <name>          override Claude model (R1+R2)
+  --model <name>          override Claude model for R1+R2 (manifest default: claude-sonnet-4-6)
+  --rootdata-key <key>    ROOTDATA_API_KEY for this run; overrides env + .env files
   --max-turns <n>         per-Claude-call turn cap (clamps manifest default)
   --max-budget <usd>      single-provider total LLM cap
   --parallel <n>          default 1; dry-run forces 1
@@ -160,6 +181,14 @@ for (let i = 0; i < argv.length; i++) {
   switch (a) {
     case '--manifest':       manifestPath = nextArg(); break;
     case '--model':          model = nextArg(); break;
+    case '--rootdata-key': {
+      const key = nextArg().trim();
+      if (key) {
+        process.env.ROOTDATA_API_KEY = key;
+        rootdataKeyOrigin = '--rootdata-key';
+      }
+      break;
+    }
     case '--max-turns':      maxTurnsCap = nextArg(); break;
     case '--max-budget':     maxBudgetCap = nextArg(); break;
     case '--parallel':       parallel = parseInt(nextArg(), 10); break;
@@ -237,11 +266,15 @@ const RUN_TS = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/
 const outputRoot = join(SCRIPT_DIR, 'out');
 const runSummaryDir = join(outputRoot, '_runs', RUN_TS);
 
+const rootdataLabel = ROOTDATA_ENABLED
+  ? `enabled (Round 2) [key from ${rootdataKeyOrigin || 'shell-env'}]`
+  : 'disabled (single-round; no ROOTDATA_API_KEY found — pass --rootdata-key, export the env var, or write ~/.config/protocol-info/.env)';
+
 console.log('=== Protocol-info crawl ===');
 console.log(`Providers:   ${providers.length}`);
 console.log(`Model:       ${model || 'default'}`);
 console.log(`Parallel:    ${parallel}`);
-console.log(`RootData:    ${ROOTDATA_ENABLED ? 'enabled (Round 2)' : 'disabled (single-round)'}`);
+console.log(`RootData:    ${rootdataLabel}`);
 console.log(`i18n:        ${i18nLabel} [model=${i18nModel || 'default'}, parallel=${i18nParallel}]`);
 console.log(`Run id:      ${RUN_TS}`);
 console.log(`Out root:    ${outputRoot}`);

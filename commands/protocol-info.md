@@ -68,12 +68,20 @@ Do not ask the script to stream raw Claude/debug logs. They are written under `o
 
 ## Environment
 
-`ROOTDATA_API_KEY` (optional) enables Round 2 reconciliation. Lookup order:
-1. `$ROOTDATA_API_KEY` in the shell Claude Code inherits
-2. `$HOME/.config/protocol-info/.env` (recommended for plugin users — writable, persists across plugin updates)
-3. `.env` next to `run.sh` (standalone CLI only — when installed as a plugin this is the read-only plugin cache)
+`ROOTDATA_API_KEY` (optional) enables Round 2 reconciliation. Lookup order (highest priority first):
+1. `--rootdata-key <key>` flag passed to the slash command (one-shot; never written to disk)
+2. `$ROOTDATA_API_KEY` in the shell Claude Code inherits
+3. `$HOME/.config/protocol-info/.env` (recommended for plugin users — writable, persists across plugin updates)
+4. `.env` next to `run.sh` (standalone CLI only — when installed as a plugin this is the read-only plugin cache)
 
-To enable Round 2 via plugin, run this once:
+The runner's startup banner reports which source supplied the key.
+
+To enable Round 2 via plugin without writing a file:
+```
+/protocol-info:protocol-info --rootdata-key sk-... --display-name "Pendle" --type fixed_rate
+```
+
+Or persist the key once:
 ```bash
 mkdir -p ~/.config/protocol-info
 echo "ROOTDATA_API_KEY=sk-..." > ~/.config/protocol-info/.env

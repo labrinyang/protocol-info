@@ -4,6 +4,48 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-04-27
+
+### Added
+- `out/index.html` — self-contained local browser for the output tree.
+  Filter runs by status / locale / consumer, inspect key artifacts, copy
+  absolute file paths, copy a single `record.import.json`, or copy a merged
+  import JSON for the visible records. Refreshed automatically on every run;
+  embeds review artifacts only (raw Claude/debug logs stay under `_debug/`).
+- Cross-run path-level JSON compare in `out/index.html`: pick the same
+  protocol from two runs and see a path-level diff (added / removed /
+  changed) over `record.json`.
+- `--rootdata-key <key>` CLI flag — pass a RootData API key for a single
+  run without writing a `.env` file. Overrides shell env and `.env` files.
+  Never persisted.
+- Startup banner now reports the resolved key origin
+  (`shell-env`, `--rootdata-key`, or the `.env` path that supplied it),
+  so misconfigured installs are obvious at a glance.
+- Quiet progress mode for the orchestrator (less noisy stderr during
+  multi-slug batch runs).
+
+### Changed
+- Default R1/R2 model is now Sonnet (`claude-sonnet-4-6`), declared via a new
+  top-level `model_default` field in `consumers/protocol-info/manifest.json`.
+  Override per-run with `--model <name>`. i18n is unchanged: still Haiku
+  (`claude-haiku-4-5-20251001`) via `manifest.i18n.model_default`.
+- `ROOTDATA_API_KEY` lookup now prefers `~/.config/protocol-info/.env`
+  over `<repo>/.env`, matching the documented order. Plugin users with a
+  stale repo `.env` in the read-only plugin cache no longer shadow their
+  user-writable config. Standalone-repo users with only one `.env` are
+  unaffected.
+- `.env` parser now skips comment lines and treats blank values as missing,
+  so an empty `ROOTDATA_API_KEY=` line no longer disables the fetcher
+  silently.
+- README rewritten in English; `README.zh-CN.md` kept in sync.
+- Dashboard export (`record.import.json`) clarified as the canonical
+  import envelope; `record.json` documented as the review/audit artifact.
+
+### Fixed
+- Schema: tightened audit report date validation.
+- Workflow output alignment for the protocol-info consumer.
+- Closed 11 gaps surfaced by the chain-trace audit of the framework.
+
 ## [1.0.0] — 2026-04-25
 
 Major migration: monolithic bash crawler → reusable Deep Research framework.

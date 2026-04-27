@@ -587,6 +587,13 @@ export async function run({
   if (!runId) throw new Error('run() requires runId');
   const runMetaDir = runIndexDir(outputRoot, runId);
 
+  // Resolve effective R1/R2 model: explicit --model wins, else manifest's
+  // model_default, else null (Claude CLI's own default). i18n is unaffected
+  // and continues to read manifest.i18n.model_default (Haiku) via the i18n CLI.
+  if (!options.model && manifest.model_default) {
+    options = { ...options, model: manifest.model_default };
+  }
+
   await mkdir(outputRoot, { recursive: true });
   if (!dryRun) {
     await mkdir(runMetaDir, { recursive: true });

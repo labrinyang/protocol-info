@@ -1,6 +1,7 @@
 {
   "name": "protocol-info",
-  "version": "1.0.0",
+  "version": "1.1.0",
+  "model_default": "claude-sonnet-4-6",
   "schemas": { "full": "./schemas/full.json" },
   "fetchers": [
     { "name": "rootdata", "module": "./fetchers/rootdata.mjs", "required_env": ["ROOTDATA_API_KEY"], "optional": true, "search": { "enabled": true, "types": ["project", "person"], "max_queries_per_round": 4 } },

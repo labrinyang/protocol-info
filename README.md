@@ -31,7 +31,14 @@ Recommended installation:
 /plugin install protocol-info@labrinyang
 ```
 
-Optional RootData configuration:
+Optional RootData configuration. Pick whichever fits your workflow — the runner looks them up in this order on every run:
+
+1. `--rootdata-key <key>` CLI flag (one-shot; never written to disk)
+2. `ROOTDATA_API_KEY` exported in the calling shell
+3. `~/.config/protocol-info/.env` (recommended for plugin users — survives plugin updates)
+4. `<repo>/.env` (standalone CLI only; ignored when installed via the plugin cache)
+
+Persist a key for the plugin install:
 
 ```bash
 mkdir -p ~/.config/protocol-info
@@ -39,7 +46,13 @@ echo "ROOTDATA_API_KEY=sk-..." > ~/.config/protocol-info/.env
 chmod 600 ~/.config/protocol-info/.env
 ```
 
-This user config path is outside the plugin cache, so plugin updates will not overwrite it. Without `ROOTDATA_API_KEY`, the pipeline still works and simply skips RootData-backed evidence.
+Or use it once without writing a file:
+
+```bash
+/protocol-info:protocol-info --rootdata-key sk-... --display-name "Pendle" --type fixed_rate
+```
+
+The first line of the run banner reports which source the key came from (`shell-env`, `--rootdata-key`, or the resolved `.env` path). Without `ROOTDATA_API_KEY`, the pipeline still works and simply skips RootData-backed evidence.
 
 After installation, you can call the slash command directly:
 
@@ -130,7 +143,8 @@ Dry run:
 | `--hints <text>` | No | Extra research context passed to Claude. |
 | `--rootdata-id <int>` | No | RootData project ID. If omitted, the fetcher searches by name when `ROOTDATA_API_KEY` is set. |
 | `--batch` | No | Flushes the current provider and starts another one. |
-| `--model <name>` | No | Override model for R1 and R2. |
+| `--model <name>` | No | Override model for R1 and R2. Manifest default: `claude-sonnet-4-6`. |
+| `--rootdata-key <key>` | No | RootData API key for this run; overrides shell env and `.env` files. Never persisted. |
 | `--max-turns <n>` | No | Per-Claude-call turn cap; clamps manifest defaults down. |
 | `--max-budget <usd>` | No | Total single-provider LLM budget cap. The orchestrator splits it across R1, R2, and i18n. |
 | `--parallel <n>` | No | Number of providers to run concurrently. Default: `1`. |
@@ -356,7 +370,7 @@ CLAUDE_BIN=/path/to/claude ./run.sh --display-name "Pendle" --type fixed_rate
 
 ### RootData is disabled
 
-Set `ROOTDATA_API_KEY` in either `<repo>/.env` or `~/.config/protocol-info/.env`. Without it, RootData fetch and search channels are skipped.
+Pass `--rootdata-key sk-...` for a one-shot run, export `ROOTDATA_API_KEY` in your shell, or write it to `~/.config/protocol-info/.env` (preferred) or `<repo>/.env`. The startup banner shows which source was used. Without a key, RootData fetch and search channels are skipped.
 
 ### `SCHEMA_FAIL`
 
