@@ -97,3 +97,11 @@ export async function log(outDir, { slug, limit = 50 }) {
       };
     });
 }
+
+export async function diff(outDir, { slug, fromSha, toSha }) {
+  const { stdout } = await git(
+    ['diff', fromSha, toSha, '--', `${slug}/`],
+    { cwd: outDir }
+  );
+  return stdout;
+}

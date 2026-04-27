@@ -155,4 +155,21 @@ export const tests = [
       assert.deepEqual(entries, []);
     },
   },
+  {
+    name: 'diff() returns unified diff between two commits',
+    fn: async () => {
+      const { ensureRepo, commit, diff } = await import('../../framework/version-store.mjs');
+      const { writeFile, mkdir } = await import('node:fs/promises');
+      const dir = await makeTempOut();
+      await ensureRepo(dir);
+      await mkdir(join(dir, 'pendle'), { recursive: true });
+      await writeFile(join(dir, 'pendle', 'record.json'), '{"v":1}\n');
+      const sha1 = await commit(dir, { paths: ['pendle/'], message: 'a', runId: 'A' });
+      await writeFile(join(dir, 'pendle', 'record.json'), '{"v":2}\n');
+      const sha2 = await commit(dir, { paths: ['pendle/'], message: 'b', runId: 'B' });
+      const out = await diff(dir, { slug: 'pendle', fromSha: sha1, toSha: sha2 });
+      assert.match(out, /-{"v":1}/);
+      assert.match(out, /\+{"v":2}/);
+    },
+  },
 ];
