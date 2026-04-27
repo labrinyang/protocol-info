@@ -4,6 +4,60 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] — 2026-04-27
+
+**Breaking change.** Output layout flipped from `out/<runId>/<slug>/` to
+`out/<slug>/`. `out/` is now a local git repo (`out/.git/`) with one
+commit per successful crawl, edit, or restore.
+
+### Added
+- `framework/version-store.mjs`: real-git wrapper providing `ensureRepo`,
+  `commit`, `log`, `diff`, `restore`, `isClean`. `out/` becomes a local
+  git repo on first crawl. Pure shell-out via `child_process.spawn`, no
+  new dependencies.
+- Per-slug auto-commit on successful crawl. Each crawl produces one
+  commit, e.g. `crawl(pendle): R1+R2 ok`, with a `Run-Id:` git trailer
+  carrying the batch identifier.
+- `out/.runs.log`: append-only TSV of (timestamp, runId, slugs, outcome).
+  Powers the runs filter in the browser without putting run-id back in
+  any data path.
+- `--force-overwrite` flag: opt-in escape hatch to overwrite a slug
+  with uncommitted edits. Without it, a fresh crawl refuses to clobber
+  a manually-edited record (the no-overwrite-on-fail safety guarantee).
+
+### Changed
+- Path layout: `out/<slug>/record.json` is the canonical record (no
+  run-id segment in the data path).
+- Per-batch scratch (`.summary-rows/`, `.worker-logs/`, `summary.tsv`)
+  moved to `out/.runs/<runId>/` (gitignored).
+- Browser: protocols-first nav with per-protocol git history pane;
+  runs become a secondary `<details>` filter sourced from `.runs.log`.
+  Diff view compares git commits (HEAD vs HEAD~1 by default), not run
+  directories. ~260 lines of across-runs comparison code dropped.
+- `framework/cli.mjs`: argv parsing extracted to a pure exported
+  `parseArgv(argv)` function so the `--force-overwrite` plumb path is
+  unit-testable end-to-end.
+
+### Removed
+- `protocolRunDir(out, slug, runId)` export — replaced by
+  `protocolDir(out, slug)`.
+- Across-runs JS comparison helpers in `out-browser.mjs`
+  (`buildComparePanel`, `bindComparePanel`, `diffArtifacts`, `walkDiff`,
+  `arrayIdentity`, `isVolatilePath`, `formatDiffSummary`,
+  `renderDiffItem`).
+- Per-slug `summary.tsv` (was never written; help text was stale).
+
+### Migration
+Old `out/<runId>/<slug>/` directories are left untouched but invisible
+to the new browser. Clear them with `rm -rf out/2026*/` when convenient.
+New records land at `out/<slug>/` automatically. See README's
+"Upgrading from 1.x" subsection for details.
+
+### Deferred to v2.1.0
+The seven user-facing stage CLIs (`i18n`, `get`, `set`, `history`,
+`diff`, `restore`, `refresh`). v2.0 ships the foundation; v2.1 adds the
+decoupled commands that run on top of an existing `out/<slug>/`.
+
 ## [1.2.1] — 2026-04-27
 
 ### Changed

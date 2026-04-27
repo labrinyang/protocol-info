@@ -1,6 +1,6 @@
 {
   "name": "protocol-info",
-  "version": "1.2.1",
+  "version": "2.0.0",
   "model_default": "claude-sonnet-4-6",
   "schemas": { "full": "./schemas/full.json" },
   "fetchers": [
