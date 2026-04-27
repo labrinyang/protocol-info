@@ -13,12 +13,16 @@ export function buildImportFile({ record, translations, sourceLocale = 'en', str
     for (const f of stripFields) delete out[f];
     return out;
   };
+  const withLocale = (r, locale) => {
+    const { slug, ...rest } = r;
+    return slug === undefined ? { locale, ...rest } : { slug, locale, ...rest };
+  };
 
-  const baseEn = { ...stripped(record), locale: sourceLocale };
+  const baseEn = withLocale(stripped(record), sourceLocale);
   const data = [baseEn];
   for (const [code, tr] of Object.entries(translations || {})) {
     const merged = mergeTranslated(stripped(record), tr);
-    data.push({ ...merged, locale: dashboardLocaleFor(code) });
+    data.push(withLocale(merged, dashboardLocaleFor(code)));
   }
 
   return {

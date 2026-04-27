@@ -35,15 +35,16 @@ Claude Code captures Bash stdout/stderr as plain text command output, not rich m
 - final `=== Summary ===` table
 - an `Out browser:` path to `out/index.html`
 
-Do not ask the script to stream raw Claude/debug logs. They are written under `out/<slug>/<run-id>/_debug/`. The generated `out/index.html` is a static local page for filtering runs and copying key artifacts.
+Do not ask the script to stream raw Claude/debug logs. They are written under `out/<slug>/<run-id>/_debug/`. The generated `out/index.html` is a static local page for filtering runs, comparing same-protocol JSON across runs, and copying key artifacts.
 
 ## After the run finishes
 
 1. **Read the "=== Summary ===" block** from stdout and relay it verbatim to the user
 2. For each row where `status=OK`, point to:
-   - `out/<slug>/<run-id>/record.json` — source-language record for DB import
+   - `out/<slug>/<run-id>/record.import.json` — dashboard import envelope `{version, exportedAt, data:[...]}`
+   - `out/<slug>/<run-id>/record.json` — source-language crawler record for review/schema audit
    - `out/<slug>/<run-id>/record.full.json` — inline-i18n merged version (only if translations ran)
-   - `out/index.html` — local browser for filtering runs and copying paths/JSON
+   - `out/index.html` — local browser for filtering runs, comparing same-protocol JSON, and copying paths/JSON
 3. If any row shows `CRAWL_FAIL`, `PARSE_FAIL`, or `SCHEMA_FAIL`, call it out explicitly — stderr already dumped the key failure details, no need to re-investigate unless the user asks
 4. If `i18n` column shows partial failures (e.g. `3/19`), mention which locales failed (read `out/<slug>/<run-id>/_debug/i18n/failures.log` if needed)
 

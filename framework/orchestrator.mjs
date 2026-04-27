@@ -776,7 +776,8 @@ export async function run({
   console.log('=== Summary ===');
   printPadded(lines);
   console.log('');
-  console.log(`Next: review ${outputRoot}/<slug>/${runId}/record.json (or record.full.json if i18n).`);
+  console.log(`Review source: ${outputRoot}/<slug>/${runId}/record.json`);
+  console.log(`Import JSON:   ${outputRoot}/<slug>/${runId}/record.import.json`);
   console.log(`Batch summary: ${summaryFile}`);
   if (outBrowserFile) console.log(`Out browser: ${outBrowserFile}`);
 

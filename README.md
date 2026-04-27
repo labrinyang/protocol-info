@@ -160,16 +160,16 @@ Every completed run also refreshes:
 out/index.html
 ```
 
-`out/index.html` is a self-contained local browser for the output tree. Open it directly in a browser to filter runs, inspect key artifacts, copy absolute file paths, copy one `record.import.json`, or copy one merged import JSON for the visible records. It embeds only review artifacts; raw Claude/debug logs stay under `_debug/`.
+`out/index.html` is a self-contained local browser for the output tree. Open it directly in a browser to filter runs, inspect key artifacts, compare the same protocol across runs with a path-level JSON diff, copy absolute file paths, copy one `record.import.json`, or copy one merged import JSON for the visible records. It embeds only review artifacts; raw Claude/debug logs stay under `_debug/`.
 
 Typical files:
 
 | File | Purpose |
 | --- | --- |
-| `../index.html` | Static local browser for filtering runs and copying key outputs. |
-| `record.json` | Source-language `EarnProtocolInfo` record that passed schema validation. |
+| `../index.html` | Static local browser for filtering runs, comparing protocol JSON across runs, and copying key outputs. |
+| `record.json` | Source-language `EarnProtocolInfo` record that passed schema validation. Review/audit file, not the dashboard import envelope. |
 | `record.full.json` | Inline i18n version, present only when translations were generated. |
-| `record.import.json` | Dashboard import envelope: `{ version, exportedAt, data: [...] }`. `sources` is stripped. |
+| `record.import.json` | Dashboard import envelope: `{ version, exportedAt, data: [...] }`. Use this for import. `sources` is stripped. |
 | `findings.json` | Field-level evidence with source URLs and confidence. |
 | `gaps.json` | Unresolved or weak fields, including attempted search paths. |
 | `changes.json` | R2 reconciliation changes and reasons. |

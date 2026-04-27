@@ -160,16 +160,16 @@ out/_runs/<run-id>/
 out/index.html
 ```
 
-`out/index.html` 是一个自包含的本地管理页。可以直接用浏览器打开，用来筛选 run、查看关键产物、复制绝对路径、复制单个 `record.import.json`，或为当前可见记录复制一份合并后的 import JSON。它只嵌入审核用的关键产物；Claude/debug 原始日志仍保留在 `_debug/`。
+`out/index.html` 是一个自包含的本地管理页。可以直接用浏览器打开，用来筛选 run、查看关键产物、对同一个 protocol 的不同 run 做路径级 JSON diff、复制绝对路径、复制单个 `record.import.json`，或为当前可见记录复制一份合并后的 import JSON。它只嵌入审核用的关键产物；Claude/debug 原始日志仍保留在 `_debug/`。
 
 常见文件：
 
 | 文件 | 用途 |
 | --- | --- |
-| `../index.html` | 静态本地管理页，用于筛选 run 和复制关键输出。 |
-| `record.json` | 通过 schema 校验的源语言 `EarnProtocolInfo` 记录。 |
+| `../index.html` | 静态本地管理页，用于筛选 run、对比同协议 JSON，并复制关键输出。 |
+| `record.json` | 通过 schema 校验的源语言 `EarnProtocolInfo` 记录。用于审核/schema audit，不是 dashboard 导入信封。 |
 | `record.full.json` | 内联 i18n 版本，仅在生成翻译时存在。 |
-| `record.import.json` | Dashboard 导入信封：`{ version, exportedAt, data: [...] }`，已移除 `sources`。 |
+| `record.import.json` | Dashboard 导入信封：`{ version, exportedAt, data: [...] }`。导入时使用这个文件，已移除 `sources`。 |
 | `findings.json` | 字段级证据，包含来源 URL 和 confidence。 |
 | `gaps.json` | 未解决或弱证据字段，以及已尝试的搜索路径。 |
 | `changes.json` | R2 对账改动及原因。 |

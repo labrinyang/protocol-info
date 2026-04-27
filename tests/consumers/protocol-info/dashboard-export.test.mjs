@@ -13,6 +13,7 @@ export const tests = [
       assert.equal(file.data.length, 1);
       assert.equal(file.data[0].locale, 'en');
       assert.equal('sources' in file.data[0], false);
+      assert.deepEqual(Object.keys(file.data[0]).slice(0, 3), ['slug', 'locale', 'displayName']);
     },
   },
   {
