@@ -6,6 +6,7 @@
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { log as gitLog } from './version-store.mjs';
 
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_DIR = dirname(FRAMEWORK_DIR);
@@ -152,6 +153,10 @@ export async function collectOutIndex(outDir = DEFAULT_OUT_ROOT) {
       dir,
     });
   }
+  for (const p of protocols) {
+    try { p.history = await gitLog(root, { slug: p.slug, limit: 20 }); }
+    catch { p.history = []; }
+  }
   protocols.sort((a, b) => a.slug.localeCompare(b.slug));
 
   const runsLog = await readRunsLog(root);
@@ -193,6 +198,7 @@ async function collectLegacyView(outputRoot) {
       relDir: relPath(outputRoot, p.dir),
       row: normalizeRow(row, { slug: p.slug, status: metaStatus || 'unknown' }),
       artifacts,
+      history: p.history || [],
     });
   }
   run.rows = summaryRows;
@@ -1000,6 +1006,16 @@ function renderDetail() {
       : artifact.content
     : 'No artifacts found for this record.';
   const compare = buildComparePanel(protocol);
+  const history = Array.isArray(protocol.history) ? protocol.history : [];
+  const historyHtml = history.length === 0
+    ? ''
+    : '<section class="history"><h3>History (' + history.length + ')</h3><ul>' +
+        history.map((h) =>
+          '<li><code>' + esc(h.sha) + '</code> ' + esc(String(h.ts || '').slice(0, 16)) +
+          ' — ' + esc(h.message || '') +
+          ' <span class="run-id">' + esc(h.runId || '') + '</span></li>'
+        ).join('') +
+        '</ul></section>';
   node.innerHTML =
     '<div class="detail-head">' +
       '<div><h2>' + esc(protocol.slug) + '</h2><div class="subpath">' + esc(protocol.relDir || '-') + '</div></div>' +
@@ -1017,6 +1033,7 @@ function renderDetail() {
       '<button class="action" id="copy-path" ' + (!artifact ? 'disabled' : '') + '>Copy path</button>' +
       (artifact ? '<a class="action" href="' + esc(artifact.href) + '" target="_blank" rel="noreferrer">Open file</a>' : '') +
     '</div>' +
+    historyHtml +
     compare.html +
     '<div class="preview-wrap">' +
       '<div class="preview-top"><span>' + esc(artifact?.name || 'no file') + '</span><span>' + esc(artifact?.sizeLabel || '') + '</span></div>' +

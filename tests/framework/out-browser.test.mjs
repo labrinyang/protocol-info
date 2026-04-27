@@ -77,4 +77,28 @@ export const tests = [
       }
     },
   },
+  {
+    name: 'collectOutIndex attaches per-slug git history',
+    fn: async () => {
+      const { ensureRepo, commit } = await import('../../framework/version-store.mjs');
+      const dir = await mkdtemp(join(tmpdir(), 'pi-hist-'));
+      try {
+        await ensureRepo(dir);
+        await mkdir(join(dir, 'pendle'), { recursive: true });
+        await writeFile(join(dir, 'pendle', 'record.json'), '{"v":1}');
+        await commit(dir, { paths: ['pendle/'], message: 'crawl(pendle): R1+R2 ok', runId: 'R1' });
+        await writeFile(join(dir, 'pendle', 'record.json'), '{"v":2}');
+        await commit(dir, { paths: ['pendle/'], message: 'set(pendle) v', runId: 'R2' });
+
+        const idx = await collectOutIndex(dir);
+        assert.equal(idx.protocols.length, 1);
+        const hist = idx.protocols[0].history;
+        assert.equal(hist.length, 2);
+        assert.equal(hist[0].message, 'set(pendle) v');
+        assert.equal(hist[1].message, 'crawl(pendle): R1+R2 ok');
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  },
 ];
