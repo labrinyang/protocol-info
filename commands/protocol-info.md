@@ -39,14 +39,22 @@ Do not ask the script to stream raw Claude/debug logs. They are written under `o
 
 ## After the run finishes
 
-1. **Read the "=== Summary ===" block** from stdout and relay it verbatim to the user
-2. For each row where `status=OK`, point to:
-   - `out/<slug>/<run-id>/record.import.json` — dashboard import envelope `{version, exportedAt, data:[...]}`
-   - `out/<slug>/<run-id>/record.json` — source-language crawler record for review/schema audit
-   - `out/<slug>/<run-id>/record.full.json` — inline-i18n merged version (only if translations ran)
-   - `out/index.html` — local browser for filtering runs, comparing same-protocol JSON, and copying paths/JSON
-3. If any row shows `CRAWL_FAIL`, `PARSE_FAIL`, or `SCHEMA_FAIL`, call it out explicitly — stderr already dumped the key failure details, no need to re-investigate unless the user asks
-4. If `i18n` column shows partial failures (e.g. `3/19`), mention which locales failed (read `out/<slug>/<run-id>/_debug/i18n/failures.log` if needed)
+Keep the reply tight. The reviewer's main tool is `out/index.html` — surface it first and let them open it. Per-record JSON paths are inside the HTML browser already, so do not enumerate them in the reply.
+
+Required reply shape (in this order, nothing else unless something failed):
+
+1. **One-line outcome.** Pull the OK / FAIL / PARTIAL counts from the `=== Summary ===` block. Example: `Done — 2 OK, 0 fail. i18n: zh_CN, ja_JP, en_US.` Skip the i18n clause when `--i18n none` or unset.
+2. **Out browser link.** Take the `Out browser:` path printed at the end of stdout and surface it as the primary call to action. Format:
+
+   > **Open the run browser**: `<absolute path to out/index.html>` — Cmd-click to open in your browser (macOS), or copy the path.
+
+   Use the absolute path verbatim from stdout (do not abbreviate to `out/index.html`); Claude Code makes absolute paths clickable.
+3. **Failures only when present.** If any row shows `CRAWL_FAIL`, `PARSE_FAIL`, or `SCHEMA_FAIL`, list those slugs after the link with the failure stage from the summary — stderr already dumped the details, do not re-investigate unless the user asks. If `i18n` is partial (`3/19`), name the locales that failed (read `out/<slug>/<run-id>/_debug/i18n/failures.log` only if the user asks).
+
+Do **not**:
+- Print the full `=== Summary ===` table — the HTML browser shows the same data with filtering.
+- List `record.import.json` / `record.json` / `record.full.json` paths per slug — they're one click away inside the browser.
+- Add a "next steps" / "review and import" paragraph — the Cmd-click hint above is the next step.
 
 ## Do not
 

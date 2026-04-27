@@ -4,6 +4,16 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] — 2026-04-27
+
+### Changed
+- `commands/protocol-info.md` post-run reply rewritten. The reply now
+  leads with the absolute `out/index.html` path plus a Cmd-click hint
+  ("Cmd-click to open in your browser"), instead of dumping the full
+  summary table and per-record JSON paths. Failures are still surfaced,
+  but the HTML browser is the primary review surface — per-record
+  paths are one click away inside it.
+
 ## [1.2.0] — 2026-04-27
 
 ### Changed
