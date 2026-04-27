@@ -46,7 +46,8 @@ const handoffOut = arg('handoff-out');
 const claudeBin = process.env.CLAUDE_BIN || 'claude';
 const concurrency = parseInt(arg('concurrency', '4'), 10);
 
-// Per-call caps clamp manifest defaults *down* (never raise them).
+// Stage budget caps clamp manifest defaults down. R1 is parallel, so the stage
+// total is split across subtasks by their manifest default weights.
 const maxTurnsCap = arg('max-turns', null);
 const maxBudgetCap = arg('max-budget', null);
 const turnsCap = maxTurnsCap ? Math.max(1, parseInt(maxTurnsCap, 10)) : null;
@@ -63,6 +64,8 @@ const manifest = await loadManifest(manifestPath);
 const systemPrompt = await readFile(manifest._abs.system_prompt, 'utf8');
 const findingsSchema = JSON.parse(await readFile(join(FRAMEWORK_DIR, 'schemas/findings.schema.json'), 'utf8'));
 const gapsSchema = JSON.parse(await readFile(join(FRAMEWORK_DIR, 'schemas/gaps.schema.json'), 'utf8'));
+const r1DefaultBudget = (manifest._abs.subtasks || [])
+  .reduce((sum, st) => sum + Number(st.max_budget_usd || 0), 0);
 
 // Evidence is loaded defensively (try/catch) because in run.sh's parallel pipeline
 // the fetcher writes $rootdata_pkt concurrently with r1.mjs starting; once Phase 4
@@ -96,7 +99,9 @@ const tasks = manifest._abs.subtasks.map(st => async () => {
     const effSubtask = {
       ...st,
       max_turns: turnsCap != null ? Math.min(st.max_turns, turnsCap) : st.max_turns,
-      max_budget_usd: budgetCap != null ? Math.min(st.max_budget_usd, budgetCap) : st.max_budget_usd,
+      max_budget_usd: budgetCap != null && r1DefaultBudget > 0
+        ? Math.min(st.max_budget_usd, budgetCap * (Number(st.max_budget_usd || 0) / r1DefaultBudget))
+        : st.max_budget_usd,
     };
     console.error(`[r1:${st.name}] starting (max_budget=$${effSubtask.max_budget_usd} max_turns=${effSubtask.max_turns})`);
     const r = await runSubtask({

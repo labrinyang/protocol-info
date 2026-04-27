@@ -4,7 +4,7 @@ argument-hint: "--display-name <name> --type <simple_earn|fixed_rate|staking> [-
 allowed-tools: Bash
 ---
 
-# /protocol-info
+# /protocol-info:protocol-info
 
 Run the protocol-info crawler pipeline with the user's arguments. The pipeline is a bash script (`run.sh`) bundled with this plugin; it does:
 
@@ -22,16 +22,16 @@ Execute exactly:
 bash "${CLAUDE_PLUGIN_ROOT}/run.sh" $ARGUMENTS
 ```
 
-Do not re-parse the args or transform them — pass through verbatim. If the user didn't provide the two required flags (`--display-name` and `--type`), the script will error clearly; don't pre-validate.
+Do not re-parse the args or transform them — pass through verbatim. If the user omits required arguments, the script will error clearly; don't pre-validate.
 
 ## After the run finishes
 
 1. **Read the "=== Summary ===" block** from stdout and relay it verbatim to the user
 2. For each row where `status=OK`, point to:
-   - `out/<timestamp>/<slug>/record.json` — source-language record for DB import
-   - `out/<timestamp>/<slug>/record.full.json` — inline-i18n merged version (only if translations ran)
+   - `out/<slug>/<run-id>/record.json` — source-language record for DB import
+   - `out/<slug>/<run-id>/record.full.json` — inline-i18n merged version (only if translations ran)
 3. If any row shows `CRAWL_FAIL`, `PARSE_FAIL`, or `SCHEMA_FAIL`, call it out explicitly — stderr already dumped details, no need to re-investigate unless the user asks
-4. If `i18n` column shows partial failures (e.g. `3/19`), mention which locales failed (read `out/<ts>/<slug>/_debug/i18n/failures.log` if needed)
+4. If `i18n` column shows partial failures (e.g. `3/19`), mention which locales failed (read `out/<slug>/<run-id>/_debug/i18n/failures.log` if needed)
 
 ## Do not
 
@@ -43,12 +43,12 @@ Do not re-parse the args or transform them — pass through verbatim. If the use
 ## Examples the user may invoke
 
 ```
-/protocol-info --display-name "Pendle" --type fixed_rate
-/protocol-info --display-name "Pendle" --type fixed_rate --i18n all
-/protocol-info --parallel 4 --i18n zh_CN,ja_JP \
+/protocol-info:protocol-info --display-name "Pendle" --type fixed_rate
+/protocol-info:protocol-info --display-name "Pendle" --type fixed_rate --i18n all
+/protocol-info:protocol-info --parallel 4 --i18n zh_CN,ja_JP \
   --batch --display-name "Pendle" --type fixed_rate \
   --batch --display-name "Morpho" --type simple_earn
-/protocol-info --dry-run --display-name "Pendle" --type fixed_rate
+/protocol-info:protocol-info --dry-run --display-name "Pendle" --type fixed_rate
 ```
 
 ## Environment

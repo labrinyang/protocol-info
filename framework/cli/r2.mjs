@@ -93,7 +93,7 @@ const baseBudget = manifest.reconcile.max_budget_usd ?? 1.50;
 const r2Subtask = {
   name: 'reconcile',
   max_turns: turnsCap != null ? Math.min(baseTurns, turnsCap) : baseTurns,
-  max_budget_usd: budgetCap != null ? Math.min(baseBudget, budgetCap) : baseBudget,
+  max_budget_usd: baseBudget,
 };
 
 // Lazy-load search fetchers (only those declared with search.enabled=true)
@@ -114,8 +114,20 @@ for (const f of manifest._abs.fetchers || []) {
 
 let state = { record: r1Record, findings: r1Findings, changes: [], gaps: r1Gaps };
 const maxRounds = manifest.reconcile.max_research_rounds ?? 3;
+let budgetRemaining = budgetCap;
+let successfulRounds = 0;
+let firstFailure = null;
 
 for (let round = 1; round <= maxRounds; round++) {
+  const roundsLeft = maxRounds - round + 1;
+  const roundBudget = budgetRemaining != null
+    ? Math.min(baseBudget, budgetRemaining / roundsLeft)
+    : baseBudget;
+  if (!(roundBudget > 0)) {
+    firstFailure = firstFailure || 'r2 stage budget exhausted before synthesis';
+    break;
+  }
+  const roundSubtask = { ...r2Subtask, max_budget_usd: roundBudget };
   const userPrompt = render(reconcileTmpl, {
     RECORD: JSON.stringify(state.record, null, 2),
     FINDINGS: JSON.stringify(state.findings, null, 2),
@@ -125,11 +137,11 @@ for (let round = 1; round <= maxRounds; round++) {
     SCHEMA: JSON.stringify(fullSchema, null, 2),
   });
 
-  console.error(`[r2] round ${round}/${maxRounds} starting (max_budget=$${r2Subtask.max_budget_usd} max_turns=${r2Subtask.max_turns})`);
+  console.error(`[r2] round ${round}/${maxRounds} starting (max_budget=$${roundSubtask.max_budget_usd} max_turns=${roundSubtask.max_turns})`);
 
   const result = await runSubtask({
     claudeBin,
-    subtask: r2Subtask,
+    subtask: roundSubtask,
     systemPrompt: '',
     userPrompt,
     schemaSlice: fullSchema,
@@ -150,8 +162,12 @@ for (let round = 1; round <= maxRounds; round++) {
   }
 
   if (!result.ok) {
-    console.error(`[r2] round ${round} failed: ${result.error}; keeping previous state and stopping`);
+    console.error(`[r2] round ${round} failed: ${result.error}; stopping synthesis`);
+    firstFailure = firstFailure || result.error || `round ${round} failed`;
     break;
+  }
+  if (budgetRemaining != null) {
+    budgetRemaining = Math.max(0, budgetRemaining - Number(result.cost_usd || 0));
   }
 
   state = mergeR2(state, {
@@ -160,6 +176,7 @@ for (let round = 1; round <= maxRounds; round++) {
     changes: result.changes,
     gaps: result.gaps,
   });
+  successfulRounds += 1;
 
   const requests = result.search_requests || [];
   if (requests.length === 0 || round === maxRounds) break;
@@ -187,6 +204,11 @@ for (let round = 1; round <= maxRounds; round++) {
 if (evidencePath) {
   try { await writeFile(evidencePath, JSON.stringify(evidence, null, 2)); }
   catch (err) { console.error(`[r2] could not write enriched evidence: ${err.message}`); }
+}
+
+if (successfulRounds === 0 && firstFailure) {
+  console.error(`[r2] failed before any successful synthesis round: ${firstFailure}`);
+  process.exit(1);
 }
 
 await writeFile(recordOut, JSON.stringify(state.record, null, 2));

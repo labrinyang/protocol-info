@@ -2,7 +2,7 @@
 // Zero-dep, consumer-agnostic JSON schema validator.
 // Usage:
 //   node framework/schema-validator.mjs --schema <schema.json> <file.json> [more.json ...]
-//   node framework/schema-validator.mjs --schema my-schema.json out/20260422T093012Z/*.json   (glob expanded by shell)
+//   node framework/schema-validator.mjs --schema my-schema.json out/pendle/20260422T093012Z/*.json
 // Exit 0 on all-pass, 1 on any violation, 2 on usage errors (missing --schema or no files).
 
 import { readFile } from 'node:fs/promises';

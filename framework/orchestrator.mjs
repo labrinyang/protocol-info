@@ -1,9 +1,8 @@
 // framework/orchestrator.mjs — Node-side port of run.sh's run_one() + dispatcher.
 //
 // Sequences (per provider):
-//   fetch.mjs (if ROOTDATA_API_KEY)
+//   fetch.mjs (per-fetcher env gating)
 //     -> r1.mjs
-//     -> validated_overrides patch (inline)
 //     -> evidence-diff.mjs
 //     -> r2.mjs (no session resume — see project_legacy_r2_incompatible_with_fanout)
 //     -> normalize.mjs
@@ -21,7 +20,7 @@
 import { spawn } from 'node:child_process';
 import { readFile, writeFile, mkdir, readdir, stat, rename, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadManifest } from './manifest-loader.mjs';
 import { runWithLimit } from './parallel-runner.mjs';
@@ -82,6 +81,67 @@ async function readJsonSafe(path, fallback = null) {
   }
 }
 
+async function sumEnvelopeTelemetry(dir, pattern = /\.envelope\.json$/) {
+  let cost = 0;
+  let turns = 0;
+  try {
+    for (const f of await readdir(dir)) {
+      if (!pattern.test(f)) continue;
+      const env = await readJsonSafe(join(dir, f), null);
+      if (!env) continue;
+      if (typeof env.total_cost_usd === 'number') cost += env.total_cost_usd;
+      if (typeof env.num_turns === 'number') turns += env.num_turns;
+    }
+  } catch { /* directory may not exist */ }
+  return { cost_usd: cost, turns };
+}
+
+function roundBudget(n) {
+  return Math.round(n * 1_000_000) / 1_000_000;
+}
+
+function capBudget(n) {
+  return Math.floor(n * 1_000_000) / 1_000_000;
+}
+
+export function computeBudgetPlan(manifest, { maxBudget = null, i18nLocaleCount = 0 } = {}) {
+  const r1Total = (manifest.subtasks || [])
+    .reduce((sum, st) => sum + Number(st.max_budget_usd || 0), 0);
+  const r2Rounds = manifest.reconcile?.enabled === false
+    ? 0
+    : Math.max(1, Number(manifest.reconcile?.max_research_rounds || 1));
+  const r2PerRound = Number(manifest.reconcile?.max_budget_usd || 0);
+  const r2Total = r2PerRound * r2Rounds;
+  const i18nPerLocale = Number(manifest.i18n?.max_budget_usd_per_call || 0);
+  const i18nTotal = i18nPerLocale * Math.max(0, i18nLocaleCount || 0);
+  const defaultTotal = r1Total + r2Total + i18nTotal;
+  const scale = maxBudget != null && defaultTotal > 0
+    ? Math.min(1, Number(maxBudget) / defaultTotal)
+    : 1;
+
+  const effective = {
+    r1_total: capBudget(r1Total * scale),
+    r2_total: capBudget(r2Total * scale),
+    i18n_total: capBudget(i18nTotal * scale),
+  };
+  effective.total = capBudget(effective.r1_total + effective.r2_total + effective.i18n_total);
+
+  return {
+    mode: maxBudget == null ? 'manifest_defaults' : 'single_provider_total_cap',
+    user_max_budget_usd: maxBudget == null ? null : Number(maxBudget),
+    scale: roundBudget(scale),
+    r2_rounds: r2Rounds,
+    i18n_locale_count: Math.max(0, i18nLocaleCount || 0),
+    defaults: {
+      r1_total: roundBudget(r1Total),
+      r2_total: roundBudget(r2Total),
+      i18n_total: roundBudget(i18nTotal),
+      total: roundBudget(defaultTotal),
+    },
+    effective,
+  };
+}
+
 // Mirror of run.sh slugify(): lowercase, [^a-z0-9]→-, collapse repeats, trim.
 export function slugify(s) {
   return String(s || '')
@@ -91,17 +151,36 @@ export function slugify(s) {
     .replace(/^-|-$/g, '');
 }
 
+export function protocolRunDir(outputRoot, slug, runId) {
+  return join(outputRoot, slug, runId);
+}
+
+export function runIndexDir(outputRoot, runId) {
+  return join(outputRoot, '_runs', runId);
+}
+
 // ── runOne: full per-provider pipeline ──────────────────────────────────────
 
 export async function runOne({
   manifestPath,
   manifest,
   provider,
-  runDir,
+  outputRoot = null,
+  runId = null,
+  runMetaDir = null,
+  runDir = null,
   index,
   total,
   options = {},
 }) {
+  if (!outputRoot) {
+    if (!runDir) throw new Error('runOne() requires outputRoot + runId');
+    outputRoot = dirname(runDir);
+    runId = runId || basename(runDir);
+  }
+  if (!runId) throw new Error('runOne() requires runId');
+  runMetaDir = runMetaDir || runIndexDir(outputRoot, runId);
+
   const slug = provider.slug;
   const providerKey = provider.provider || slug;
   const display = provider.displayName;
@@ -110,7 +189,7 @@ export async function runOne({
   const rootdataId = provider.rootdataId != null ? String(provider.rootdataId) : '';
 
   const indexLabel = String(index).padStart(4, '0');
-  const summaryRowsDir = join(runDir, '.summary-rows');
+  const summaryRowsDir = join(runMetaDir, '.summary-rows');
   const summaryRowFile = join(summaryRowsDir, `${indexLabel}-${slug}.tsv`);
 
   if (type) {
@@ -126,7 +205,8 @@ export async function runOne({
     return { slug, status: 'DRY_RUN' };
   }
 
-  const slugDir = join(runDir, slug);
+  await mkdir(summaryRowsDir, { recursive: true });
+  const slugDir = protocolRunDir(outputRoot, slug, runId);
   const debugDir = join(slugDir, '_debug');
   const r1DebugDir = join(debugDir, 'r1');
   const r2DebugDir = join(debugDir, 'r2');
@@ -167,6 +247,37 @@ export async function runOne({
     ? 'ok'
     : (rootdataStatus.startsWith('skipped') ? 'disabled' : `failed`);
   const rootdataOk = rootdataStatus === 'ok';
+  let finalSource = 'r1';
+  let r1Cost = 0;
+  let r1Turns = 0;
+  let r2Cost = 0;
+  let r2Turns = 0;
+  const memberCandidatesFed = Array.isArray(evidencePacket?.rootdata?.member_candidates)
+    ? evidencePacket.rootdata.member_candidates.length
+    : 0;
+  let fundingSeverity = 'none';
+
+  const writeMeta = async (runStatus, extra = {}) => {
+    const meta = {
+      status: runStatus,
+      r1: { cost_usd: r1Cost, turns: r1Turns },
+      r2: r2Turns > 0 ? { cost_usd: r2Cost, turns: r2Turns } : null,
+      source_used: finalSource,
+      rootdata: apiStatus === 'disabled'
+        ? null
+        : apiStatus === 'ok'
+          ? {
+              used: true,
+              member_candidates_fed: memberCandidatesFed,
+              funding_discrepancy_severity: fundingSeverity,
+            }
+          : { used: false, status: apiStatus },
+      budget: options.budgetPlan || null,
+      i18n: null,
+      ...extra,
+    };
+    await writeFile(metaPath, JSON.stringify(meta, null, 2));
+  };
 
   // ── Phase 2: R1 fan-out ──────────────────────────────────────────────────
 
@@ -186,7 +297,9 @@ export async function runOne({
   if (type) r1Args.push('--type', type);
   if (options.model) r1Args.push('--model', options.model);
   if (options.maxTurns) r1Args.push('--max-turns', String(options.maxTurns));
-  if (options.maxBudget) r1Args.push('--max-budget', String(options.maxBudget));
+  if (options.budgetPlan?.effective?.r1_total) {
+    r1Args.push('--max-budget', String(options.budgetPlan.effective.r1_total));
+  }
 
   const r1Res = await callCli('r1', r1Args);
   const r1Stderr = r1Res.stderr || '';
@@ -195,45 +308,37 @@ export async function runOne({
   } catch { /* best effort */ }
 
   if (r1Res.code !== 0) {
+    const t = await sumEnvelopeTelemetry(r1DebugDir);
+    r1Cost = t.cost_usd;
+    r1Turns = t.turns;
     console.log(`  -> CRAWL_FAIL (exit ${r1Res.code}); see ${join(debugDir, 'r1.stderr.log')}`);
     if (r1Stderr) {
       process.stderr.write('     --- last stderr lines ---\n');
       process.stderr.write(tailLines(r1Stderr, 20).split('\n').map(l => '     ' + l).join('\n') + '\n\n');
     }
     await writeFile(summaryRowFile, `${slug}\tCRAWL_FAIL\t-\t-\t-\t-\tr1\t${apiStatus}\n`);
+    await writeMeta('CRAWL_FAIL', { failure_stage: 'r1', error: `r1 exit ${r1Res.code}` });
     return { slug, status: 'CRAWL_FAIL' };
   }
 
   if (!(await fileNonEmpty(recordPath))) {
+    const t = await sumEnvelopeTelemetry(r1DebugDir);
+    r1Cost = t.cost_usd;
+    r1Turns = t.turns;
     console.log(`  -> CRAWL_FAIL (no slice produced by r1.mjs)`);
     if (r1Stderr) {
       process.stderr.write(tailLines(r1Stderr, 20).split('\n').map(l => '     ' + l).join('\n') + '\n');
     }
     await writeFile(summaryRowFile, `${slug}\tCRAWL_FAIL\t-\t-\t-\t-\tr1\t-\n`);
+    await writeMeta('CRAWL_FAIL', { failure_stage: 'r1', error: 'r1 produced no record' });
     return { slug, status: 'CRAWL_FAIL' };
   }
 
   // ── R1 telemetry: aggregate across ALL subtask envelopes ────────────────
 
-  let r1Cost = 0;
-  let r1Turns = 0;
-  try {
-    for (const f of await readdir(r1DebugDir)) {
-      if (!f.endsWith('.envelope.json')) continue;
-      const env = await readJsonSafe(join(r1DebugDir, f), null);
-      if (!env) continue;
-      if (typeof env.total_cost_usd === 'number') r1Cost += env.total_cost_usd;
-      if (typeof env.num_turns === 'number') r1Turns += env.num_turns;
-    }
-  } catch { /* dir may not exist on early failure */ }
-
-  let finalSource = 'r1';
-  let r2Cost = 0;
-  let r2Turns = 0;
-  const memberCandidatesFed = Array.isArray(evidencePacket?.rootdata?.member_candidates)
-    ? evidencePacket.rootdata.member_candidates.length
-    : 0;
-  let fundingSeverity = 'none';
+  const r1Telemetry = await sumEnvelopeTelemetry(r1DebugDir);
+  r1Cost = r1Telemetry.cost_usd;
+  r1Turns = r1Telemetry.turns;
 
   // (Pre-R2 validated_overrides mutation removed: those overrides remain in
   // the evidence packet and are arbitrated by R2's audit-first guard, which
@@ -278,7 +383,9 @@ export async function runOne({
   ];
   if (options.model) r2Args.push('--model', options.model);
   if (options.maxTurns) r2Args.push('--max-turns', String(options.maxTurns));
-  if (options.maxBudget) r2Args.push('--max-budget', String(options.maxBudget));
+  if (options.budgetPlan?.effective?.r2_total) {
+    r2Args.push('--max-budget', String(options.budgetPlan.effective.r2_total));
+  }
   await mkdir(r2DebugDir, { recursive: true });
   const r2Res = await callCli('r2', r2Args);
   if (r2Res.stderr) {
@@ -296,17 +403,13 @@ export async function runOne({
     finalSource = 'r2';
 
     // Aggregate r2 cost + turns across rounds
-    try {
-      const entries = await readdir(r2DebugDir);
-      for (const f of entries) {
-        if (!/^reconcile\.round\d+\.envelope\.json$/.test(f)) continue;
-        const env = await readJsonSafe(join(r2DebugDir, f), null);
-        if (!env) continue;
-        if (typeof env.total_cost_usd === 'number') r2Cost += env.total_cost_usd;
-        if (typeof env.num_turns === 'number') r2Turns += env.num_turns;
-      }
-    } catch { /* directory may not exist */ }
+    const t = await sumEnvelopeTelemetry(r2DebugDir, /^reconcile\.round\d+\.envelope\.json$/);
+    r2Cost = t.cost_usd;
+    r2Turns = t.turns;
   } else {
+    const t = await sumEnvelopeTelemetry(r2DebugDir, /^reconcile\.round\d+\.envelope\.json$/);
+    r2Cost = t.cost_usd;
+    r2Turns = t.turns;
     process.stderr.write(`  -> R2 reconcile failed (exit ${r2Res.code}); keeping R1 record\n`);
     for (const p of [recordR2, findingsR2, changesR2, gapsR2]) {
       try { await unlink(p); } catch { /* best effort */ }
@@ -386,22 +489,7 @@ export async function runOne({
 
   // ── meta.json ───────────────────────────────────────────────────────────
 
-  const meta = {
-    r1: { cost_usd: r1Cost, turns: r1Turns },
-    r2: r2Turns > 0 ? { cost_usd: r2Cost, turns: r2Turns } : null,
-    source_used: finalSource,
-    rootdata: apiStatus === 'disabled'
-      ? null
-      : apiStatus === 'ok'
-        ? {
-            used: true,
-            member_candidates_fed: memberCandidatesFed,
-            funding_discrepancy_severity: fundingSeverity,
-          }
-        : { used: false, status: apiStatus },
-    i18n: null,
-  };
-  await writeFile(metaPath, JSON.stringify(meta, null, 2));
+  await writeMeta(status, { schema: schemaRes.code === 0 ? 'pass' : 'fail' });
 
   return { slug, status, members, funding, audits, source: finalSource, api_status: apiStatus };
 }
@@ -430,47 +518,99 @@ export function resolveI18nSelection(i18nArg, manifest) {
 export async function run({
   manifestPath,
   providers,
-  runDir,
+  outputRoot = null,
+  runId = null,
+  runDir = null,
   parallelism = 1,
   dryRun = false,
   options = {},
 }) {
   const manifest = await loadManifest(manifestPath);
+  if (!outputRoot) {
+    if (!runDir) throw new Error('run() requires outputRoot + runId');
+    outputRoot = dirname(runDir);
+    runId = runId || basename(runDir);
+  }
+  if (!runId) throw new Error('run() requires runId');
+  const runMetaDir = runIndexDir(outputRoot, runId);
 
-  await mkdir(runDir, { recursive: true });
-  await mkdir(join(runDir, '.summary-rows'), { recursive: true });
-  await mkdir(join(runDir, '.worker-logs'), { recursive: true });
+  await mkdir(outputRoot, { recursive: true });
+  if (!dryRun) {
+    await mkdir(runMetaDir, { recursive: true });
+    await mkdir(join(runMetaDir, '.summary-rows'), { recursive: true });
+    await mkdir(join(runMetaDir, '.worker-logs'), { recursive: true });
+  }
 
   // Header for summary.tsv (rewritten at the end with i18n column merge)
-  const summaryFile = join(runDir, 'summary.tsv');
+  const summaryFile = join(runMetaDir, 'summary.tsv');
 
   const total = providers.length;
   const effectiveParallelism = dryRun ? 1 : Math.max(1, parallelism | 0);
+  const i18nSelected = resolveI18nSelection(options.i18nArg, manifest);
+  const budgetPlan = computeBudgetPlan(manifest, {
+    maxBudget: options.maxBudget,
+    i18nLocaleCount: i18nSelected.length,
+  });
 
   const tasks = providers.map((provider, i) => async () => {
     return runOne({
       manifestPath,
       manifest,
       provider,
-      runDir,
+      outputRoot,
+      runId,
+      runMetaDir,
       index: i + 1,
       total,
-      options: { ...options, dryRun },
+      options: { ...options, dryRun, budgetPlan },
     });
   });
 
   if (effectiveParallelism > 1) {
     console.log(`Dispatching ${total} providers with parallelism=${effectiveParallelism}...`);
   }
-  await runWithLimit(effectiveParallelism, tasks, { collectErrors: true });
+  const workerResults = await runWithLimit(effectiveParallelism, tasks, { collectErrors: true });
+  const rawWorkerFailures = workerResults
+    .map((r, i) => ({ r, i }))
+    .filter(({ r }) => r && !r.ok);
 
   if (dryRun) {
-    return { runDir, ok: providers.length, failed: 0 };
+    if (rawWorkerFailures.length > 0) {
+      throw new Error(`${rawWorkerFailures.length} dry-run worker(s) crashed`);
+    }
+    return { outputRoot, runId, runDir: runMetaDir, ok: providers.length, failed: 0 };
+  }
+
+  const workerFailures = [];
+  for (const { r, i } of rawWorkerFailures) {
+    const provider = providers[i];
+    const slug = provider.slug;
+    const indexLabel = String(i + 1).padStart(4, '0');
+    const summaryRowFile = join(runMetaDir, '.summary-rows', `${indexLabel}-${slug}.tsv`);
+    const slugDir = protocolRunDir(outputRoot, slug, runId);
+    const debugDir = join(slugDir, '_debug');
+    await mkdir(debugDir, { recursive: true });
+    const error = r.error?.stack || r.error?.message || String(r.error || 'unknown worker failure');
+    await writeFile(join(runMetaDir, '.worker-logs', `${indexLabel}-${slug}.log`), error + '\n');
+    await writeFile(join(debugDir, 'worker.stderr.log'), error + '\n');
+    await writeFile(summaryRowFile, `${slug}\tCRAWL_FAIL\t-\t-\t-\t-\tworker\t-\n`);
+    await writeFile(join(slugDir, 'meta.json'), JSON.stringify({
+      status: 'CRAWL_FAIL',
+      failure_stage: 'worker',
+      error: error.slice(0, 1000),
+      r1: { cost_usd: 0, turns: 0 },
+      r2: null,
+      source_used: 'worker',
+      rootdata: null,
+      budget: budgetPlan,
+      i18n: null,
+    }, null, 2));
+    workerFailures.push({ slug, error });
   }
 
   // ── Collect OK slugs ─────────────────────────────────────────────────────
 
-  const summaryRowsDir = join(runDir, '.summary-rows');
+  const summaryRowsDir = join(runMetaDir, '.summary-rows');
   const okSlugs = [];
   let rowFiles = [];
   try {
@@ -484,7 +624,6 @@ export async function run({
 
   // ── i18n stage ───────────────────────────────────────────────────────────
 
-  const i18nSelected = resolveI18nSelection(options.i18nArg, manifest);
   if (okSlugs.length > 0 && i18nSelected.length > 0) {
     console.log('');
     console.log('=== i18n translation (Haiku) ===');
@@ -496,14 +635,14 @@ export async function run({
     for (const slug of okSlugs) {
       const args = [
         '--manifest', manifestPath,
-        '--record', join(runDir, slug, 'record.json'),
+        '--record', join(protocolRunDir(outputRoot, slug, runId), 'record.json'),
         '--locales', i18nSelected.join(','),
-        '--output-dir', join(runDir, slug, '_debug', 'i18n'),
+        '--output-dir', join(protocolRunDir(outputRoot, slug, runId), '_debug', 'i18n'),
         '--parallel', String(options.i18nParallel ?? 8),
       ];
       if (options.i18nModel) args.push('--model', options.i18nModel);
       if (options.maxTurns) args.push('--max-turns', String(options.maxTurns));
-      if (options.maxBudget) args.push('--max-budget', String(options.maxBudget));
+      if (budgetPlan.effective.i18n_total) args.push('--max-budget', String(budgetPlan.effective.i18n_total));
       const r = await callCli('i18n', args);
       // Mimic run.sh: prefix lines with [<slug>]
       const combined = (r.stdout || '') + (r.stderr || '');
@@ -523,7 +662,7 @@ export async function run({
     for (const slug of okSlugs) {
       const r = await callCli('post', [
         '--manifest', manifestPath,
-        '--slug-dir', join(runDir, slug),
+        '--slug-dir', protocolRunDir(outputRoot, slug, runId),
       ]);
       if (r.code !== 0) {
         process.stderr.write(`[post] ${slug} failed; record.import.json may be missing\n`);
@@ -541,7 +680,7 @@ export async function run({
     const slug = row.split('\t')[0];
     let i18nCol = '-';
     if (i18nSelected.length > 0) {
-      const i18nDir = join(runDir, slug, '_debug', 'i18n');
+      const i18nDir = join(protocolRunDir(outputRoot, slug, runId), '_debug', 'i18n');
       let okCount = 0;
       try {
         const entries = await readdir(i18nDir);
@@ -558,15 +697,26 @@ export async function run({
     lines.push(`${row}\t${i18nCol}`);
   }
   await writeFile(summaryFile, lines.join('\n') + '\n');
+  for (const row of lines.slice(1)) {
+    const slug = row.split('\t')[0];
+    const slugDir = protocolRunDir(outputRoot, slug, runId);
+    await mkdir(slugDir, { recursive: true });
+    await writeFile(join(slugDir, 'summary.tsv'), `${lines[0]}\n${row}\n`);
+  }
 
   // ── Print summary table (plain TSV → padded by computing column widths) ──
   console.log('');
   console.log('=== Summary ===');
   printPadded(lines);
   console.log('');
-  console.log(`Next: review ${runDir}/<slug>/record.json (or record.full.json if i18n). Import via dashboard CRUD.`);
+  console.log(`Next: review ${outputRoot}/<slug>/${runId}/record.json (or record.full.json if i18n).`);
+  console.log(`Batch summary: ${summaryFile}`);
 
-  return { runDir, summaryFile, okSlugs };
+  if (workerFailures.length > 0) {
+    throw new Error(`${workerFailures.length} provider worker(s) crashed; see ${join(runMetaDir, '.worker-logs')}`);
+  }
+
+  return { outputRoot, runId, runDir: runMetaDir, summaryFile, okSlugs };
 }
 
 function printPadded(rows) {

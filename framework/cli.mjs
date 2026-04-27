@@ -11,9 +11,9 @@
 //   --hints <text>            (per-provider; OPTIONAL)
 //   --rootdata-id <int>       (per-provider; OPTIONAL)
 //   --batch                   flush accumulated provider info; allows multiple
-//   --model <name>            applies to every provider's R1, R2, and i18n
+//   --model <name>            applies to every provider's R1 and R2
 //   --max-turns <n>           per-Claude-call cap (clamps manifest default down)
-//   --max-budget <usd>        per-Claude-call USD cap (clamps manifest default down)
+//   --max-budget <usd>        single-provider total LLM cap
 //   --parallel <n>            default 1; dry-run forces 1
 //   --i18n <flag>             "none" | "all" | "zh_CN,ja_JP,..." | empty
 //   --i18n-parallel <n>       default 8
@@ -25,7 +25,6 @@
 //   1. <SCRIPT_DIR>/.env
 //   2. $HOME/.config/protocol-info/.env
 
-import { mkdir } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -90,22 +89,23 @@ Per-provider flags (use --batch to separate multiple providers):
   --batch                 flush accumulated provider; start a new one
 
 Run-wide flags:
-  --model <name>          override Claude model (R1+R2+i18n)
+  --model <name>          override Claude model (R1+R2)
   --max-turns <n>         per-Claude-call turn cap (clamps manifest default)
-  --max-budget <usd>      per-Claude-call USD cap (clamps manifest default)
+  --max-budget <usd>      single-provider total LLM cap
   --parallel <n>          default 1; dry-run forces 1
   --i18n <flag>           "none" | "all" | "zh_CN,ja_JP,..." | "" (silent skip)
   --i18n-parallel <n>     default 8
-  --i18n-model <name>     default haiku
+  --i18n-model <name>     override i18n model (default haiku)
   --dry-run               list providers and bail
   -h, --help              this help
 
 Outputs:
-  out/<ts>/summary.tsv
-  out/<ts>/<slug>/record.json
-  out/<ts>/<slug>/record.full.json   (only when --i18n produced translations)
-  out/<ts>/<slug>/meta.json
-  out/<ts>/<slug>/_debug/             audit / debug artefacts
+  out/<slug>/<run-id>/record.json
+  out/<slug>/<run-id>/record.full.json   (only when --i18n produced translations)
+  out/<slug>/<run-id>/meta.json
+  out/<slug>/<run-id>/_debug/             audit / debug artefacts
+  out/<slug>/<run-id>/summary.tsv         per-protocol run summary
+  out/_runs/<run-id>/summary.tsv          batch summary
 `;
 
 const argv = process.argv.slice(2);
@@ -234,7 +234,8 @@ switch (i18nArg) {
 
 const ROOTDATA_ENABLED = !!process.env.ROOTDATA_API_KEY;
 const RUN_TS = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
-const runDir = join(SCRIPT_DIR, 'out', RUN_TS);
+const outputRoot = join(SCRIPT_DIR, 'out');
+const runSummaryDir = join(outputRoot, '_runs', RUN_TS);
 
 console.log('=== Protocol-info crawl ===');
 console.log(`Providers:   ${providers.length}`);
@@ -242,19 +243,20 @@ console.log(`Model:       ${model || 'default'}`);
 console.log(`Parallel:    ${parallel}`);
 console.log(`RootData:    ${ROOTDATA_ENABLED ? 'enabled (Round 2)' : 'disabled (single-round)'}`);
 console.log(`i18n:        ${i18nLabel} [model=${i18nModel || 'default'}, parallel=${i18nParallel}]`);
-console.log(`Out dir:     ${runDir}`);
+console.log(`Run id:      ${RUN_TS}`);
+console.log(`Out root:    ${outputRoot}`);
+console.log(`Summary:     ${join(runSummaryDir, 'summary.tsv')}`);
 console.log('');
 
 // Bail early if claude / node not available?  framework/cli/r1.mjs handles
 // claude-bin discovery itself; we just trust the path.
 
-await mkdir(runDir, { recursive: true });
-
 try {
   await run({
     manifestPath,
     providers,
-    runDir,
+    outputRoot,
+    runId: RUN_TS,
     parallelism: parallel,
     dryRun,
     options: {

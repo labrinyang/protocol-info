@@ -5,7 +5,7 @@ description: Use when the user wants to gather metadata for a DeFi yield/earn pr
 
 # Protocol-info crawler dispatcher
 
-The user wants a schema-compliant `EarnProtocolInfo` record for a DeFi earn/yield/staking protocol. The bundled `/protocol-info` slash command does the end-to-end crawl:
+The user wants a schema-compliant `EarnProtocolInfo` record for a DeFi earn/yield/staking protocol. The bundled `/protocol-info:protocol-info` slash command does the end-to-end crawl:
 
 1. Round 1 — Claude web search → strict-schema JSON
 2. RootData API (if `ROOTDATA_API_KEY` set) — structured evidence, in parallel
@@ -15,7 +15,7 @@ The user wants a schema-compliant `EarnProtocolInfo` record for a DeFi earn/yiel
 
 ## Your job
 
-Translate the user's natural language into **one** `/protocol-info` invocation. Do not shell out to `run.sh` directly and do not substitute `WebFetch` / `WebSearch` — the whole point of this tool is schema-forced output + RootData reconciliation + Haiku i18n.
+Translate the user's natural language into **one** `/protocol-info:protocol-info` invocation. Do not shell out to `run.sh` directly and do not substitute `WebFetch` / `WebSearch` — the whole point of this tool is schema-forced output + RootData reconciliation + Haiku i18n.
 
 ## Intent → flag mapping
 
@@ -52,24 +52,24 @@ Ask ONE short question, then act. Never ask more than one.
 
 **"帮我抓一份 Pendle 的 protocol-info,翻成中日英"**
 ```
-/protocol-info --display-name "Pendle" --type fixed_rate --i18n zh_CN,ja_JP,en_US
+/protocol-info:protocol-info --display-name "Pendle" --type fixed_rate --i18n zh_CN,ja_JP,en_US
 ```
 
 **"批量爬 Morpho 和 Aave 的 earn 信息,不用翻译"**
 ```
-/protocol-info --parallel 2 --i18n none --batch --display-name "Morpho" --type simple_earn --batch --display-name "Aave" --type simple_earn
+/protocol-info:protocol-info --parallel 2 --i18n none --batch --display-name "Morpho" --type simple_earn --batch --display-name "Aave" --type simple_earn
 ```
 
 **"给我做一份 Lido 的项目概述"** — ambiguous type, ask first. After user says "staking":
 ```
-/protocol-info --display-name "Lido" --type staking --i18n none
+/protocol-info:protocol-info --display-name "Lido" --type staking --i18n none
 ```
 
-**"把刚才跑出来的 Pendle 记录再补翻一下韩文"** — there's no "re-run i18n for existing record" flag; the whole crawler would re-run. Tell the user this is a known limitation: easiest is `/protocol-info --display-name "Pendle" --type fixed_rate --i18n ko_KR` which will rebuild the record and add Korean. If they want to preserve the existing record exactly, they should manually edit `out/<ts>/<slug>/record.full.json`'s `.i18n` field.
+**"把刚才跑出来的 Pendle 记录再补翻一下韩文"** — there's no "re-run i18n for existing record" flag; the whole crawler would re-run. Tell the user this is a known limitation: easiest is `/protocol-info:protocol-info --display-name "Pendle" --type fixed_rate --i18n ko_KR` which will rebuild the record and add Korean. If they want to preserve the existing record exactly, they should manually edit `out/<slug>/<run-id>/record.full.json`'s `.i18n` field.
 
 ## After the command returns
 
-The `/protocol-info` command itself already handles summary/error reporting. Don't duplicate that work. Only step in if:
+The `/protocol-info:protocol-info` command itself already handles summary/error reporting. Don't duplicate that work. Only step in if:
 
 - The user asks for interpretation of a `SCHEMA_FAIL` or partial `i18n` failure
 - The user wants to edit the output before DB import
@@ -79,6 +79,6 @@ The `/protocol-info` command itself already handles summary/error reporting. Don
 
 - Do not reimplement the crawl with raw `WebFetch` / `WebSearch` — you'll produce a non-schema-compliant record.
 - Do not translate manually when `--i18n` is requested — Haiku with schema-forced output is the whole point.
-- Do not modify `out/<ts>/<slug>/*.json` files yourself unless the user explicitly asks.
+- Do not modify `out/<slug>/<run-id>/*.json` files yourself unless the user explicitly asks.
 - Do not pre-validate arguments — `run.sh` errors cleanly on missing required flags; don't gate on your own checks.
 - Do not assume `ROOTDATA_API_KEY` is set. Round 1 alone is still useful. Only mention the env var if the user asks why Round 2 didn't run, or if they explicitly want API reconciliation and it's missing.

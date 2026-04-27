@@ -1,6 +1,7 @@
 // framework/cli/i18n.mjs — bash-callable i18n stage.
 // Usage:
 //   node framework/cli/i18n.mjs --manifest M --record R --locales LIST --output-dir D [--parallel N] [--model M]
+// `--max-budget`, when present, is the i18n stage total and is split across locales.
 
 import { readFile } from 'node:fs/promises';
 import { loadManifest } from '../manifest-loader.mjs';

@@ -88,6 +88,9 @@ export async function runI18nStage({
 
     const baseTurns = 3;
     const baseBudget = manifest.i18n.max_budget_usd_per_call ?? 0.10;
+    const localeBudget = budgetCap != null && selectedLocales.length > 0
+      ? Math.min(baseBudget, budgetCap / selectedLocales.length)
+      : baseBudget;
     try {
       const env = await runClaude({
         claudeBin,
@@ -95,7 +98,7 @@ export async function runI18nStage({
         userPrompt,
         schemaJson: i18nSchema,
         maxTurns: turnsCap != null ? Math.min(baseTurns, turnsCap) : baseTurns,
-        maxBudgetUsd: budgetCap != null ? Math.min(baseBudget, budgetCap) : baseBudget,
+        maxBudgetUsd: localeBudget,
         model: modelOverride || manifest.i18n.model_default,
         budgetLedger,
       });

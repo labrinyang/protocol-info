@@ -27,16 +27,16 @@ chmod 600 ~/.config/protocol-info/.env
 ### 方式 A:显式 slash command
 
 ```
-/protocol-info --display-name "Pendle" --type fixed_rate
-/protocol-info --display-name "Pendle" --type fixed_rate --i18n all
-/protocol-info --parallel 4 --i18n zh_CN,ja_JP \
+/protocol-info:protocol-info --display-name "Pendle" --type fixed_rate
+/protocol-info:protocol-info --display-name "Pendle" --type fixed_rate --i18n all
+/protocol-info:protocol-info --parallel 4 --i18n zh_CN,ja_JP \
   --batch --display-name "Pendle" --type fixed_rate \
   --batch --display-name "Morpho" --type simple_earn
 ```
 
 ### 方式 B:自然语言(skill 自动触发)
 
-直接在对话里说出意图,Claude 会识别并自动派发 `/protocol-info`:
+直接在对话里说出意图,Claude 会识别并自动派发 `/protocol-info:protocol-info`:
 
 - "调研 Pendle 的项目概述,翻成中日英"
 - "批量爬 Morpho 和 Aave 的 earn 信息,不用翻译"
@@ -79,7 +79,8 @@ consumers/protocol-info/
 └── post/{locale-map,dashboard-export}.mjs
 ```
 
-每条记录的产物在 `out/<ts>/<slug>/`:
+每条记录的产物在 `out/<slug>/<run-ts>/`。批量运行的全局索引在
+`out/_runs/<run-ts>/summary.tsv`:
 
 - `record.json`         — 源语言主记录
 - `record.full.json`    — 内联 i18n 翻译(仅有翻译时)
@@ -234,17 +235,18 @@ i18n (可选,Haiku 并发) ──→ record.full.json
 
 ## 审核与导入
 
-1. 检查 `out/<run>/summary.tsv`(含 i18n 成功率列)。
-2. 对每个 `<slug>/record.json`: 验证成员、融资、审计信息。
-3. 导入 dashboard 直接用 **`record.import.json`** — 已经是 dashboard 期望的 `{version, exportedAt, data:[...]}` 信封格式,每个 locale 一条记录,`sources` 已 strip:
+1. 检查 `out/_runs/<run>/summary.tsv`(含 i18n 成功率列)。
+2. 单协议也可直接检查 `out/<slug>/<run>/summary.tsv`(含 i18n 成功率列)。
+3. 对每个 `out/<slug>/<run>/record.json`: 验证成员、融资、审计信息。
+4. 导入 dashboard 直接用 **`record.import.json`** — 已经是 dashboard 期望的 `{version, exportedAt, data:[...]}` 信封格式,每个 locale 一条记录,`sources` 已 strip:
    ```bash
    curl -X POST $DASHBOARD/api/earn-protocol-info/import \
      -H "Content-Type: application/json" \
-     -d @out/<run>/<slug>/record.import.json
+     -d @out/<slug>/<run>/record.import.json
    ```
    即使没翻译,`record.import.json` 也包含 1 条 `locale: "en"` 的源语言记录。
-4. **`record.json`** 仍然保留(crawler invariant 严格 schema 通过的源语言记录,人工审核用)。
-5. **`record.full.json`** 仍然保留(嵌套 i18n 的 inline 版本,前端预览方便)。
+5. **`record.json`** 仍然保留(crawler invariant 严格 schema 通过的源语言记录,人工审核用)。
+6. **`record.full.json`** 仍然保留(嵌套 i18n 的 inline 版本,前端预览方便)。
 
 ## Schema 约定
 
