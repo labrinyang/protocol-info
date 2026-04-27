@@ -176,6 +176,8 @@ out/index.html
 
 `out/index.html` 是一个自包含的本地管理页。可以直接用浏览器打开，用来筛选 run、查看关键产物、对同一个 protocol 的不同 run 做路径级 JSON diff、复制绝对路径、复制单个 `record.import.json`，或为当前可见记录复制一份合并后的 import JSON。它只嵌入审核用的关键产物；Claude/debug 原始日志仍保留在 `_debug/`。
 
+![out/index.html 三栏布局：左侧 run 列表、中间 record 表格、右侧产物 tab（Import JSON / Record / Summary / Findings / Gaps / Changes / Meta），以及跨 run 路径级 JSON diff 的 Compare runs 面板](docs/images/out-browser.png)
+
 常见文件：
 
 | 文件 | 用途 |
@@ -259,7 +261,12 @@ R2 使用 audit-first 策略合并 R1 slice 和证据：
 
 ### Normalize And Validate
 
-Consumer normalizer 会做决定性后处理，例如更新 `audits.lastScannedAt`。最终 `record.json` 必须通过 `consumers/protocol-info/schemas/full.json`。
+Consumer normalizer 会做决定性后处理：
+
+- `rootdata-avatar` — `members[].avatarUrl` 完全由 RootData 提供（`member_candidates[].avatar_url`），按姓名匹配。team 子任务输出 `null`，由该 normalizer 在 R2 之后填入。RootData 没有匹配的成员保留 `avatarUrl: null`，同时在 `gaps.json` 留一条记录。`pbs.twimg.com` 的临时签名 URL 会被拒绝。**阶段 A 说明**：这里写入的仍是 RootData 的 CDN URL，属于过渡形态；后端运维会在数据库侧下载这些图片并改写到自有存储，看板最终消费的是稳定的自有 URL。
+- `protocol-info-final` — 把 `audits.lastScannedAt` 设为 UTC 今日。
+
+最终 `record.json` 必须通过 `consumers/protocol-info/schemas/full.json`。
 
 ### i18n And Export
 

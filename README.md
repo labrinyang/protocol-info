@@ -176,6 +176,8 @@ out/index.html
 
 `out/index.html` is a self-contained local browser for the output tree. Open it directly in a browser to filter runs, inspect key artifacts, compare the same protocol across runs with a path-level JSON diff, copy absolute file paths, copy one `record.import.json`, or copy one merged import JSON for the visible records. It embeds only review artifacts; raw Claude/debug logs stay under `_debug/`.
 
+![out/index.html — three-pane local browser: runs list, records table, per-record artifact tabs (Import JSON / Record / Summary / Findings / Gaps / Changes / Meta) and a Compare runs panel for path-level JSON diffs](docs/images/out-browser.png)
+
 Typical files:
 
 | File | Purpose |
@@ -259,7 +261,12 @@ R2 merges R1 slices and evidence with an audit-first policy:
 
 ### Normalize And Validate
 
-Consumer normalizers apply deterministic fixes, such as `audits.lastScannedAt`. The final `record.json` must pass `consumers/protocol-info/schemas/full.json`.
+Consumer normalizers apply deterministic fixes:
+
+- `rootdata-avatar` — `members[].avatarUrl` is sourced exclusively from RootData (`member_candidates[].avatar_url`) by name match. The team subtask emits `null`; this normalizer fills it post-R2. Members with no RootData match keep `avatarUrl: null` and a `gaps.json` entry. URLs that point at `pbs.twimg.com` (X temp signed links) are rejected. **Phase A note**: the URL written here is RootData's CDN URL — backend ops download these images and rehost them on the dashboard's own object storage before serving, so `avatarUrl` is a stable in-house URL by the time users see it.
+- `protocol-info-final` — sets `audits.lastScannedAt` to UTC today.
+
+The final `record.json` must pass `consumers/protocol-info/schemas/full.json`.
 
 ### i18n And Export
 

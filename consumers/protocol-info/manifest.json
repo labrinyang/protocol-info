@@ -1,6 +1,6 @@
 {
   "name": "protocol-info",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "model_default": "claude-sonnet-4-6",
   "schemas": { "full": "./schemas/full.json" },
   "fetchers": [
@@ -70,6 +70,7 @@
     "debug_dir": "_debug"
   },
   "normalizers": [
+    { "name": "rootdata-avatar", "module": "./normalizers/rootdata-avatar.mjs" },
     { "name": "protocol-info-final", "module": "./normalizers/final.mjs" }
   ],
   "subtasks": [

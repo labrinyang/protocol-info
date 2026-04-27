@@ -4,6 +4,34 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-04-27
+
+### Changed
+- `members[].avatarUrl` is now sourced exclusively from RootData
+  (`member_candidates[].avatar_url`) by name match. The team R1 subtask
+  emits `null`; a new `rootdata-avatar` normalizer runs after R2 and
+  writes the URL deterministically. Members RootData doesn't index keep
+  `avatarUrl: null` plus a `gaps.json` entry — they are no longer given
+  unavatar.io URLs.
+  - **Why**: unavatar.io enforces a 25 req/day-per-IP anonymous rate
+    limit (50/day with a free key), confirmed against unavatar's own
+    docs. A public dashboard rendering `<img src="https://unavatar.io/...">`
+    would systematically 429 behind any shared NAT (corporate, mobile,
+    edu) and on cold cache. Embedding unavatar URLs in the database was
+    not production-viable.
+  - **Phase A note**: the URL stored in `record.json` is still RootData's
+    CDN URL. Backend ops download and rehost these images on owned
+    storage at the database layer, so the dashboard ultimately serves a
+    stable in-house URL. Phase B (in-pipeline rehost) is intentionally
+    out of scope here.
+  - URL quality filter rejects `pbs.twimg.com` (X temp signed links),
+    non-https, and malformed URLs.
+
+### Removed
+- All `unavatar.io/x/<handle>` and `unavatar.io/github/<handle>`
+  guidance from `prompts/system.md` and `prompts/team.user.md.tmpl`.
+  The team subtask is now told to always emit `"avatarUrl": null`.
+
 ## [1.1.0] — 2026-04-27
 
 ### Added

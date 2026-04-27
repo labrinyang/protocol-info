@@ -28,7 +28,7 @@ Bucket key: `rootdata.member_candidates`. Each candidate has a `bucket` field (`
 - `memberName`: full real name. Reject pseudonyms unless they're the public identity (e.g., `0xMaki`).
 - `memberPosition`: brief title (`CEO`, `Co-Founder`, `Head of Engineering`).
 - `oneLiner`: ≤140 chars on prior notable experience. Null only when nothing verifiable.
-- `avatarUrl`: prefer `https://unavatar.io/x/<handle>?fallback=false` (or `https://unavatar.io/github/<handle>?fallback=false` if the member's primary public identity is GitHub, e.g., anonymous-leaning core devs); null if no public avatar.
+- `avatarUrl`: always `null`. Do not construct unavatar / X / GitHub URLs. The rootdata-avatar normalizer fills this field post-R2 from RootData's `member_candidates[].avatar_url`.
 - `memberLink.xLink`: full URL `https://x.com/<handle>` or null.
 - `memberLink.linkedinLink`: full LinkedIn profile URL or null.
 - Cross-check: a candidate appearing in rootdata + X bio confirming the role + LinkedIn matching = include. Less than 2 of these = exclude or note in `oneLiner` as `Unverified`.
