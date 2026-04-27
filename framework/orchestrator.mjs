@@ -183,12 +183,12 @@ export function slugify(s) {
     .replace(/^-|-$/g, '');
 }
 
-export function protocolRunDir(outputRoot, slug, runId) {
-  return join(outputRoot, slug, runId);
+export function protocolDir(outputRoot, slug) {
+  return join(outputRoot, slug);
 }
 
 export function runIndexDir(outputRoot, runId) {
-  return join(outputRoot, '_runs', runId);
+  return join(outputRoot, '.runs', runId);
 }
 
 // ── runOne: full per-provider pipeline ──────────────────────────────────────
@@ -238,7 +238,7 @@ export async function runOne({
   }
 
   await mkdir(summaryRowsDir, { recursive: true });
-  const slugDir = protocolRunDir(outputRoot, slug, runId);
+  const slugDir = protocolDir(outputRoot, slug);
   const debugDir = join(slugDir, '_debug');
   const r1DebugDir = join(debugDir, 'r1');
   const r2DebugDir = join(debugDir, 'r2');
@@ -647,7 +647,7 @@ export async function run({
     const slug = provider.slug;
     const indexLabel = String(i + 1).padStart(4, '0');
     const summaryRowFile = join(runMetaDir, '.summary-rows', `${indexLabel}-${slug}.tsv`);
-    const slugDir = protocolRunDir(outputRoot, slug, runId);
+    const slugDir = protocolDir(outputRoot, slug);
     const debugDir = join(slugDir, '_debug');
     await mkdir(debugDir, { recursive: true });
     const error = r.error?.stack || r.error?.message || String(r.error || 'unknown worker failure');
@@ -695,9 +695,9 @@ export async function run({
     for (const slug of okSlugs) {
       const args = [
         '--manifest', manifestPath,
-        '--record', join(protocolRunDir(outputRoot, slug, runId), 'record.json'),
+        '--record', join(protocolDir(outputRoot, slug), 'record.json'),
         '--locales', i18nSelected.join(','),
-        '--output-dir', join(protocolRunDir(outputRoot, slug, runId), '_debug', 'i18n'),
+        '--output-dir', join(protocolDir(outputRoot, slug), '_debug', 'i18n'),
         '--parallel', String(options.i18nParallel ?? 8),
       ];
       if (options.i18nModel) args.push('--model', options.i18nModel);
@@ -727,7 +727,7 @@ export async function run({
     for (const slug of okSlugs) {
       const r = await callCli('post', [
         '--manifest', manifestPath,
-        '--slug-dir', protocolRunDir(outputRoot, slug, runId),
+        '--slug-dir', protocolDir(outputRoot, slug),
       ]);
       if (r.code !== 0) {
         process.stderr.write(`[post] ${slug} failed; record.import.json may be missing\n`);
@@ -747,7 +747,7 @@ export async function run({
     const slug = row.split('\t')[0];
     let i18nCol = '-';
     if (i18nSelected.length > 0) {
-      const i18nDir = join(protocolRunDir(outputRoot, slug, runId), '_debug', 'i18n');
+      const i18nDir = join(protocolDir(outputRoot, slug), '_debug', 'i18n');
       let okCount = 0;
       try {
         const entries = await readdir(i18nDir);
@@ -766,7 +766,7 @@ export async function run({
   await writeFile(summaryFile, lines.join('\n') + '\n');
   for (const row of lines.slice(1)) {
     const slug = row.split('\t')[0];
-    const slugDir = protocolRunDir(outputRoot, slug, runId);
+    const slugDir = protocolDir(outputRoot, slug);
     await mkdir(slugDir, { recursive: true });
     await writeFile(join(slugDir, 'summary.tsv'), `${lines[0]}\n${row}\n`);
   }

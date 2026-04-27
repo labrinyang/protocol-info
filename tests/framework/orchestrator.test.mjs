@@ -9,7 +9,7 @@ import {
   slugify,
   resolveI18nSelection,
   computeBudgetPlan,
-  protocolRunDir,
+  protocolDir,
   runIndexDir,
 } from '../../framework/orchestrator.mjs';
 
@@ -84,10 +84,15 @@ export const tests = [
     },
   },
   {
-    name: 'output paths are protocol-first with run index separated',
+    name: 'protocolDir returns out/<slug>/ (no run-id segment)',
     fn: async () => {
-      assert.equal(protocolRunDir('/tmp/out', 'pendle', '20260427T010203Z'), '/tmp/out/pendle/20260427T010203Z');
-      assert.equal(runIndexDir('/tmp/out', '20260427T010203Z'), '/tmp/out/_runs/20260427T010203Z');
+      assert.equal(protocolDir('/tmp/out', 'pendle'), '/tmp/out/pendle');
+    },
+  },
+  {
+    name: 'runIndexDir lives under .runs/ (gitignored)',
+    fn: async () => {
+      assert.equal(runIndexDir('/tmp/out', 'R1'), '/tmp/out/.runs/R1');
     },
   },
 ];
