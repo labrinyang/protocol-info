@@ -3,7 +3,6 @@
 // Writes a self-contained out/index.html so reviewers can inspect and copy
 // key artifacts without walking the protocol-first directory tree.
 
-import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -13,6 +12,7 @@ const SCRIPT_DIR = dirname(FRAMEWORK_DIR);
 const DEFAULT_OUT_ROOT = join(SCRIPT_DIR, 'out');
 const MAX_EMBED_BYTES = 1_500_000;
 const RUN_ID_RE = /^\d{8}T\d{6}Z$/;
+const SYNTHETIC_RUN_ID = 'current';
 
 const ARTIFACTS = [
   { name: 'record.import.json', label: 'Import JSON', kind: 'json' },
@@ -24,14 +24,6 @@ const ARTIFACTS = [
   { name: 'changes.json', label: 'Changes', kind: 'json' },
   { name: 'meta.json', label: 'Meta', kind: 'json' },
 ];
-
-async function entries(dir) {
-  try {
-    return await readdir(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-}
 
 async function readTextIfSmall(path) {
   try {
@@ -72,13 +64,6 @@ function parseSummaryTsv(text) {
     headers.forEach((h, i) => { row[h] = cols[i] ?? ''; });
     return row;
   });
-}
-
-function ensureRun(map, runId) {
-  if (!map.has(runId)) {
-    map.set(runId, { runId, summary: null, rows: [], protocols: [] });
-  }
-  return map.get(runId);
 }
 
 async function artifact(outputRoot, dir, def) {
@@ -126,24 +111,6 @@ async function readMetaStatus(dir) {
   }
 }
 
-async function addProtocolRun(runs, outputRoot, slug, runId, dir) {
-  const artifacts = await collectArtifacts(outputRoot, dir);
-  if (artifacts.length === 0) return false;
-  const run = ensureRun(runs, runId);
-  if (run.protocols.some((p) => p.slug === slug && p.runId === runId)) return true;
-  const row = await readProtocolRow(dir, slug);
-  const metaStatus = await readMetaStatus(dir);
-  run.protocols.push({
-    slug,
-    runId,
-    dir,
-    relDir: relPath(outputRoot, dir),
-    row: normalizeRow(row, { slug, status: metaStatus || 'unknown' }),
-    artifacts,
-  });
-  return true;
-}
-
 function normalizeRow(row, fallback = {}) {
   return {
     slug: row?.slug || fallback.slug || '',
@@ -158,81 +125,87 @@ function normalizeRow(row, fallback = {}) {
   };
 }
 
-export async function collectOutIndex(outputRoot = DEFAULT_OUT_ROOT) {
-  outputRoot = resolve(outputRoot);
-  await mkdir(outputRoot, { recursive: true });
-  const runs = new Map();
-
-  const runIndexRoot = join(outputRoot, '_runs');
-  for (const ent of await entries(runIndexRoot)) {
-    if (!ent.isDirectory()) continue;
-    const runId = ent.name;
-    const run = ensureRun(runs, runId);
-    const summaryPath = join(runIndexRoot, runId, 'summary.tsv');
-    const summary = await readTextIfSmall(summaryPath);
-    if (summary) {
-      const rel = relPath(outputRoot, summaryPath);
-      run.summary = {
-        path: summaryPath,
-        relPath: rel,
-        href: hrefForRelPath(rel),
-        size: summary.size,
-        sizeLabel: sizeLabel(summary.size),
-        content: summary.tooLarge ? '' : summary.content,
-      };
-      run.rows = summary.tooLarge ? [] : parseSummaryTsv(summary.content);
-    }
+export async function collectOutIndex(outDir = DEFAULT_OUT_ROOT) {
+  const root = resolve(outDir);
+  let dirEntries;
+  try {
+    dirEntries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return { protocols: [], runsLog: [] };
   }
 
-  for (const topEnt of await entries(outputRoot)) {
-    if (!topEnt.isDirectory() || topEnt.name === '_runs') continue;
-    if (topEnt.name.startsWith('.')) continue;
-    const topRoot = join(outputRoot, topEnt.name);
-
-    // Current layout: out/<protocol>/<run-id>/...
-    if (!RUN_ID_RE.test(topEnt.name)) {
-      const slug = topEnt.name;
-      for (const runEnt of await entries(topRoot)) {
-        if (!runEnt.isDirectory()) continue;
-        await addProtocolRun(runs, outputRoot, slug, runEnt.name, join(topRoot, runEnt.name));
-      }
+  const protocols = [];
+  for (const ent of dirEntries) {
+    if (!ent.isDirectory()) continue;
+    if (ent.name.startsWith('.')) continue;          // .runs, .git, ...
+    if (RUN_ID_RE.test(ent.name)) continue;          // legacy run-id dirs
+    const dir = join(root, ent.name);
+    const recordPath = join(dir, 'record.json');
+    try {
+      await stat(recordPath);
+    } catch {
       continue;
     }
-
-    // Compatibility for older local trees: out/<run-id>/<protocol>/...
-    const runId = topEnt.name;
-    for (const slugEnt of await entries(topRoot)) {
-      if (!slugEnt.isDirectory() || slugEnt.name.startsWith('.')) continue;
-      await addProtocolRun(runs, outputRoot, slugEnt.name, runId, join(topRoot, slugEnt.name));
-    }
+    protocols.push({
+      slug: ent.name,
+      recordPath,
+      dir,
+    });
   }
+  protocols.sort((a, b) => a.slug.localeCompare(b.slug));
 
-  for (const run of runs.values()) {
-    const seen = new Set(run.protocols.map((p) => p.slug));
-    for (const row of run.rows) {
-      if (seen.has(row.slug)) continue;
-      run.protocols.push({
-        slug: row.slug,
-        runId: run.runId,
-        dir: '',
-        relDir: '',
-        row: normalizeRow(row),
-        artifacts: [],
-      });
-    }
-    run.protocols.sort((a, b) => a.slug.localeCompare(b.slug));
+  const runsLog = await readRunsLog(root);
+  return { protocols, runsLog };
+}
+
+async function readRunsLog(outDir) {
+  try {
+    const body = await readFile(join(outDir, '.runs.log'), 'utf8');
+    return body.trim().split('\n').filter(Boolean).map((line) => {
+      const [ts, runId, slugs, outcome] = line.split('\t');
+      return { ts, runId, slugs: (slugs || '').split(',').filter(Boolean), outcome };
+    });
+  } catch {
+    return [];
   }
+}
 
-  const runList = [...runs.values()]
-    .sort((a, b) => b.runId.localeCompare(a.runId));
+// Build the legacy view shape consumed by renderHtml. Tasks 11/12 will
+// restructure renderHtml to consume the flat protocol list directly; until
+// then this adapter walks the new flat layout and synthesizes a single
+// "current" run grouping so existing template logic keeps working.
+async function collectLegacyView(outputRoot) {
+  outputRoot = resolve(outputRoot);
+  await mkdir(outputRoot, { recursive: true });
+  const { protocols } = await collectOutIndex(outputRoot);
 
+  const run = { runId: SYNTHETIC_RUN_ID, summary: null, rows: [], protocols: [] };
+  const summaryRows = [];
+  for (const p of protocols) {
+    const artifacts = await collectArtifacts(outputRoot, p.dir);
+    const row = await readProtocolRow(p.dir, p.slug);
+    if (row) summaryRows.push(row);
+    const metaStatus = await readMetaStatus(p.dir);
+    run.protocols.push({
+      slug: p.slug,
+      runId: SYNTHETIC_RUN_ID,
+      dir: p.dir,
+      relDir: relPath(outputRoot, p.dir),
+      row: normalizeRow(row, { slug: p.slug, status: metaStatus || 'unknown' }),
+      artifacts,
+    });
+  }
+  run.rows = summaryRows;
+  run.protocols.sort((a, b) => a.slug.localeCompare(b.slug));
+
+  const runList = run.protocols.length === 0 ? [] : [run];
   return {
     generatedAt: new Date().toISOString(),
     outputRoot,
     runs: runList,
     totals: {
       runs: runList.length,
-      protocols: runList.reduce((sum, run) => sum + run.protocols.length, 0),
+      protocols: run.protocols.length,
     },
   };
 }
@@ -246,7 +219,7 @@ function scriptJson(data) {
 
 export async function buildOutBrowser(outputRoot = DEFAULT_OUT_ROOT, opts = {}) {
   outputRoot = resolve(outputRoot);
-  const data = await collectOutIndex(outputRoot);
+  const data = await collectLegacyView(outputRoot);
   const outputFile = opts.outputFile ? resolve(opts.outputFile) : join(outputRoot, 'index.html');
   await mkdir(dirname(outputFile), { recursive: true });
   await writeFile(outputFile, renderHtml(data));
