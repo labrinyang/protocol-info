@@ -70,6 +70,8 @@ chmod 600 ~/.config/protocol-info/.env
 - “批量抓 Morpho 和 Aave 的 earn 信息，不要翻译。”
 - “给我做一份 Lido 的 protocol-info。” 如果类型不明确，skill 会先问一个短问题。
 - “Crawl protocol info for Morpho and translate to all locales.”
+- “把已有 Pendle 记录补翻成日语。”
+- “核实 Pendle 的 fundingRounds 并应用更新。”
 
 Skill 位于 `skills/protocol-info-crawler/SKILL.md`，最终会派发到 `/protocol-info:protocol-info`。
 
@@ -81,10 +83,11 @@ Skill 位于 `skills/protocol-info-crawler/SKILL.md`，最终会派发到 `/prot
 ./run.sh --display-name "Pendle" --type fixed_rate
 ```
 
-`run.sh` 只负责加载环境变量，然后委托给 `framework/cli.mjs`。环境文件查找顺序：
+`run.sh` 只负责加载环境变量，然后委托给 `framework/cli.mjs`。它按以下顺序填充缺失的环境变量：
 
-1. `<repo>/.env`
+1. 调用 shell 中已经导出的环境变量
 2. `~/.config/protocol-info/.env`
+3. `<repo>/.env`
 
 本地依赖：
 

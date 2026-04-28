@@ -70,6 +70,8 @@ You can also trigger the bundled skill with natural language, for example:
 - "Batch crawl Morpho and Aave earn metadata without translation."
 - "Create protocol-info for Lido." The skill may ask one short question if the protocol type is ambiguous.
 - "Crawl protocol info for Morpho and translate to all locales."
+- "Translate the existing Pendle record into Japanese."
+- "Verify Pendle fundingRounds and apply the update."
 
 The skill lives at `skills/protocol-info-crawler/SKILL.md` and dispatches to `/protocol-info:protocol-info`.
 
@@ -81,10 +83,11 @@ Clone the repository and run the shim:
 ./run.sh --display-name "Pendle" --type fixed_rate
 ```
 
-`run.sh` only loads environment variables and delegates to `framework/cli.mjs`. It looks for environment files in this order:
+`run.sh` only loads environment variables and delegates to `framework/cli.mjs`. It fills missing environment variables in this order:
 
-1. `<repo>/.env`
+1. Already-exported shell environment variables
 2. `~/.config/protocol-info/.env`
+3. `<repo>/.env`
 
 Required local tools:
 
