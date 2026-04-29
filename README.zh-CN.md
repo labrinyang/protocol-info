@@ -4,7 +4,7 @@
 
 `protocol-info` 是一个 Claude Code 插件，也可以作为独立 CLI 使用。它用于调研 DeFi earn/yield/staking 协议，并生成通过 JSON Schema 校验的 `EarnProtocolInfo` JSON。
 
-它会以 headless 模式调用 Claude，从 RootData、DeFiLlama 等可选 fetcher 获取结构化证据，按字段合并和对账，校验最终记录，并可选择用 Haiku 翻译 19 个 locale 的字段。
+它会以 headless 模式调用 Claude，从 RootData、DeFiLlama 等可选 fetcher 获取结构化证据，按字段合并和对账，校验最终记录，把 protocol/team member/auditor logo 下载到稳定输出目录，并可选择用 Haiku 翻译 19 个 locale 的字段。
 
 输出应先人工审核，再通过 dashboard 的 `earn-protocol-info` import endpoint 导入。
 
@@ -17,6 +17,7 @@
 - 公开团队成员、职位、社媒链接、短 bio
 - 融资轮次、投资方、金额、估值、日期
 - 审计报告、审计方、范围、报告链接、扫描时间
+- Provider、团队成员、审计机构 logo URL 改写为稳定的 OneKey CDN 路径
 - 字段级来源、未解决 gap、R2 改动审计
 - 可选的 dashboard 多语言导入输出
 
@@ -213,9 +214,16 @@ out/.runs/<run-id>/
 out/index.html
 ```
 
-`out/index.html` 是一个自包含的本地管理页。可以直接用浏览器打开，用来查看协议产物、按 `.runs.log` 中的近期 run 过滤、查看每个协议的 git history、比较最新 commit 和上一 commit、复制绝对路径、复制单个 `record.import.json`，或为当前可见记录复制一份合并后的 import JSON。它只嵌入审核用的关键产物；Claude/debug 原始日志仍保留在 `_debug/`。
+`out/index.html` 是一个自包含的本地审核工作台。可以直接用浏览器打开，用来筛选协议、查看产物、检查协议级改动、确认 logo 资产覆盖、复制工作流命令，或为当前可见记录复制一份合并后的 import JSON。详情区有四个模式：
 
-![out/index.html 本地管理页：协议导航、产物 tab、git history、run filter、commit diff 视图](docs/images/out-browser.png)
+- `Artifacts`：预览/复制 `record.json`、`record.import.json`、`record.full.json`、findings、gaps、changes、meta 等文件。
+- `Changes`：查看该 slug 的本地 git history、最新 diff 统计和 unified diff。
+- `Assets`：检查 provider、member、audit logo 资产，以及本地上传目录中是否已有对应文件。
+- `Commands`：复制当前协议常用的 `get`、`set`、`analyze`、`i18n`、`refresh`、`history`、`diff`、`restore` 命令。
+
+它只嵌入审核用的关键产物；Claude/debug 原始日志仍保留在 `_debug/`。
+
+![out/index.html 本地审核工作台：Artifacts、Changes、Assets、Commands 和 run filter](docs/images/out-browser.png)
 
 常见文件：
 
@@ -231,6 +239,9 @@ out/index.html
 | `meta.json` | 运行状态、RootData 使用情况、预算计划、R1/R2 telemetry、i18n 状态。 |
 | `summary.tsv` | 供本地管理页使用的单协议生成 summary row。Gitignored。 |
 | `_debug/` | 原始 envelope、stderr 日志、中间 evidence、i18n sidecar。 |
+| `../protocol-logo/` | `providerLogoUrl` 引用的 protocol/provider logo。上传到 `/static/logo/protocol-logo/`。 |
+| `../protocol-member-logo/` | `members[].avatarUrl` 引用的团队成员 logo。上传到 `/static/logo/protocol-member-logo/`。 |
+| `../audit-logo/` | `audits.items[].auditorLogoUrl` 引用的审计机构 logo。上传到 `/static/logo/audit-logo/`。 |
 
 批量 summary：
 
@@ -344,19 +355,39 @@ Consumer normalizer 会做决定性后处理：
 {
   "slug": "pendle",
   "provider": "pendle",
+  "providerLogoUrl": "https://uni.onekey-asset.com/static/logo/protocol-logo/pendle.png",
   "displayName": "Pendle",
   "type": "fixed_rate",
   "description": "...",
   "tags": ["yield", "fixed-rate"],
   "establishment": 2021,
-  "members": [],
+  "members": [
+    {
+      "memberName": "Example Member",
+      "memberPosition": "Co-Founder",
+      "oneLiner": "Previously built DeFi infrastructure.",
+      "avatarUrl": "https://uni.onekey-asset.com/static/logo/protocol-member-logo/pendle-example-member.png",
+      "memberLink": {
+        "xLink": "https://x.com/example",
+        "linkedinLink": null
+      }
+    }
+  ],
   "providerWebsite": "https://...",
   "providerXLink": "https://...",
   "providerDiscordLink": null,
   "status": "draft",
   "fundingRounds": [],
   "audits": {
-    "items": [],
+    "items": [
+      {
+        "auditor": "OpenZeppelin",
+        "auditorLogoUrl": "https://uni.onekey-asset.com/static/logo/audit-logo/openzeppelin.png",
+        "date": "2024-05",
+        "scope": "Core protocol contracts",
+        "reportUrl": "https://..."
+      }
+    ],
     "lastScannedAt": "2026-04-27"
   },
   "sources": ["https://..."]
@@ -368,6 +399,7 @@ Consumer normalizer 会做决定性后处理：
 - `type`：`fixed_rate`、`simple_earn`、`staking`
 - `status`：crawler 输出应为 `draft`
 - `members`：至少 1 个成员
+- `providerLogoUrl`、`members[].avatarUrl`、`audits.items[].auditorLogoUrl`：绝对 URL 或 `null`；找到 logo 时 normalizer 会改写为 `https://uni.onekey-asset.com/static/logo/...`
 - `fundingRounds`：完整融资历史，最新轮次在前
 - `audits.items[].date`：`YYYY-MM` 或 `YYYY-MM-DD`；裸年份无效
 - URL 字段必须是绝对 URI；可空字段可为 `null`
@@ -403,10 +435,11 @@ Consumer normalizer 会做决定性后处理：
 
 1. 打开 `out/index.html` 或 `out/.runs/<run-id>/summary.tsv`。
 2. 对每个 `OK` row，检查 `out/<slug>/record.json`。
-3. 查看 `findings.json`，确认来源覆盖。
-4. 查看 `gaps.json`，确认缺失或弱证据字段。
-5. 如果 R2 修改过 R1 输出，查看 `changes.json`。
-6. 审核通过后导入 `record.import.json`。
+3. 在 `Assets` 面板确认 provider、member、auditor logo 都有本地文件，再上传 logo 文件夹。
+4. 查看 `findings.json`，确认来源覆盖。
+5. 查看 `gaps.json`，确认缺失或弱证据字段。
+6. 如果 R2 修改过 R1 输出，查看 `changes.json`。
+7. 审核通过后导入 `record.import.json`。
 
 导入示例：
 

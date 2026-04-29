@@ -4,7 +4,7 @@ English | [简体中文](README.zh-CN.md)
 
 `protocol-info` is a Claude Code plugin and standalone CLI for researching DeFi earn/yield/staking protocols and producing schema-validated `EarnProtocolInfo` JSON.
 
-It runs Claude in headless mode, gathers structured evidence from optional fetchers such as RootData and DeFiLlama, reconciles field-level evidence, validates the final record against JSON Schema, and can optionally translate selected fields with Haiku for 19 locales.
+It runs Claude in headless mode, gathers structured evidence from optional fetchers such as RootData and DeFiLlama, reconciles field-level evidence, validates the final record against JSON Schema, rehosts protocol/member/auditor logos into stable output folders, and can optionally translate selected fields with Haiku for 19 locales.
 
 The output is intended for human review first, then import into the dashboard through the `earn-protocol-info` import endpoint.
 
@@ -17,6 +17,7 @@ Use this project when you need a repeatable research pipeline for protocol metad
 - Public team members, roles, social links, and short bios
 - Funding rounds with investors, amount, valuation, and dates
 - Audit reports with auditor, scope, report URL, and scan timestamp
+- Provider, team member, and auditor logo URLs rewritten to stable OneKey CDN paths
 - Field-level findings, unresolved gaps, and R2 change audit trail
 - Optional localized output for the dashboard import flow
 
@@ -218,9 +219,16 @@ Every completed run also refreshes:
 out/index.html
 ```
 
-`out/index.html` is a self-contained local browser for the output tree. Open it directly in a browser to inspect protocol artifacts, filter by recent runs from `.runs.log`, view per-protocol git history, compare the latest commit with the previous commit, copy absolute file paths, copy one `record.import.json`, or copy one merged import JSON for the visible records. It embeds only review artifacts; raw Claude/debug logs stay under `_debug/`.
+`out/index.html` is a self-contained local review console for the output tree. Open it directly in a browser to filter protocols, inspect artifacts, review per-protocol changes, check logo asset coverage, copy workflow commands, and copy one merged import JSON for the visible records. Its detail pane has four modes:
 
-![out/index.html — local browser with protocol navigation, artifact tabs, git history, run filter, and commit diff view](docs/images/out-browser.png)
+- `Artifacts` — preview/copy `record.json`, `record.import.json`, `record.full.json`, findings, gaps, changes, and meta files.
+- `Changes` — view the slug-scoped local git history plus the latest diff stats and unified diff.
+- `Assets` — inspect provider, member, and audit logo assets, including whether the local file exists under the uploadable logo folders.
+- `Commands` — copy common `get`, `set`, `analyze`, `i18n`, `refresh`, `history`, `diff`, and `restore` commands for the selected protocol.
+
+It embeds only review artifacts; raw Claude/debug logs stay under `_debug/`.
+
+![out/index.html — protocol review console with artifacts, changes, assets, commands, and run filters](docs/images/out-browser.png)
 
 Typical files:
 
@@ -236,6 +244,9 @@ Typical files:
 | `meta.json` | Run status, RootData usage, budget plan, R1/R2 telemetry, i18n status. |
 | `summary.tsv` | Per-protocol generated summary row for the local browser. Gitignored. |
 | `_debug/` | Raw envelopes, stderr logs, intermediate evidence, i18n sidecars. |
+| `../protocol-logo/` | Provider/protocol logos referenced by `providerLogoUrl`. Upload this folder to `/static/logo/protocol-logo/`. |
+| `../protocol-member-logo/` | Team member logos referenced by `members[].avatarUrl`. Upload this folder to `/static/logo/protocol-member-logo/`. |
+| `../audit-logo/` | Auditor logos referenced by `audits.items[].auditorLogoUrl`. Upload this folder to `/static/logo/audit-logo/`. |
 
 The batch summary is:
 
@@ -349,19 +360,39 @@ Top-level fields:
 {
   "slug": "pendle",
   "provider": "pendle",
+  "providerLogoUrl": "https://uni.onekey-asset.com/static/logo/protocol-logo/pendle.png",
   "displayName": "Pendle",
   "type": "fixed_rate",
   "description": "...",
   "tags": ["yield", "fixed-rate"],
   "establishment": 2021,
-  "members": [],
+  "members": [
+    {
+      "memberName": "Example Member",
+      "memberPosition": "Co-Founder",
+      "oneLiner": "Previously built DeFi infrastructure.",
+      "avatarUrl": "https://uni.onekey-asset.com/static/logo/protocol-member-logo/pendle-example-member.png",
+      "memberLink": {
+        "xLink": "https://x.com/example",
+        "linkedinLink": null
+      }
+    }
+  ],
   "providerWebsite": "https://...",
   "providerXLink": "https://...",
   "providerDiscordLink": null,
   "status": "draft",
   "fundingRounds": [],
   "audits": {
-    "items": [],
+    "items": [
+      {
+        "auditor": "OpenZeppelin",
+        "auditorLogoUrl": "https://uni.onekey-asset.com/static/logo/audit-logo/openzeppelin.png",
+        "date": "2024-05",
+        "scope": "Core protocol contracts",
+        "reportUrl": "https://..."
+      }
+    ],
     "lastScannedAt": "2026-04-27"
   },
   "sources": ["https://..."]
@@ -373,6 +404,7 @@ Important constraints:
 - `type`: `fixed_rate`, `simple_earn`, or `staking`
 - `status`: crawler output should be `draft`
 - `members`: at least one entry
+- `providerLogoUrl`, `members[].avatarUrl`, and `audits.items[].auditorLogoUrl`: absolute URLs or `null`; when found, the normalizer rewrites them to `https://uni.onekey-asset.com/static/logo/...`
 - `fundingRounds`: full funding history, newest first
 - `audits.items[].date`: `YYYY-MM` or `YYYY-MM-DD`; bare years are invalid
 - URL fields must be absolute URIs or `null` when nullable
@@ -408,10 +440,11 @@ Recommended review flow:
 
 1. Open `out/index.html` or `out/.runs/<run-id>/summary.tsv`.
 2. For each `OK` row, review `out/<slug>/record.json`.
-3. Check `findings.json` for source coverage.
-4. Check `gaps.json` for missing or weak fields.
-5. Check `changes.json` when R2 changed R1 output.
-6. Import `record.import.json` after review.
+3. In the `Assets` panel, confirm provider, member, and auditor logos exist locally before uploading the logo folders.
+4. Check `findings.json` for source coverage.
+5. Check `gaps.json` for missing or weak fields.
+6. Check `changes.json` when R2 changed R1 output.
+7. Import `record.import.json` after review.
 
 Example import:
 
