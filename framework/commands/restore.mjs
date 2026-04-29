@@ -1,13 +1,14 @@
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { restore } from '../version-store.mjs';
-import { preflightWritableSlug, rollbackSlug, commitAndRebuild } from '../slug-transaction.mjs';
+import { loadRecordEnvelope, writeRecordEnvelope } from '../record-state.mjs';
+import { preflightWritableSlug, rollbackSlugAndCleanup, commitAndRebuild } from '../slug-transaction.mjs';
 import { validateRecord } from '../schema-validator.mjs';
 import { loadManifest } from '../manifest-loader.mjs';
 import { invalidateI18nArtifacts } from '../i18n-cache.mjs';
+import { createWriteCommandContext, writeValidationFailure } from '../command-write-context.mjs';
 
 const COMMAND_DIR = dirname(fileURLToPath(import.meta.url));
 const FRAMEWORK_DIR = dirname(COMMAND_DIR);
@@ -40,6 +41,7 @@ export default async function restoreCmd(args, ctx = {}) {
   const runPostProcessing = ctx.runPostProcessing || defaultRunPostProcessing;
   const commitRebuild = ctx.commitAndRebuild || commitAndRebuild;
   const [slug, sha] = args;
+  const writeCtx = createWriteCommandContext(outputRoot, { slug, manifestPath, ctx });
 
   if (!outputRoot || !manifestPath || !slug || !sha) {
     stderr.write('Usage: protocol-info restore <slug> <sha>\n');
@@ -53,39 +55,38 @@ export default async function restoreCmd(args, ctx = {}) {
     const slugDir = join(outputRoot, slug);
     const recordPath = join(slugDir, 'record.json');
     if (!existsSync(recordPath)) {
-      await rollbackSlug(outputRoot, slug);
+      await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
       stderr.write(`restore: ${recordPath} missing after checkout; rolled back\n`);
       return 1;
     }
 
-    const record = JSON.parse(await readFile(recordPath, 'utf8'));
-    const result = await validate(record);
+    const envelope = await writeCtx.normalizeEnvelope(await loadRecordEnvelope(outputRoot, { slug }));
+    const result = await validate(envelope.record);
     if (!result.ok) {
-      await rollbackSlug(outputRoot, slug);
-      stderr.write(`restore: validation failed (${result.errors.length} errors); rolled back\n`);
-      for (const e of result.errors.slice(0, 5)) {
-        stderr.write(`  ${typeof e === 'string' ? e : `${e.path || '/'}: ${e.message}`}\n`);
-      }
+      await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
+      writeValidationFailure(stderr, 'restore', result, 'rolled back.');
       return 1;
     }
 
+    await writeRecordEnvelope(outputRoot, { slug, envelope });
     await invalidateI18nArtifacts(slugDir, { manifestPath });
     const postCode = await runPostProcessing({ slugDir, manifestPath });
     if (postCode !== 0) {
-      await rollbackSlug(outputRoot, slug);
+      await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
       stderr.write(`restore: post-processing exited ${postCode}; rolled back\n`);
       return postCode;
     }
 
     await commitRebuild(outputRoot, {
       slug,
+      extraPaths: writeCtx.assetPathsToCommit(),
       message: `restore(${slug}) ${sha}`,
       runId: freshRunId(),
     });
     return 0;
   } catch (err) {
     try {
-      await rollbackSlug(outputRoot, slug);
+      await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
     } catch {
       // Preserve original error.
     }

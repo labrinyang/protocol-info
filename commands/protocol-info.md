@@ -8,11 +8,13 @@ allowed-tools: Bash
 
 Run the protocol-info crawler pipeline with the user's arguments. The pipeline is a bash script (`run.sh`) bundled with this plugin; it does:
 
-1. **Round 1** — Claude searches the web, produces a strict-schema JSON record
-2. **RootData API** (if `ROOTDATA_API_KEY` is set) — fetches structured evidence in parallel
-3. **Round 2** — resumes the Claude session with API evidence to cross-check
-4. **Validate** — runs zero-dep JSON Schema validation
-5. **i18n** (optional) — Haiku translates `description` + `members[].{memberPosition, oneLiner}` to selected locales
+1. **R0 fetchers** — RootData/DeFiLlama evidence when keys are available
+2. **R1 synthesis** — Claude produces schema-slice records for metadata/team/funding/audits
+3. **R2 reconcile** — Claude cross-checks R1 against structured evidence
+4. **Normalize** — deterministic post-R2 fixes, including RootData member avatars and rehosted provider/member/audit logos
+5. **Validate** — zero-dep JSON Schema validation
+6. **i18n** (optional) — Haiku translates `description` + `members[].{memberPosition, oneLiner}` to selected locales
+7. **Post/export + history** — writes dashboard import artifacts, scoped local git commits, and `out/index.html`
 
 The same runner also supports workflow subcommands on an existing
 `out/<slug>/`: `get`, `set`, `analyze`, `i18n`, `refresh`, `history`, `diff`,
@@ -32,7 +34,8 @@ Do not re-parse the args or transform them — pass through verbatim. If the use
 
 The notes below describe full crawl output. Workflow subcommands are shorter:
 read-only commands print their direct result, and write commands validate,
-post-process, commit inside `out/`, and refresh `out/index.html`.
+normalize deterministic fields, invalidate stale i18n, post-process, commit
+inside `out/`, and refresh `out/index.html`.
 
 Claude Code captures Bash stdout/stderr as plain text command output, not rich markdown. The runner therefore prints only low-frequency key lines:
 

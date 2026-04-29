@@ -4,6 +4,23 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `providerLogoUrl` on protocol records, populated deterministically from
+  RootData project logo evidence when available.
+- `logo-assets` normalizer: downloads provider, team member, and audit-firm
+  logos into `out/protocol-logo/`, `out/protocol-member-logo/`, and
+  `out/audit-logo/`, then rewrites JSON fields to
+  `https://uni.onekey-asset.com/static/logo/...` paths.
+
+### Changed
+- Write workflows now run consumer normalizers before validation/post-processing
+  so `set`, `analyze --apply`, `refresh`, and `restore` keep rehosted logo
+  fields consistent with full crawls.
+- Audit logo handling reuses matching auditor logos already present in existing
+  `out/*/record.json` records before fetching a new image.
+
 ## [2.1.0] — 2026-04-27
 
 ### Added

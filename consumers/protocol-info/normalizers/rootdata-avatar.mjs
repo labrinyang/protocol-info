@@ -1,19 +1,16 @@
 // consumers/protocol-info/normalizers/rootdata-avatar.mjs
 //
-// Phase A of the avatarUrl rework: members[].avatarUrl is sourced
-// exclusively from RootData. The team R1 subtask emits null; this
-// normalizer fills the field deterministically, post-R2, by name-matching
-// each member against `evidence.rootdata.member_candidates[]` and copying
-// the candidate's `avatar_url` (RootData's `logo` field).
+// members[].avatarUrl is sourced from RootData before the logo-assets
+// normalizer downloads and rewrites it to the OneKey static-logo CDN.
+// The team R1 subtask emits null; this normalizer fills the field
+// deterministically, post-R2, by name-matching each member against
+// `evidence.rootdata.member_candidates[]` and copying the candidate's
+// `avatar_url` (RootData's `logo` field).
 //
 // No LLM tokens, no extra HTTP calls, no third-party rate-limited gateway
 // (unavatar.io's 25 req/day-per-IP anonymous limit makes runtime fetches
 // from the dashboard frontend non-viable).
 //
-// Phase B (out of scope here, owned by backend ops): download these RootData
-// URLs server-side and rehost them on owned object storage; rewrite
-// `avatarUrl` to the in-house URL before the dashboard ever sees it.
-
 const PBS_TWIMG_RE = /(?:^|\.)pbs\.twimg\.com$/i;
 
 // Lowercase + strip diacritics + collapse whitespace + drop punctuation,
@@ -82,10 +79,10 @@ export default function normalize({ record, evidence }) {
     let sourceLabel;
 
     if (!rootdataOk) {
-      // RootData unavailable for this run — leave the field null. We don't
-      // append a per-member gap here: the run-level meta.json already records
-      // the fetcher status, and 1-N gap entries per disabled run is noise.
+      // RootData unavailable for this run: preserve existing values for
+      // workflow edits/restores. Fresh crawls already have null here.
       reason = 'rootdata_unavailable';
+      after = before;
     } else {
       const cand = byName.get(normalizeName(member.memberName));
       if (!cand) {

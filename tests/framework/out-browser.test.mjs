@@ -4,6 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildOutBrowser, collectOutIndex } from '../../framework/out-browser.mjs';
 
+function embeddedData(html) {
+  const raw = html.match(/<script id="out-data" type="application\/json">([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(raw, 'expected embedded out-data script');
+  return JSON.parse(raw);
+}
+
 export const tests = [
   {
     name: 'collectOutIndex discovers protocol-first artifacts',
@@ -113,8 +119,12 @@ export const tests = [
 
         await buildOutBrowser(dir);
         const html = await readFile(join(dir, 'index.html'), 'utf8');
+        const data = embeddedData(html);
         assert.match(html, /Protocols/i);
         assert.match(html, /pendle/);
+        assert.match(html, /class="runs-filter-list"/);
+        assert.match(html, /<option value="unknown">unknown<\/option>/);
+        assert.deepEqual(data.facets.statuses, ['unknown']);
         // Run-id should appear in the filter section, not as a directory link.
         assert.match(html, /R1/);
         // The legacy "runs as primary nav" markers should be gone:
@@ -139,9 +149,81 @@ export const tests = [
 
         await buildOutBrowser(dir);
         const html = await readFile(join(dir, 'index.html'), 'utf8');
-        // Expect the diff data ("HEAD~1 vs HEAD") to be present in some form:
+        const data = embeddedData(html);
+        // Expect the slug-scoped previous-version diff data to be present in some form:
         assert.match(html, /"v":1/);
         assert.match(html, /"v":2/);
+        assert.deepEqual(data.protocols[0].view.diffSummary, { files: 1, additions: 1, deletions: 1 });
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: 'buildOutBrowser renders v2.1 workflow and logo asset panels',
+    fn: async () => {
+      const { ensureRepo, commit } = await import('../../framework/version-store.mjs');
+      const dir = await mkdtemp(join(tmpdir(), 'pi-html-logo-'));
+      try {
+        await ensureRepo(dir);
+        await mkdir(join(dir, 'pendle'), { recursive: true });
+        await mkdir(join(dir, 'protocol-logo'), { recursive: true });
+        await mkdir(join(dir, 'protocol-member-logo'), { recursive: true });
+        await mkdir(join(dir, 'audit-logo'), { recursive: true });
+        await writeFile(join(dir, 'protocol-logo', 'pendle.png'), 'provider-logo');
+        await writeFile(join(dir, 'protocol-member-logo', 'pendle-alice.png'), 'member-logo');
+        await writeFile(join(dir, 'audit-logo', 'openzeppelin.png'), 'audit-logo');
+        await writeFile(join(dir, 'pendle', 'record.json'), JSON.stringify({
+          slug: 'pendle',
+          provider: 'pendle',
+          providerLogoUrl: 'https://uni.onekey-asset.com/static/logo/protocol-logo/pendle.png',
+          displayName: 'Pendle',
+          type: 'fixed_rate',
+          members: [
+            {
+              memberName: 'Alice',
+              avatarUrl: 'https://uni.onekey-asset.com/static/logo/protocol-member-logo/pendle-alice.png',
+            },
+          ],
+          audits: {
+            items: [
+              {
+                auditor: 'OpenZeppelin',
+                auditorLogoUrl: 'https://uni.onekey-asset.com/static/logo/audit-logo/openzeppelin.png',
+              },
+            ],
+          },
+        }));
+        await commit(dir, { paths: ['pendle/', 'protocol-logo/', 'protocol-member-logo/', 'audit-logo/'], message: 'crawl(pendle): ok', runId: 'R1' });
+
+        await buildOutBrowser(dir);
+        const html = await readFile(join(dir, 'index.html'), 'utf8');
+        const data = embeddedData(html);
+        const pendle = data.protocols.find((p) => p.slug === 'pendle');
+        assert.match(html, /Logo assets/);
+        assert.match(html, /Workflow commands/);
+        assert.match(html, /command-row/);
+        assert.match(html, /asset-sections/);
+        assert.match(html, /data-detail-mode/);
+        assert.match(html, /Artifacts/);
+        assert.match(html, /Changes/);
+        assert.match(html, /Assets/);
+        assert.match(html, /Commands/);
+        assert.match(html, /Search slug, provider, status/);
+        assert.match(html, /protocol-logo\/pendle\.png/);
+        assert.match(html, /protocol-member-logo\/pendle-alice\.png/);
+        assert.match(html, /audit-logo\/openzeppelin\.png/);
+        assert.equal(pendle.view.defaultArtifact, 'record.json');
+        assert.equal(pendle.view.initials, 'P');
+        assert.equal(pendle.view.modeCounts.assets, 3);
+        assert.ok(pendle.view.searchText.includes('fixed_rate'));
+        assert.ok(pendle.view.workflowCommands.some((item) => item.group === 'inspect'));
+        assert.ok(pendle.view.workflowCommands.some((item) => item.group === 'version' && item.risk === 'destructive'));
+        assert.ok(pendle.view.workflowCommands.some((item) => item.command.includes(`./run.sh diff pendle`)));
+        assert.ok(pendle.view.workflowCommands.some((item) => item.command.includes(`'"Updated source-language description"'`)));
+        const script = html.match(/<script>\n([\s\S]*)<\/script>\n<\/body>/)?.[1];
+        assert.ok(script, 'expected browser script');
+        new Function(script);
       } finally {
         await rm(dir, { recursive: true, force: true });
       }

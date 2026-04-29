@@ -241,6 +241,9 @@ export const tests = [
         if (name === 'evidence-diff') return { code: 0, stdout: '', stderr: '' };
         if (name === 'r2') return { code: 1, stdout: '', stderr: 'skip r2 in test' };
         if (name === 'normalize') {
+          await mkdir(join(dir, 'protocol-logo'), { recursive: true });
+          await writeFile(join(dir, 'protocol-logo', 'pendle.png'), 'failed-logo');
+          await writeFile(arg(args, 'created-assets-out'), JSON.stringify(['protocol-logo/pendle.png']));
           await writeFile(arg(args, 'record-out'), await readFile(arg(args, 'record-in'), 'utf8'));
           await writeFile(arg(args, 'changes-out'), await readFile(arg(args, 'changes-in'), 'utf8'));
           await writeFile(arg(args, 'gaps-out'), await readFile(arg(args, 'gaps-in'), 'utf8'));
@@ -260,6 +263,7 @@ export const tests = [
       });
 
       assert.equal(existsSync(join(dir, 'pendle', 'record.json')), false);
+      assert.equal(existsSync(join(dir, 'protocol-logo', 'pendle.png')), false);
       assert.equal(await isClean(dir, { slug: 'pendle' }), true);
       assert.deepEqual(await log(dir, { slug: 'pendle' }), []);
     },

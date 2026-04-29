@@ -111,7 +111,7 @@ export const tests = [
     },
   },
   {
-    name: 'rootdata fetcher disabled → field nulled, no per-member gap',
+    name: 'rootdata fetcher disabled → existing field preserved, no per-member gap',
     fn: () => {
       const record = baseRecord([
         { memberName: 'Alice Liu', avatarUrl: 'https://unavatar.io/x/aliceliu?fallback=false' },
@@ -120,11 +120,10 @@ export const tests = [
         fetcher_status: { rootdata: 'skipped: missing env ROOTDATA_API_KEY' },
       };
       const out = normalize({ record, evidence });
-      assert.equal(out.record.members[0].avatarUrl, null);
+      assert.equal(out.record.members[0].avatarUrl, 'https://unavatar.io/x/aliceliu?fallback=false');
       // Per-run status already recorded in meta.json; no per-member noise.
       assert.equal(out.gaps.length, 0);
-      assert.equal(out.changes.length, 1);
-      assert.equal(out.changes[0].reason, 'rootdata_unavailable');
+      assert.equal(out.changes.length, 0);
     },
   },
   {

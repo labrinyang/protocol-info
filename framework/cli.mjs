@@ -148,7 +148,7 @@ Workflow commands (v2.1):
   i18n <slug> [--locales LIST]   translate current record, post-process, commit
   refresh <slug> <subtask>       rerun metadata/team/funding/audits and merge
   history <slug> [--limit N]     show git history for one protocol
-  diff <slug> [from] [to]        show git diff for one protocol (default HEAD~1..HEAD)
+  diff <slug> [from] [to]        show git diff for one protocol (default: latest two slug commits)
   restore <slug> <sha>           restore a previous commit, validate, commit
 `;
 

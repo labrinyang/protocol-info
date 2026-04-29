@@ -3,10 +3,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setAt } from '../jsonpath.mjs';
 import { loadRecordEnvelope, writeRecordEnvelope } from '../record-state.mjs';
-import { preflightWritableSlug, rollbackSlug, commitAndRebuild } from '../slug-transaction.mjs';
+import { preflightWritableSlug, rollbackSlugAndCleanup, commitAndRebuild } from '../slug-transaction.mjs';
 import { validateRecord } from '../schema-validator.mjs';
 import { loadManifest } from '../manifest-loader.mjs';
 import { invalidateI18nArtifacts } from '../i18n-cache.mjs';
+import { createWriteCommandContext, writeValidationFailure } from '../command-write-context.mjs';
 
 const COMMAND_DIR = dirname(fileURLToPath(import.meta.url));
 const FRAMEWORK_DIR = dirname(COMMAND_DIR);
@@ -40,6 +41,7 @@ export default async function setCmd(args, ctx = {}) {
   const commitRebuild = ctx.commitAndRebuild || commitAndRebuild;
 
   const [slug, jsonpath, valueArg] = args;
+  const writeCtx = createWriteCommandContext(outputRoot, { slug, manifestPath, ctx });
   if (!outputRoot || !manifestPath || !slug || !jsonpath || valueArg === undefined) {
     stderr.write('Usage: protocol-info set <slug> <jsonpath> <json-value>\n');
     return 1;
@@ -57,34 +59,34 @@ export default async function setCmd(args, ctx = {}) {
     await preflightWritableSlug(outputRoot, slug, { forceOverwrite: !!ctx.forceOverwrite });
     const envelope = await loadRecordEnvelope(outputRoot, { slug });
     setAt(envelope.record, jsonpath, value);
+    const normalized = await writeCtx.normalizeEnvelope(envelope);
 
-    const result = await validate(envelope.record);
+    const result = await validate(normalized.record);
     if (!result.ok) {
-      stderr.write(`set: validation failed (${result.errors.length} errors). Record NOT written.\n`);
-      for (const e of result.errors.slice(0, 5)) {
-        stderr.write(`  ${typeof e === 'string' ? e : `${e.path || '/'}: ${e.message}`}\n`);
-      }
+      await writeCtx.cleanupCreatedAssets();
+      writeValidationFailure(stderr, 'set', result);
       return 1;
     }
 
-    await writeRecordEnvelope(outputRoot, { slug, envelope });
+    await writeRecordEnvelope(outputRoot, { slug, envelope: normalized });
     await invalidateI18nArtifacts(join(outputRoot, slug), { manifestPath });
     const postCode = await runPostProcessing({ slugDir: join(outputRoot, slug), manifestPath });
     if (postCode !== 0) {
-      await rollbackSlug(outputRoot, slug);
+      await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
       stderr.write(`set: post-processing exited ${postCode}; rolled back\n`);
       return postCode;
     }
 
     await commitRebuild(outputRoot, {
       slug,
+      extraPaths: writeCtx.assetPathsToCommit(),
       message: `set(${slug}) ${jsonpath}`,
       runId: freshRunId(),
     });
     return 0;
   } catch (err) {
     try {
-      await rollbackSlug(outputRoot, slug);
+      await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
     } catch {
       // Preserve the original error.
     }

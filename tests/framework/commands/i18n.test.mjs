@@ -22,7 +22,7 @@ async function seedOut() {
 
 async function commitOnly(outputRoot, { slug, paths, message, runId }) {
   return {
-    sha: await commit(outputRoot, { paths, message, runId }),
+    sha: await commit(outputRoot, { paths: paths || [`${slug}/`], message, runId }),
     browserPath: null,
   };
 }
@@ -69,6 +69,7 @@ export const tests = [
           return 0;
         },
         commitAndRebuild: commitOnly,
+        validate: async () => ({ ok: true, errors: [] }),
         stderr: { write: () => {} },
       });
       assert.equal(code, 0);
@@ -94,6 +95,7 @@ export const tests = [
           throw new Error('post should not run');
         },
         commitAndRebuild: commitOnly,
+        validate: async () => ({ ok: true, errors: [] }),
         stderr: { write: () => {} },
       });
       assert.equal(code, 2);
@@ -115,10 +117,36 @@ export const tests = [
           return 1;
         },
         commitAndRebuild: commitOnly,
+        validate: async () => ({ ok: true, errors: [] }),
         stderr: { write: () => {} },
       });
       assert.equal(code, 1);
       assert.equal(existsSync(join(out, 'pendle', 'record.full.json')), false);
+      assert.equal((await log(out, { slug: 'pendle' })).length, 1);
+      assert.equal(await isClean(out, { slug: 'pendle' }), true);
+    },
+  },
+  {
+    name: 'i18n validation failure runs no stage and leaves record unchanged',
+    fn: async () => {
+      const out = await seedOut();
+      const cmd = (await import('../../../framework/commands/i18n.mjs')).default;
+      const code = await cmd(['pendle', '--locales', 'zh_CN'], {
+        outputRoot: out,
+        manifestPath,
+        validate: async () => ({ ok: false, errors: ['invalid record'] }),
+        runI18nStage: async () => {
+          throw new Error('i18n stage should not run');
+        },
+        runPostProcessing: async () => {
+          throw new Error('post should not run');
+        },
+        commitAndRebuild: commitOnly,
+        stderr: { write: () => {} },
+      });
+      assert.equal(code, 1);
+      const record = JSON.parse(await readFile(join(out, 'pendle', 'record.json'), 'utf8'));
+      assert.equal(record.description, 'AMM');
       assert.equal((await log(out, { slug: 'pendle' })).length, 1);
       assert.equal(await isClean(out, { slug: 'pendle' }), true);
     },

@@ -2,12 +2,13 @@ import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadRecordEnvelope, writeRecordEnvelope } from '../record-state.mjs';
-import { preflightWritableSlug, rollbackSlug, commitAndRebuild } from '../slug-transaction.mjs';
+import { preflightWritableSlug, rollbackSlugAndCleanup, commitAndRebuild } from '../slug-transaction.mjs';
 import { validateRecord } from '../schema-validator.mjs';
 import { loadManifest } from '../manifest-loader.mjs';
 import { mergeR2 } from '../merger.mjs';
 import { runRefreshSubtask as defaultRunRefreshSubtask } from '../refresh-runner.mjs';
 import { invalidateI18nArtifacts } from '../i18n-cache.mjs';
+import { createWriteCommandContext, writeValidationFailure } from '../command-write-context.mjs';
 
 const COMMAND_DIR = dirname(fileURLToPath(import.meta.url));
 const FRAMEWORK_DIR = dirname(COMMAND_DIR);
@@ -43,6 +44,7 @@ export default async function refreshCmd(args, ctx = {}) {
   const validate = ctx.validate || ((record) => defaultValidate(record, manifestPath));
   const runPostProcessing = ctx.runPostProcessing || defaultRunPostProcessing;
   const commitRebuild = ctx.commitAndRebuild || commitAndRebuild;
+  const writeCtx = createWriteCommandContext(outputRoot, { slug, manifestPath, ctx });
 
   if (!outputRoot || !manifestPath || !slug || !subtaskName) {
     stderr.write('Usage: protocol-info refresh <slug> <subtask>\n');
@@ -78,33 +80,33 @@ export default async function refreshCmd(args, ctx = {}) {
       gaps: result.gaps || [],
     };
     const merged = merge(prior, refreshed);
-    const validation = await validate(merged.record);
+    const normalized = await writeCtx.normalizeEnvelope(merged);
+    const validation = await validate(normalized.record);
     if (!validation.ok) {
-      stderr.write(`refresh: validation failed (${validation.errors.length} errors). Record NOT written.\n`);
-      for (const e of validation.errors.slice(0, 5)) {
-        stderr.write(`  ${typeof e === 'string' ? e : `${e.path || '/'}: ${e.message}`}\n`);
-      }
+      await writeCtx.cleanupCreatedAssets();
+      writeValidationFailure(stderr, 'refresh', validation);
       return 1;
     }
 
-    await writeRecordEnvelope(outputRoot, { slug, envelope: merged });
+    await writeRecordEnvelope(outputRoot, { slug, envelope: normalized });
     await invalidateI18nArtifacts(join(outputRoot, slug), { manifestPath });
     const postCode = await runPostProcessing({ slugDir: join(outputRoot, slug), manifestPath });
     if (postCode !== 0) {
-      await rollbackSlug(outputRoot, slug);
+      await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
       stderr.write(`refresh: post-processing exited ${postCode}; rolled back\n`);
       return postCode;
     }
 
     await commitRebuild(outputRoot, {
       slug,
+      extraPaths: writeCtx.assetPathsToCommit(),
       message: `refresh(${slug}): ${subtaskName}`,
       runId: freshRunId(),
     });
     return 0;
   } catch (err) {
     try {
-      await rollbackSlug(outputRoot, slug);
+      await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
     } catch {
       // Preserve original error.
     }

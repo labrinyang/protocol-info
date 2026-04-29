@@ -27,6 +27,7 @@ import { runWithLimit } from './parallel-runner.mjs';
 import { buildOutBrowser } from './out-browser.mjs';
 import { ensureRepo, commit, isClean, resetSlugToHead } from './version-store.mjs';
 import { invalidateI18nArtifacts } from './i18n-cache.mjs';
+import { cleanupCreatedLogoAssets } from './logo-assets.mjs';
 
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_DIR = dirname(FRAMEWORK_DIR);
@@ -112,6 +113,13 @@ async function readJsonSafe(path, fallback = null) {
     return JSON.parse(await readFile(path, 'utf8'));
   } catch {
     return fallback;
+  }
+}
+
+async function cleanupLogoAssetsFile(outputRoot, path) {
+  const created = await readJsonSafe(path, []);
+  if (Array.isArray(created) && created.length > 0) {
+    await cleanupCreatedLogoAssets(outputRoot, created);
   }
 }
 
@@ -221,7 +229,11 @@ async function commitOkSlugs(outputRoot, okSlugs, runId) {
   // concurrent writes to out/.git/index will race under --parallel >1.
   for (const slug of okSlugs) {
     const message = `crawl(${slug}): R1+R2 ok`;
-    await commit(outputRoot, { paths: [`${slug}/`], message, runId });
+    const assetPaths = await readJsonSafe(
+      join(outputRoot, slug, '_debug', 'normalize.logo-assets-to-commit.json'),
+      [],
+    );
+    await commit(outputRoot, { paths: [`${slug}/`, ...assetPaths], message, runId });
   }
 }
 
@@ -517,6 +529,8 @@ export async function runOne({
   const recordNorm = recordPath + '.normalized';
   const changesNorm = changesPath + '.normalized';
   const gapsNorm = gapsPath + '.normalized';
+  const createdAssetsNorm = join(debugDir, 'normalize.created-logo-assets.json');
+  const assetsToCommitNorm = join(debugDir, 'normalize.logo-assets-to-commit.json');
 
   const normRes = await callStage('normalize', [
     '--manifest', manifestPath,
@@ -527,6 +541,10 @@ export async function runOne({
     '--record-out', recordNorm,
     '--changes-out', changesNorm,
     '--gaps-out', gapsNorm,
+    '--output-root', outputRoot,
+    '--slug-dir', slugDir,
+    '--created-assets-out', createdAssetsNorm,
+    '--assets-to-commit-out', assetsToCommitNorm,
   ]);
   if (normRes.stderr) {
     try {
@@ -539,6 +557,7 @@ export async function runOne({
     if (existsSync(changesNorm)) await rename(changesNorm, changesPath);
     if (existsSync(gapsNorm)) await rename(gapsNorm, gapsPath);
   } else {
+    await cleanupLogoAssetsFile(outputRoot, createdAssetsNorm);
     process.stderr.write(`  -> normalizer failed (exit ${normRes.code}); keeping pre-normalize record\n`);
     for (const p of [recordNorm, changesNorm, gapsNorm]) {
       try { await unlink(p); } catch { /* best effort */ }
@@ -583,6 +602,7 @@ export async function runOne({
 
   await writeMeta(status, { schema: schemaRes.code === 0 ? 'pass' : 'fail' });
   if (status !== 'OK') {
+    await cleanupLogoAssetsFile(outputRoot, createdAssetsNorm);
     await rollbackFailedSlug(outputRoot, slug);
   }
 

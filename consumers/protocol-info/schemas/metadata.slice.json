@@ -5,7 +5,7 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "slug", "provider", "displayName", "type",
+    "slug", "provider", "providerLogoUrl", "displayName", "type",
     "description", "tags", "establishment",
     "providerWebsite", "providerXLink", "providerDiscordLink",
     "status"
@@ -13,6 +13,7 @@
   "properties": {
     "slug":        { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,63}$" },
     "provider":    { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+    "providerLogoUrl": { "type": ["string", "null"], "format": "uri", "maxLength": 500 },
     "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
     "type":        { "type": "string", "enum": ["fixed_rate", "simple_earn", "staking"] },
     "description": { "type": ["string", "null"], "maxLength": 1000 },

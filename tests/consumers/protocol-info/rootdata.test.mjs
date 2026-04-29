@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import fetch, { search } from '../../../consumers/protocol-info/fetchers/rootdata.mjs';
+import fetch, { extractProviderLogoUrl, search } from '../../../consumers/protocol-info/fetchers/rootdata.mjs';
 
 export const tests = [
   {
@@ -39,6 +39,15 @@ export const tests = [
       assert.equal(result.channel, 'rootdata');
       assert.equal(result.ok, false);
       assert.deepEqual(result.results, []);
+    },
+  },
+  {
+    name: 'extractProviderLogoUrl uses only RootData logo field',
+    fn: async () => {
+      assert.equal(extractProviderLogoUrl({ logo: 'https://cdn.rootdata.com/protocol/pendle.png' }), 'https://cdn.rootdata.com/protocol/pendle.png');
+      assert.equal(extractProviderLogoUrl({ logo: 'http://example.com/insecure.png', logo_url: 'https://example.com/secure.png' }), null);
+      assert.equal(extractProviderLogoUrl({ image: 'https://example.com/image.png', avatar: 'https://example.com/avatar.png' }), null);
+      assert.equal(extractProviderLogoUrl({ logo: 'not-url' }), null);
     },
   },
 ];

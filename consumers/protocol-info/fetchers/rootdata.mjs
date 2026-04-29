@@ -123,6 +123,18 @@ async function getItem(projectId, apiKey) {
   return apiPost('/open/get_item', { project_id: projectId, include_investors: true }, apiKey);
 }
 
+export function extractProviderLogoUrl(item) {
+  const value = item?.logo;
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === 'https:') return value;
+  } catch {
+    // Invalid RootData logo.
+  }
+  return null;
+}
+
 // ── Canonical aliases ─────────────────────────────────────────────────
 
 function buildAliases(displayName, projectName, website) {
@@ -297,6 +309,7 @@ function separateInvestors(investors) {
 
 async function collectRootDataPacket({ slug, displayName, hints, rootdataId, apiKey, logger }) {
   let projectId = rootdataId;
+  let projectSearchHit = null;
 
   // Step 1: Resolve project ID if not provided
   if (!projectId) {
@@ -308,6 +321,7 @@ async function collectRootDataPacket({ slug, displayName, hints, rootdataId, api
     const match = results.find(
       (r) => (r.name || r.item_name || '').toLowerCase() === displayName.toLowerCase()
     ) || results[0];
+    projectSearchHit = match;
     projectId = match.id || match.project_id;
     if (!projectId) {
       throw new Error(`Could not resolve project ID for "${displayName}"`);
@@ -351,6 +365,8 @@ async function collectRootDataPacket({ slug, displayName, hints, rootdataId, api
 
   // Step 7: Build anchors
   const anchors = {};
+  const providerLogoUrl = extractProviderLogoUrl(item) || extractProviderLogoUrl(projectSearchHit);
+  if (providerLogoUrl) anchors.providerLogoUrl = providerLogoUrl;
   if (item.establishment_date) {
     const raw = item.establishment_date;
     const year = /^\d{4}$/.test(raw) ? Number(raw) : new Date(raw).getFullYear();
@@ -375,6 +391,7 @@ async function collectRootDataPacket({ slug, displayName, hints, rootdataId, api
   return {
     validated_overrides: validatedOverrides,
     anchors,
+    provider_logo_url: providerLogoUrl,
     member_candidates: memberCandidates,
     api_funding: apiFunding,
   };

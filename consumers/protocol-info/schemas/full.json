@@ -8,6 +8,7 @@
   "required": [
     "slug",
     "provider",
+    "providerLogoUrl",
     "displayName",
     "type",
     "description",
@@ -31,6 +32,12 @@
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
       "description": "Provider code. Should match EProvider enum in server-service-earn/src/common/index.ts (no longer enforced at script level)."
+    },
+    "providerLogoUrl": {
+      "type": ["string", "null"],
+      "format": "uri",
+      "maxLength": 500,
+      "description": "Stable OneKey-hosted protocol/provider logo URL under /static/logo/protocol-logo/. Null when no verified logo can be rehosted."
     },
     "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
     "type": {

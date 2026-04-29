@@ -71,6 +71,7 @@
   },
   "normalizers": [
     { "name": "rootdata-avatar", "module": "./normalizers/rootdata-avatar.mjs" },
+    { "name": "logo-assets", "module": "./normalizers/logo-assets.mjs" },
     { "name": "protocol-info-final", "module": "./normalizers/final.mjs" }
   ],
   "subtasks": [
@@ -80,7 +81,7 @@
       "schema_slice": "./schemas/metadata.slice.json",
       "max_turns": 30,
       "max_budget_usd": 1.50,
-      "evidence_keys": ["rootdata.anchors", "rootdata.validated_overrides", "defillama.category", "defillama.chains"]
+      "evidence_keys": ["rootdata.anchors", "rootdata.provider_logo_url", "rootdata.validated_overrides", "defillama.category", "defillama.chains"]
     },
     {
       "name": "team",

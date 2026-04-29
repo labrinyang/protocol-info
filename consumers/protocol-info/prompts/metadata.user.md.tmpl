@@ -31,6 +31,7 @@ finding/gap when sources conflict. `tags` should be informed by
 ## Rules
 
 - `description`: ≤1000 chars; factual; no marketing fluff. Lead with what the protocol DOES, not adjectives.
+- `providerLogoUrl`: always `null`. The logo-assets normalizer fills it from RootData `provider_logo_url`/`anchors.providerLogoUrl`, downloads it under `out/protocol-logo/`, and rewrites it to the OneKey static-logo CDN path.
 - `tags`: 3-8 lowercase tokens, no spaces, e.g. `yield`, `fixed-rate`, `eth-l2`, `lst`.
 - `establishment`: integer year. Treat RootData's `anchors.establishment.value` as strong evidence; use fetched primary sources when they contradict it.
 - `providerWebsite`: official site URL. Treat `validated_overrides.providerWebsite` as strong evidence, but prefer a better-supported fetched official URL if it conflicts.

@@ -56,4 +56,20 @@ export const tests = [
       assert.equal(out.gaps.length, 2);
     },
   },
+  {
+    name: 'passes extra context through to normalizers',
+    fn: async () => {
+      const path = await makeNormalizerModule(
+        `export default ({record, outputRoot, slugDir}) => ({record:{...record, outputRoot, slugDir}, changes:[], gaps:[]})`
+      );
+      const out = await runNormalizers({
+        normalizers: [{ name: 'ctx', module_abs: path }],
+        record: {},
+        outputRoot: '/tmp/out',
+        slugDir: '/tmp/out/pendle',
+      });
+      assert.equal(out.record.outputRoot, '/tmp/out');
+      assert.equal(out.record.slugDir, '/tmp/out/pendle');
+    },
+  },
 ];

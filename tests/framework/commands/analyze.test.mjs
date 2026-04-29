@@ -29,6 +29,10 @@ async function commitOnly(outputRoot, { slug, message, runId }) {
   };
 }
 
+async function normalizeNoop(envelope) {
+  return envelope;
+}
+
 function proposal(overrides = {}) {
   return {
     ok: true,
@@ -67,6 +71,7 @@ export const tests = [
           throw new Error('post should not run');
         },
         commitAndRebuild: commitOnly,
+        normalizeEnvelope: normalizeNoop,
         stdout: { write: (s) => { stdout += s; } },
         stderr: { write: () => {} },
       });
@@ -94,6 +99,7 @@ export const tests = [
           return 0;
         },
         commitAndRebuild: commitOnly,
+        normalizeEnvelope: normalizeNoop,
         stdout: { write: () => {} },
         stderr: { write: () => {} },
       });
@@ -125,6 +131,7 @@ export const tests = [
           throw new Error('post should not run');
         },
         commitAndRebuild: commitOnly,
+        normalizeEnvelope: normalizeNoop,
         stdout: { write: () => {} },
         stderr: { write: () => {} },
       });
@@ -152,6 +159,7 @@ export const tests = [
           throw new Error('post should not run');
         },
         commitAndRebuild: commitOnly,
+        normalizeEnvelope: normalizeNoop,
         stdout: { write: () => {} },
         stderr: { write: () => {} },
       });

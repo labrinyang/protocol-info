@@ -3,11 +3,12 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getAt, setAt } from '../jsonpath.mjs';
 import { loadRecordEnvelope, readJsonDefault, writeRecordEnvelope } from '../record-state.mjs';
-import { preflightWritableSlug, rollbackSlug, commitAndRebuild } from '../slug-transaction.mjs';
+import { preflightWritableSlug, rollbackSlugAndCleanup, commitAndRebuild } from '../slug-transaction.mjs';
 import { validateRecord } from '../schema-validator.mjs';
 import { loadManifest } from '../manifest-loader.mjs';
 import { analyzeKey as defaultAnalyzeKey } from '../key-analyzer.mjs';
 import { invalidateI18nArtifacts } from '../i18n-cache.mjs';
+import { createWriteCommandContext, writeValidationFailure } from '../command-write-context.mjs';
 
 const COMMAND_DIR = dirname(fileURLToPath(import.meta.url));
 const FRAMEWORK_DIR = dirname(COMMAND_DIR);
@@ -81,6 +82,7 @@ export default async function analyzeCmd(args, ctx = {}) {
   }
 
   const { slug, jsonpath, query, apply } = opts;
+  const writeCtx = createWriteCommandContext(outputRoot, { slug, manifestPath, ctx });
   if (!outputRoot || !manifestPath || !slug || !jsonpath || !query) {
     stderr.write('Usage: protocol-info analyze <slug> <jsonpath> --query <text> [--apply]\n');
     return 1;
@@ -145,27 +147,27 @@ export default async function analyzeCmd(args, ctx = {}) {
     envelope.findings = [...(envelope.findings || []), ...(proposal.findings || [])];
     envelope.changes = [...(envelope.changes || []), ...(proposal.changes || [])];
     envelope.gaps = [...(envelope.gaps || []), ...(proposal.gaps || [])];
+    const normalized = await writeCtx.normalizeEnvelope(envelope);
 
-    const validation = await validate(envelope.record);
+    const validation = await validate(normalized.record);
     if (!validation.ok) {
-      stderr.write(`analyze: validation failed (${validation.errors.length} errors). Record NOT written.\n`);
-      for (const e of validation.errors.slice(0, 5)) {
-        stderr.write(`  ${typeof e === 'string' ? e : `${e.path || '/'}: ${e.message}`}\n`);
-      }
+      await writeCtx.cleanupCreatedAssets();
+      writeValidationFailure(stderr, 'analyze', validation);
       return 1;
     }
 
-    await writeRecordEnvelope(outputRoot, { slug, envelope });
+    await writeRecordEnvelope(outputRoot, { slug, envelope: normalized });
     await invalidateI18nArtifacts(join(outputRoot, slug), { manifestPath });
     const postCode = await runPostProcessing({ slugDir: join(outputRoot, slug), manifestPath });
     if (postCode !== 0) {
-      await rollbackSlug(outputRoot, slug);
+      await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
       stderr.write(`analyze: post-processing exited ${postCode}; rolled back\n`);
       return postCode;
     }
 
     await commitRebuild(outputRoot, {
       slug,
+      extraPaths: writeCtx.assetPathsToCommit(),
       message: `analyze(${slug}) ${jsonpath}`,
       runId: freshRunId(),
     });
@@ -173,7 +175,7 @@ export default async function analyzeCmd(args, ctx = {}) {
   } catch (err) {
     if (apply) {
       try {
-        await rollbackSlug(outputRoot, slug);
+        await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
       } catch {
         // Preserve original error.
       }

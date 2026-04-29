@@ -140,14 +140,15 @@ Workflow commands on an existing `out/<slug>/`:
 ./run.sh i18n pendle --locales zh_CN,ja_JP
 ./run.sh refresh pendle funding
 ./run.sh history pendle
-./run.sh diff pendle HEAD~1 HEAD
+./run.sh diff pendle
 ./run.sh restore pendle <sha>
 ```
 
-Write commands validate the full record, run post-processing so
-`record.import.json` stays aligned, create one local git commit in `out/`,
-and refresh `out/index.html`. `analyze` without `--apply` is proposal-only
-and writes nothing.
+Write commands normalize deterministic fields, validate the full record,
+invalidate stale i18n artifacts when source fields change, run post-processing
+so `record.import.json` stays aligned, create one scoped local git commit in
+`out/`, and refresh `out/index.html`. `analyze` without `--apply` is
+proposal-only and writes nothing.
 
 Dry run:
 
@@ -192,7 +193,7 @@ history and rollback are handled by the nested git repo under `out/`.
 | `i18n <slug> [--locales LIST]` | Yes | Re-run translation sidecars and export files from the current record. |
 | `refresh <slug> <metadata|team|funding|audits>` | Yes | Re-run one broad R1 subtask and merge through the audit-first guard. |
 | `history <slug> [--limit N]` | No | Show local git history for one protocol. |
-| `diff <slug> [from] [to]` | No | Show a unified diff for one protocol. |
+| `diff <slug> [from] [to]` | No | Show a unified diff for one protocol. With no refs, compares that slug's latest two commits. |
 | `restore <slug> <sha>` | Yes | Restore a previous valid version, post-process, commit. |
 
 ## Output Layout
@@ -315,7 +316,12 @@ R2 merges R1 slices and evidence with an audit-first policy:
 
 Consumer normalizers apply deterministic fixes:
 
-- `rootdata-avatar` — `members[].avatarUrl` is sourced exclusively from RootData (`member_candidates[].avatar_url`) by name match. The team subtask emits `null`; this normalizer fills it post-R2. Members with no RootData match keep `avatarUrl: null` and a `gaps.json` entry. URLs that point at `pbs.twimg.com` (X temp signed links) are rejected. **Phase A note**: the URL written here is RootData's CDN URL — backend ops download these images and rehost them on the dashboard's own object storage before serving, so `avatarUrl` is a stable in-house URL by the time users see it.
+- `rootdata-avatar` — `members[].avatarUrl` is sourced from RootData (`member_candidates[].avatar_url`) by name match. The team subtask emits `null`; this normalizer fills it post-R2. Members with no RootData match keep `avatarUrl: null` and a `gaps.json` entry. URLs that point at `pbs.twimg.com` (X temp signed links) are rejected.
+- `logo-assets` — downloads/rehosts logo fields into shared folders under `out/` and rewrites JSON to `https://uni.onekey-asset.com/static/logo/...`:
+  - `providerLogoUrl` → `out/protocol-logo/`
+  - `members[].avatarUrl` → `out/protocol-member-logo/`
+  - `audits.items[].auditorLogoUrl` → `out/audit-logo/`
+  Filenames are deterministic: provider logos use `<slug>.<ext>`, member logos use `<slug>-<member-name>.<ext>`, and audit logos use `<auditor>.<ext>`, with names lowercased and punctuation collapsed to `-`. Existing local files are reused, so repeated refreshes do not re-download the same logo. Audit firm logos are also reused from existing `out/*/record.json` records when the auditor name matches.
 - `protocol-info-final` — sets `audits.lastScannedAt` to UTC today.
 
 The final `record.json` must pass `consumers/protocol-info/schemas/full.json`.

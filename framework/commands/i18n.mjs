@@ -3,8 +3,11 @@ import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadManifest } from '../manifest-loader.mjs';
-import { preflightWritableSlug, rollbackSlug, commitAndRebuild } from '../slug-transaction.mjs';
+import { preflightWritableSlug, rollbackSlugAndCleanup, commitAndRebuild } from '../slug-transaction.mjs';
 import { clearI18nSidecars } from '../i18n-cache.mjs';
+import { loadRecordEnvelope, writeRecordEnvelope } from '../record-state.mjs';
+import { validateRecord } from '../schema-validator.mjs';
+import { createWriteCommandContext, writeValidationFailure } from '../command-write-context.mjs';
 
 const COMMAND_DIR = dirname(fileURLToPath(import.meta.url));
 const FRAMEWORK_DIR = dirname(COMMAND_DIR);
@@ -46,6 +49,11 @@ function defaultRunPostProcessing({ slugDir, manifestPath }) {
   });
 }
 
+async function defaultValidate(record, manifestPath) {
+  const manifest = await loadManifest(manifestPath);
+  return await validateRecord(record, manifest);
+}
+
 export default async function i18nCmd(args, ctx = {}) {
   const stderr = ctx.stderr || process.stderr;
   const outputRoot = ctx.outputRoot;
@@ -53,8 +61,10 @@ export default async function i18nCmd(args, ctx = {}) {
   const runI18nStage = ctx.runI18nStage || defaultRunI18nStage;
   const runPostProcessing = ctx.runPostProcessing || defaultRunPostProcessing;
   const commitRebuild = ctx.commitAndRebuild || commitAndRebuild;
+  const validate = ctx.validate || ((record) => defaultValidate(record, manifestPath));
 
   const slug = args[0];
+  const writeCtx = createWriteCommandContext(outputRoot, { slug, manifestPath, ctx });
   if (!outputRoot || !manifestPath || !slug) {
     stderr.write('Usage: protocol-info i18n <slug> [--locales zh_CN,ja_JP|all]\n');
     return 1;
@@ -85,30 +95,48 @@ export default async function i18nCmd(args, ctx = {}) {
 
   try {
     await preflightWritableSlug(outputRoot, slug, { forceOverwrite: !!ctx.forceOverwrite });
+    const normalized = await writeCtx.normalizeEnvelope(await loadRecordEnvelope(outputRoot, { slug }));
+    const validation = await validate(normalized.record);
+    if (!validation.ok) {
+      await writeCtx.cleanupCreatedAssets();
+      writeValidationFailure(stderr, 'i18n', validation);
+      return 1;
+    }
+    await writeRecordEnvelope(outputRoot, { slug, envelope: normalized });
     await clearI18nSidecars(slugDir, { manifest });
     const i18nCode = await runI18nStage({ slugDir, locales, manifestPath, model: ctx.i18nModel });
     if (i18nCode !== 0) {
+      await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
       stderr.write(`i18n: stage exited ${i18nCode}\n`);
       return i18nCode;
     }
 
     const postCode = await runPostProcessing({ slugDir, manifestPath });
     if (postCode !== 0) {
-      await rollbackSlug(outputRoot, slug);
+      await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
       stderr.write(`i18n: post-processing exited ${postCode}; rolled back\n`);
       return postCode;
     }
 
     await commitRebuild(outputRoot, {
       slug,
-      paths: [`${slug}/record.full.json`, `${slug}/record.import.json`, `${slug}/meta.json`],
+      paths: [
+        `${slug}/record.json`,
+        `${slug}/findings.json`,
+        `${slug}/changes.json`,
+        `${slug}/gaps.json`,
+        `${slug}/record.full.json`,
+        `${slug}/record.import.json`,
+        `${slug}/meta.json`,
+        ...writeCtx.assetPathsToCommit(),
+      ],
       message: `i18n(${slug}): ${locales.join(', ')}`,
       runId: freshRunId(),
     });
     return 0;
   } catch (err) {
     try {
-      await rollbackSlug(outputRoot, slug);
+      await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
     } catch {
       // Preserve original error.
     }

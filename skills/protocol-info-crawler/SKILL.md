@@ -29,7 +29,7 @@ Use these when the user refers to an existing protocol record, an existing slug,
 | "看两个版本差异" | `diff <slug> [from] [to]` |
 | "恢复到某个版本" | `restore <slug> <sha>` |
 
-Workflow write commands validate the full record, regenerate post-processed artifacts, commit inside `out/.git`, and refresh `out/index.html`.
+Workflow write commands normalize deterministic fields, validate the full record, invalidate stale i18n when source fields change, regenerate post-processed artifacts, commit only the scoped slug/assets inside `out/.git`, and refresh `out/index.html`.
 
 ## Full crawl flag mapping
 
@@ -50,6 +50,12 @@ Use full crawl flags when the user asks to create or recrawl a protocol from scr
 | Specific locales listed, e.g. "中日英" | `--i18n zh_CN,ja_JP,en_US` |
 | "不要翻译" / "skip i18n" / no mention | `--i18n none` |
 | >=3 providers, or user asks for speed/parallelism | `--parallel min(N_providers, 4)` |
+| User explicitly says to overwrite dirty existing output | `--force-overwrite` |
+
+Logo fields are tool-managed. Do not ask the model to invent logo CDN paths:
+`providerLogoUrl`, `members[].avatarUrl`, and `audits.items[].auditorLogoUrl`
+are normalized and rehosted under `out/protocol-logo/`,
+`out/protocol-member-logo/`, and `out/audit-logo/`.
 
 ### Locale code cheat sheet
 

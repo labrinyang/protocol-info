@@ -140,12 +140,13 @@ i18n：
 ./run.sh i18n pendle --locales zh_CN,ja_JP
 ./run.sh refresh pendle funding
 ./run.sh history pendle
-./run.sh diff pendle HEAD~1 HEAD
+./run.sh diff pendle
 ./run.sh restore pendle <sha>
 ```
 
-写入类命令都会校验完整记录，运行 post-processing 以保持
-`record.import.json` 同步，在 `out/` 的本地 git 仓库里生成一个 commit，
+写入类命令都会先运行 deterministic normalizer，再校验完整记录；源字段变化时
+会清理 stale i18n 产物，随后运行 post-processing 以保持
+`record.import.json` 同步，在 `out/` 的本地 git 仓库里生成一个 scoped commit，
 并刷新 `out/index.html`。不带 `--apply` 的 `analyze` 只输出提案，不写文件。
 
 Dry run：
@@ -189,7 +190,7 @@ Dry run：
 | `i18n <slug> [--locales LIST]` | 是 | 基于当前记录重新生成翻译 sidecar 和导出文件。 |
 | `refresh <slug> <metadata|team|funding|audits>` | 是 | 重跑一个大的 R1 subtask，并通过 audit-first guard 合并。 |
 | `history <slug> [--limit N]` | 否 | 查看单个协议的本地 git 历史。 |
-| `diff <slug> [from] [to]` | 否 | 查看单个协议的 unified diff。 |
+| `diff <slug> [from] [to]` | 否 | 查看单个协议的 unified diff。不传 ref 时，比较该 slug 最新两次提交。 |
 | `restore <slug> <sha>` | 是 | 恢复到过去的有效版本，post-process 后 commit。 |
 
 ## 输出结构
@@ -310,7 +311,12 @@ R2 使用 audit-first 策略合并 R1 slice 和证据：
 
 Consumer normalizer 会做决定性后处理：
 
-- `rootdata-avatar` — `members[].avatarUrl` 完全由 RootData 提供（`member_candidates[].avatar_url`），按姓名匹配。team 子任务输出 `null`，由该 normalizer 在 R2 之后填入。RootData 没有匹配的成员保留 `avatarUrl: null`，同时在 `gaps.json` 留一条记录。`pbs.twimg.com` 的临时签名 URL 会被拒绝。**阶段 A 说明**：这里写入的仍是 RootData 的 CDN URL，属于过渡形态；后端运维会在数据库侧下载这些图片并改写到自有存储，看板最终消费的是稳定的自有 URL。
+- `rootdata-avatar` — `members[].avatarUrl` 由 RootData 提供（`member_candidates[].avatar_url`），按姓名匹配。team 子任务输出 `null`，由该 normalizer 在 R2 之后填入。RootData 没有匹配的成员保留 `avatarUrl: null`，同时在 `gaps.json` 留一条记录。`pbs.twimg.com` 的临时签名 URL 会被拒绝。
+- `logo-assets` — 下载/托管 logo 字段到 `out/` 下的共享目录，并把 JSON 改写成 `https://uni.onekey-asset.com/static/logo/...`：
+  - `providerLogoUrl` → `out/protocol-logo/`
+  - `members[].avatarUrl` → `out/protocol-member-logo/`
+  - `audits.items[].auditorLogoUrl` → `out/audit-logo/`
+  文件名是确定性的：protocol logo 使用 `<slug>.<ext>`，成员 logo 使用 `<slug>-<member-name>.<ext>`，审计机构 logo 使用 `<auditor>.<ext>`；名称会转小写，标点会折叠成 `-`。本地已有文件会复用，重复 refresh 不会重新下载同一个 logo。审计机构 logo 也会按 auditor 名称从已有 `out/*/record.json` 中复用。
 - `protocol-info-final` — 把 `audits.lastScannedAt` 设为 UTC 今日。
 
 最终 `record.json` 必须通过 `consumers/protocol-info/schemas/full.json`。

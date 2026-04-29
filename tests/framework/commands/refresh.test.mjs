@@ -28,6 +28,10 @@ async function commitOnly(outputRoot, { slug, message, runId }) {
   };
 }
 
+async function normalizeNoop(envelope) {
+  return envelope;
+}
+
 export const tests = [
   {
     name: 'refresh wraps subtask result as envelope, writes merged.record, and commits',
@@ -60,6 +64,7 @@ export const tests = [
           return 0;
         },
         commitAndRebuild: commitOnly,
+        normalizeEnvelope: normalizeNoop,
         stderr: { write: () => {} },
       });
       assert.equal(code, 0);
@@ -92,6 +97,7 @@ export const tests = [
         validate: async () => ({ ok: true, errors: [] }),
         runPostProcessing: async () => 0,
         commitAndRebuild: commitOnly,
+        normalizeEnvelope: normalizeNoop,
         stderr: { write: () => {} },
       });
       assert.equal(code, 0);
@@ -121,6 +127,7 @@ export const tests = [
           throw new Error('post should not run');
         },
         commitAndRebuild: commitOnly,
+        normalizeEnvelope: normalizeNoop,
         stderr: { write: () => {} },
       });
       assert.equal(code, 1);

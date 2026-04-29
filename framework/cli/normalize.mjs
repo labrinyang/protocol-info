@@ -19,9 +19,13 @@ const gapsIn = arg('gaps-in', null);
 const recordOut = arg('record-out');
 const changesOut = arg('changes-out', null);
 const gapsOut = arg('gaps-out', null);
+const outputRoot = arg('output-root', null);
+const slugDir = arg('slug-dir', null);
+const createdAssetsOut = arg('created-assets-out', null);
+const assetsToCommitOut = arg('assets-to-commit-out', null);
 
 if (!manifestPath || !recordIn || !recordOut) {
-  console.error('usage: normalize.mjs --manifest M --record-in R [--evidence E] [--changes-in C] [--gaps-in G] --record-out R2 [--changes-out C2] [--gaps-out G2]');
+  console.error('usage: normalize.mjs --manifest M --record-in R [--evidence E] [--changes-in C] [--gaps-in G] --record-out R2 [--changes-out C2] [--gaps-out G2] [--output-root OUT] [--slug-dir DIR]');
   process.exit(2);
 }
 
@@ -45,11 +49,16 @@ if (gapsIn) {
   catch { incomingGaps = []; }
 }
 
+const createdLogoAssetPaths = [];
+const logoAssetPathsToCommit = [];
 const result = await runNormalizers({
   normalizers: manifest._abs.normalizers || [],
   record, evidence, manifest, incomingChanges, incomingGaps,
+  outputRoot, slugDir, createdLogoAssetPaths, logoAssetPathsToCommit,
 });
 
 await writeFile(recordOut, JSON.stringify(result.record, null, 2));
 if (changesOut) await writeFile(changesOut, JSON.stringify(result.changes, null, 2));
 if (gapsOut) await writeFile(gapsOut, JSON.stringify(result.gaps, null, 2));
+if (createdAssetsOut) await writeFile(createdAssetsOut, JSON.stringify(createdLogoAssetPaths, null, 2));
+if (assetsToCommitOut) await writeFile(assetsToCommitOut, JSON.stringify([...new Set(logoAssetPathsToCommit)], null, 2));

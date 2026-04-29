@@ -1,4 +1,4 @@
-import { diff } from '../version-store.mjs';
+import { diff, log } from '../version-store.mjs';
 
 export default async function diffCmd(args, ctx = {}) {
   const stdout = ctx.stdout || process.stdout;
@@ -14,8 +14,18 @@ export default async function diffCmd(args, ctx = {}) {
     return 1;
   }
 
-  const fromSha = sha1Arg || 'HEAD~1';
-  const toSha = sha2Arg || 'HEAD';
+  let fromSha = sha1Arg;
+  let toSha = sha2Arg;
+  if (!fromSha && !toSha) {
+    const entries = await log(outputRoot, { slug, limit: 2 });
+    if (entries.length < 2) {
+      stderr.write(`diff: ${slug} needs at least two commits; pass <from> <to> explicitly\n`);
+      return 1;
+    }
+    [toSha, fromSha] = [entries[0].sha, entries[1].sha];
+  } else if (fromSha && !toSha) {
+    toSha = 'HEAD';
+  }
   const body = await diff(outputRoot, { slug, fromSha, toSha });
   stdout.write(body);
   return 0;
