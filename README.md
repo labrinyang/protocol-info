@@ -279,6 +279,7 @@ Merge slices + evidence diff
         v
 R2 audit-first reconcile
   optional RootData search channel
+  + extracted audit report text
         |
         v
 Normalize + schema validate
@@ -320,6 +321,7 @@ R2 merges R1 slices and evidence with an audit-first policy:
 
 - High-confidence R1 fields are not overwritten by uncited R2 changes.
 - R2 can add missing fields when it has cited evidence.
+- Audit `reportUrl` PDF/HTML pages discovered by R1 are downloaded and text-extracted before R2; the resulting `audit_reports` evidence helps verify audit dates, scopes, auditors, and report URLs.
 - Search requests are limited and routed through approved fetcher search channels.
 - Every accepted change is recorded in `changes.json`.
 

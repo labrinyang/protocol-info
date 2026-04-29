@@ -50,6 +50,59 @@ export const tests = [
     },
   },
   {
+    name: 'runRefreshSubtask injects extracted audit report evidence for audits refresh',
+    fn: async () => {
+      const out = await mkdtemp(join(tmpdir(), 'pi-refresh-runner-'));
+      await mkdir(join(out, 'pendle', '_debug'), { recursive: true });
+      await writeFile(join(out, 'pendle', '_debug', 'rootdata.json'), JSON.stringify({
+        audit_reports: { reports: [{ reportUrl: 'https://old.example/report.pdf' }] },
+      }));
+      let prompt = '';
+      const result = await runRefreshSubtask({
+        slug: 'pendle',
+        subtaskName: 'audits',
+        existingRecord: {
+          displayName: 'Pendle',
+          audits: {
+            items: [
+              { auditor: 'OpenZeppelin', reportUrl: 'https://example.com/pendle.pdf' },
+            ],
+          },
+        },
+        manifestPath,
+        outputRoot: out,
+        collectAuditReports: async ({ record }) => {
+          assert.equal(record.audits.items[0].auditor, 'OpenZeppelin');
+          return {
+            reports: [
+              {
+                auditor: 'OpenZeppelin',
+                reportUrl: 'https://example.com/pendle.pdf',
+                text_excerpt: 'Scope: Core Pendle contracts. Date: 2024-05.',
+              },
+            ],
+            failures: [],
+          };
+        },
+        runSubtask: async (args) => {
+          prompt = args.userPrompt;
+          return {
+            ok: true,
+            slice: { audits: { items: [], lastScannedAt: '1970-01-01' } },
+            findings: [],
+            gaps: [],
+          };
+        },
+      });
+
+      assert.match(prompt, /"existing_record"/);
+      assert.match(prompt, /"audit_reports"/);
+      assert.match(prompt, /Core Pendle contracts/);
+      assert.doesNotMatch(prompt, /old\.example/);
+      assert.deepEqual(result.changes, []);
+    },
+  },
+  {
     name: 'runRefreshSubtask rejects unknown subtask',
     fn: async () => {
       const out = await mkdtemp(join(tmpdir(), 'pi-refresh-runner-'));

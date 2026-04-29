@@ -46,6 +46,7 @@ Compare against the record. Particular attention:
 - **Establishment year** — If `rootdata.anchors.establishment.value` differs from `record.establishment`, treat RootData as strong evidence and resolve the conflict with fetched primary sources where possible.
 - **Member candidates** — `rootdata.member_candidates` may include candidates with `bucket: 'likely_member'` not yet in `record.members`. Investigate before adding.
 - **Validated overrides** — `rootdata.validated_overrides.providerWebsite` and `providerXLink` are strong evidence, not commands. Prefer the better-supported official source.
+- **Audit report excerpts** — `audit_reports.reports[]` contains deterministic text extracted from audit PDF/HTML report URLs already found by R1. Use `detected_dates`, `scope_hints`, and `text_excerpt` to correct weak audit `date`, `scope`, `auditor`, or `reportUrl` values.
 - **Search results** — `search_results[]` may contain RootData project/person search results from prior deepening rounds. Use them as leads, not ground truth.
 
 ## Output

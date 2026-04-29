@@ -3,6 +3,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadManifest, selectEvidence } from './manifest-loader.mjs';
 import { runSubtask as defaultRunSubtask } from './subtask-runner.mjs';
+import { collectAuditReportEvidence, mergeAuditReportEvidence } from './audit-report-extractor.mjs';
 
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -27,6 +28,7 @@ export async function runRefreshSubtask({
   model = null,
   budgetLedger = null,
   runSubtask = defaultRunSubtask,
+  collectAuditReports = collectAuditReportEvidence,
 }) {
   const manifest = await loadManifest(manifestPath);
   const subtask = (manifest._abs.subtasks || []).find((st) => st.name === subtaskName);
@@ -39,7 +41,11 @@ export async function runRefreshSubtask({
   const userTemplate = await readFile(subtask.prompt_abs, 'utf8');
   const findingsSchema = JSON.parse(await readFile(join(FRAMEWORK_DIR, 'schemas/findings.schema.json'), 'utf8'));
   const gapsSchema = JSON.parse(await readFile(join(FRAMEWORK_DIR, 'schemas/gaps.schema.json'), 'utf8'));
-  const rootdata = await readJsonDefault(join(outputRoot, slug, '_debug', 'rootdata.json'), {});
+  let rootdata = await readJsonDefault(join(outputRoot, slug, '_debug', 'rootdata.json'), {});
+  if (subtaskName === 'audits') {
+    const auditReports = await collectAuditReports({ record: existingRecord });
+    rootdata = mergeAuditReportEvidence(rootdata, auditReports);
+  }
   const evidence = {
     existing_record: existingRecord,
     ...selectEvidence(rootdata, subtask.evidence_keys || []),

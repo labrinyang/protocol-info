@@ -4,6 +4,7 @@
 //   fetch.mjs (per-fetcher env gating)
 //     -> r1.mjs
 //     -> evidence-diff.mjs
+//     -> audit-reports.mjs (extract text from R1 audit reportUrl PDFs/pages)
 //     -> r2.mjs (no session resume — see project_legacy_r2_incompatible_with_fanout)
 //     -> normalize.mjs
 //     -> schema-validator.mjs
@@ -341,6 +342,7 @@ export async function runOne({
     ? evidencePacket.rootdata.member_candidates.length
     : 0;
   let fundingSeverity = 'none';
+  let auditReportsExtracted = 0;
 
   const writeMeta = async (runStatus, extra = {}) => {
     const meta = {
@@ -357,6 +359,7 @@ export async function runOne({
               funding_discrepancy_severity: fundingSeverity,
             }
           : { used: false, status: apiStatus },
+      audit_reports: auditReportsExtracted > 0 ? { extracted: auditReportsExtracted } : null,
       budget: options.budgetPlan || null,
       i18n: null,
       ...extra,
@@ -459,6 +462,27 @@ export async function runOne({
     const enriched = await readJsonSafe(rootdataPkt, {});
     fundingSeverity = enriched?.evidence_diff?.funding?.severity || 'none';
     logProvider(slug, `evidence diff done: funding_discrepancy=${fundingSeverity}`);
+  }
+
+  // ── Phase 3.5b: audit report text extraction ────────────────────────────
+
+  if (existsSync(rootdataPkt) && (await fileNonEmpty(recordPath))) {
+    const r = await callStage('audit-reports', [
+      '--record-in', recordPath,
+      '--evidence-in', rootdataPkt,
+      '--evidence-out', rootdataPkt,
+    ]);
+    if (r.stderr) {
+      try {
+        await writeFile(join(debugDir, 'audit-reports.stderr.log'), r.stderr);
+      } catch { /* best effort */ }
+    }
+    const enriched = await readJsonSafe(rootdataPkt, {});
+    auditReportsExtracted = enriched?.audit_reports?.reports?.length || 0;
+    const failedReports = enriched?.audit_reports?.failures?.length || 0;
+    if (auditReportsExtracted > 0 || failedReports > 0) {
+      logProvider(slug, `audit report extraction done: reports=${auditReportsExtracted}, failed=${failedReports}`);
+    }
   }
 
   // ── Phase 3.6: R2 reconcile ──────────────────────────────────────────────

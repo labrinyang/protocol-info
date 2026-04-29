@@ -22,6 +22,14 @@ The protocol's docs site usually links to audit reports. Common locations:
 
 Use WebSearch to find the audit page; follow links into the GitHub repo if needed; download/inspect PDFs for date and scope.
 
+## External evidence
+
+The runner may provide deterministic text extracted from audit `reportUrl` PDF/HTML pages discovered in a prior pass or existing record. Treat `audit_reports.reports[].text_excerpt`, `detected_dates`, and `scope_hints` as strong leads, but still cross-check when the excerpt is ambiguous.
+
+```json
+{{EVIDENCE}}
+```
+
 ## Rules
 
 - One entry per distinct audit report, newest first.

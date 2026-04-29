@@ -158,6 +158,7 @@ export const tests = [
           return { code: 0, stdout: '', stderr: '' };
         }
         if (name === 'evidence-diff') return { code: 0, stdout: '', stderr: '' };
+        if (name === 'audit-reports') return { code: 0, stdout: '', stderr: '[audit-reports] extracted=0 failed=0\n' };
         if (name === 'r2') return { code: 1, stdout: '', stderr: 'skip r2 in test' };
         if (name === 'normalize') {
           await copyJson(arg(args, 'record-in'), arg(args, 'record-out'));
@@ -239,6 +240,7 @@ export const tests = [
           return { code: 0, stdout: '', stderr: '' };
         }
         if (name === 'evidence-diff') return { code: 0, stdout: '', stderr: '' };
+        if (name === 'audit-reports') return { code: 0, stdout: '', stderr: '[audit-reports] extracted=0 failed=0\n' };
         if (name === 'r2') return { code: 1, stdout: '', stderr: 'skip r2 in test' };
         if (name === 'normalize') {
           await mkdir(join(dir, 'protocol-logo'), { recursive: true });

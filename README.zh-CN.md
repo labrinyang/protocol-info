@@ -274,6 +274,7 @@ Merge slices + evidence diff
         v
 R2 audit-first reconcile
   optional RootData search channel
+  + extracted audit report text
         |
         v
 Normalize + schema validate
@@ -315,6 +316,7 @@ R2 使用 audit-first 策略合并 R1 slice 和证据：
 
 - R1 高置信字段不会被无来源的 R2 改动覆盖。
 - R2 可以在有来源证据时补充缺失字段。
+- R1 发现的 audit `reportUrl` PDF/HTML 页面会在 R2 前下载并抽取文本；生成的 `audit_reports` evidence 用于校验审计日期、范围、审计机构和报告链接。
 - 搜索请求受限，并通过允许的 fetcher search channel 执行。
 - 每个接受的改动都会写入 `changes.json`。
 

@@ -13,6 +13,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   logos into `out/protocol-logo/`, `out/protocol-member-logo/`, and
   `out/audit-logo/`, then rewrites JSON fields to
   `https://uni.onekey-asset.com/static/logo/...` paths.
+- `audit-reports` evidence stage: after R1 discovers audit `reportUrl`
+  values, the runner downloads PDF/HTML reports, extracts the first pages or
+  report text, and feeds `audit_reports` evidence into R2 and `refresh audits`
+  so audit dates/scopes are not based only on Claude's web reading.
 
 ### Changed
 - Write workflows now run consumer normalizers before validation/post-processing
