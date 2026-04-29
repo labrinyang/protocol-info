@@ -1,6 +1,6 @@
 {
   "name": "protocol-info",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "model_default": "claude-sonnet-4-6",
   "llm": {
     "providers": {

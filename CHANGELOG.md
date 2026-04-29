@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.2.0] — 2026-04-29
+
 ### Added
 - `providerLogoUrl` on protocol records, populated deterministically from
   RootData project logo evidence when available.
