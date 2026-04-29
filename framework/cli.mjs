@@ -18,11 +18,12 @@
 //   --i18n <flag>             "none" | "all" | "zh_CN,ja_JP,..." | empty
 //   --i18n-parallel <n>       default 8
 //   --i18n-model <name>       default Haiku (manifest default)
+//   --r2-routing <mode>       single_provider | external_first | external_first_with_claude_fallback
 //   --dry-run                 list providers + bail
 //   --force-overwrite         overwrite an out/<slug>/ that has uncommitted changes
 //   -h, --help                print help
 //
-// .env autoload order (only if ROOTDATA_API_KEY not already set):
+// .env autoload order (only fills variables not already set):
 //   1. $HOME/.config/protocol-info/.env
 //   2. <SCRIPT_DIR>/.env
 
@@ -75,10 +76,24 @@ function loadEnvFile(path) {
     // an exported var in the calling shell would take precedence).
     if (process.env[key] === undefined) {
       process.env[key] = val;
+      process.env[`PROTOCOL_INFO_ENV_ORIGIN_${key}`] ??= path;
       setKeys.push(key);
     }
   }
   return { found: true, setKeys };
+}
+
+function envOrigin(key) {
+  if (!process.env[key]) return null;
+  return process.env[`PROTOCOL_INFO_ENV_ORIGIN_${key}`] || 'shell-env';
+}
+
+function setEnvFromFlag(key, value, origin) {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return false;
+  process.env[key] = trimmed;
+  process.env[`PROTOCOL_INFO_ENV_ORIGIN_${key}`] = origin;
+  return true;
 }
 
 // Lookup order for ROOTDATA_API_KEY (highest priority first):
@@ -91,15 +106,33 @@ const ROOTDATA_ENV_CANDIDATES = [
   join(homedir(), '.config', 'protocol-info', '.env'),
   join(SCRIPT_DIR, '.env'),
 ];
-let rootdataKeyOrigin = process.env.ROOTDATA_API_KEY ? 'shell-env' : null;
-if (!process.env.ROOTDATA_API_KEY) {
-  for (const candidate of ROOTDATA_ENV_CANDIDATES) {
+let rootdataKeyOrigin = envOrigin('ROOTDATA_API_KEY');
+let openAIOrigins = {
+  apiKey: envOrigin('OPENAI_API_KEY'),
+  baseUrl: envOrigin('OPENAI_BASE_URL'),
+  model: envOrigin('OPENAI_MODEL'),
+  inputCost: envOrigin('OPENAI_INPUT_COST_PER_1M') || envOrigin('OPENAI_INPUT_COST_PER_1K'),
+  outputCost: envOrigin('OPENAI_OUTPUT_COST_PER_1M') || envOrigin('OPENAI_OUTPUT_COST_PER_1K'),
+};
+let runtimeEnvLoaded = false;
+
+export function loadRuntimeEnv(candidates = ROOTDATA_ENV_CANDIDATES) {
+  if (runtimeEnvLoaded) return { rootdataKeyOrigin, openAIOrigins };
+  runtimeEnvLoaded = true;
+  for (const candidate of candidates) {
     const r = loadEnvFile(candidate);
-    if (r.found && r.setKeys.includes('ROOTDATA_API_KEY')) {
+    if (!rootdataKeyOrigin && r.found && r.setKeys.includes('ROOTDATA_API_KEY')) {
       rootdataKeyOrigin = candidate;
-      break;
     }
   }
+  openAIOrigins = {
+    apiKey: envOrigin('OPENAI_API_KEY'),
+    baseUrl: envOrigin('OPENAI_BASE_URL'),
+    model: envOrigin('OPENAI_MODEL'),
+    inputCost: envOrigin('OPENAI_INPUT_COST_PER_1M') || envOrigin('OPENAI_INPUT_COST_PER_1K'),
+    outputCost: envOrigin('OPENAI_OUTPUT_COST_PER_1M') || envOrigin('OPENAI_OUTPUT_COST_PER_1K'),
+  };
+  return { rootdataKeyOrigin, openAIOrigins };
 }
 
 // ── argv parsing ────────────────────────────────────────────────────────────
@@ -122,12 +155,23 @@ Per-provider flags (use --batch to separate multiple providers):
 Run-wide flags:
   --model <name>          override Claude model for R1+R2 (manifest default: claude-sonnet-4-6)
   --rootdata-key <key>    ROOTDATA_API_KEY for this run; overrides env + .env files
+  --openai-api-key <key>  OPENAI_API_KEY for this run; overrides env + .env files
+  --openai-base-url <url> OPENAI_BASE_URL for this run
+  --openai-model <name>   OPENAI_MODEL for OpenAI-compatible routes
+  --openai-input-cost-per-1m <usd>   external input-token price, per 1M tokens
+  --openai-output-cost-per-1m <usd>  external output-token price, per 1M tokens
   --max-turns <n>         per-Claude-call turn cap (clamps manifest default)
   --max-budget <usd>      single-provider total LLM cap
   --parallel <n>          default 1; dry-run forces 1
   --i18n <flag>           "none" | "all" | "zh_CN,ja_JP,..." | "" (silent skip)
   --i18n-parallel <n>     default 8
-  --i18n-model <name>     override i18n model (default haiku)
+  --i18n-model <name>     override i18n model (default haiku; OpenAI uses OPENAI_MODEL)
+  --r2-routing <mode>     single_provider (default), external_first, or external_first_with_claude_fallback
+                          Optional env: I18N_PROVIDER=openai, R2_LLM_PROVIDER=openai,
+                          R2_ROUTING=external_first|external_first_with_claude_fallback,
+                          R2_ASSIST_PROVIDER=openai, R2_FALLBACK_PROVIDER=claude,
+                          ANALYZE_LLM_PROVIDER=openai, REFRESH_AUDITS_LLM_PROVIDER=openai
+                          Optional pricing: OPENAI_INPUT_COST_PER_1M, OPENAI_OUTPUT_COST_PER_1M
   --dry-run               list providers and bail
   --force-overwrite       overwrite an out/<slug>/ that has uncommitted changes
   -h, --help              this help
@@ -205,8 +249,32 @@ export function parseWorkflowArgv(argv, commandMap = WORKFLOW_COMMANDS) {
       continue;
     }
     if (a === '--rootdata-key') {
-      const key = nextArg(i, a).trim();
-      if (key) process.env.ROOTDATA_API_KEY = key;
+      setEnvFromFlag('ROOTDATA_API_KEY', nextArg(i, a), '--rootdata-key');
+      i += 1;
+      continue;
+    }
+    if (a === '--openai-api-key') {
+      setEnvFromFlag('OPENAI_API_KEY', nextArg(i, a), '--openai-api-key');
+      i += 1;
+      continue;
+    }
+    if (a === '--openai-base-url') {
+      setEnvFromFlag('OPENAI_BASE_URL', nextArg(i, a), '--openai-base-url');
+      i += 1;
+      continue;
+    }
+    if (a === '--openai-model') {
+      setEnvFromFlag('OPENAI_MODEL', nextArg(i, a), '--openai-model');
+      i += 1;
+      continue;
+    }
+    if (a === '--openai-input-cost-per-1m') {
+      setEnvFromFlag('OPENAI_INPUT_COST_PER_1M', nextArg(i, a), '--openai-input-cost-per-1m');
+      i += 1;
+      continue;
+    }
+    if (a === '--openai-output-cost-per-1m') {
+      setEnvFromFlag('OPENAI_OUTPUT_COST_PER_1M', nextArg(i, a), '--openai-output-cost-per-1m');
       i += 1;
       continue;
     }
@@ -237,12 +305,14 @@ export function parseArgv(argv) {
   let i18nArg = '';
   let i18nParallel = 8;
   let i18nModel = '';
+  let r2Routing = '';
   let dryRun = false;
   let maxTurnsCap = '';
   let maxBudgetCap = '';
   let forceOverwrite = false;
   let helpRequested = false;
   let localRootdataKeyOrigin = rootdataKeyOrigin;
+  let localOpenAIOrigins = { ...openAIOrigins };
 
   function flush() {
     if (!cur.dn && !cur.type) return;
@@ -280,10 +350,38 @@ export function parseArgv(argv) {
       case '--manifest':       manifestPath = nextArg(); break;
       case '--model':          model = nextArg(); break;
       case '--rootdata-key': {
-        const key = nextArg().trim();
-        if (key) {
-          process.env.ROOTDATA_API_KEY = key;
+        if (setEnvFromFlag('ROOTDATA_API_KEY', nextArg(), '--rootdata-key')) {
           localRootdataKeyOrigin = '--rootdata-key';
+        }
+        break;
+      }
+      case '--openai-api-key': {
+        if (setEnvFromFlag('OPENAI_API_KEY', nextArg(), '--openai-api-key')) {
+          localOpenAIOrigins = { ...localOpenAIOrigins, apiKey: '--openai-api-key' };
+        }
+        break;
+      }
+      case '--openai-base-url': {
+        if (setEnvFromFlag('OPENAI_BASE_URL', nextArg(), '--openai-base-url')) {
+          localOpenAIOrigins = { ...localOpenAIOrigins, baseUrl: '--openai-base-url' };
+        }
+        break;
+      }
+      case '--openai-model': {
+        if (setEnvFromFlag('OPENAI_MODEL', nextArg(), '--openai-model')) {
+          localOpenAIOrigins = { ...localOpenAIOrigins, model: '--openai-model' };
+        }
+        break;
+      }
+      case '--openai-input-cost-per-1m': {
+        if (setEnvFromFlag('OPENAI_INPUT_COST_PER_1M', nextArg(), '--openai-input-cost-per-1m')) {
+          localOpenAIOrigins = { ...localOpenAIOrigins, inputCost: '--openai-input-cost-per-1m' };
+        }
+        break;
+      }
+      case '--openai-output-cost-per-1m': {
+        if (setEnvFromFlag('OPENAI_OUTPUT_COST_PER_1M', nextArg(), '--openai-output-cost-per-1m')) {
+          localOpenAIOrigins = { ...localOpenAIOrigins, outputCost: '--openai-output-cost-per-1m' };
         }
         break;
       }
@@ -293,6 +391,7 @@ export function parseArgv(argv) {
       case '--i18n':           i18nArg = nextArg(); break;
       case '--i18n-parallel':  i18nParallel = parseInt(nextArg(), 10); break;
       case '--i18n-model':     i18nModel = nextArg(); break;
+      case '--r2-routing':     r2Routing = nextArg(); break;
       case '--dry-run':        dryRun = true; break;
       case '--force-overwrite': forceOverwrite = true; break;
       case '--display-name':   cur.dn = nextArg(); break;
@@ -320,9 +419,11 @@ export function parseArgv(argv) {
       i18nArg,
       i18nParallel,
       i18nModel,
+      r2Routing,
       model,
       dryRun,
       rootdataKeyOrigin: localRootdataKeyOrigin,
+      openAIOrigins: localOpenAIOrigins,
       maxTurnsCap,
       maxBudgetCap,
       forceOverwrite,
@@ -336,6 +437,7 @@ const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.arg
 
 if (isMain) {
   const rawArgv = process.argv.slice(2);
+  loadRuntimeEnv();
   try {
     const workflowCode = await dispatchWorkflowCommand(rawArgv);
     if (workflowCode != null) {
@@ -365,15 +467,18 @@ if (isMain) {
     i18nArg,
     i18nParallel,
     i18nModel,
+    r2Routing,
     model,
     dryRun,
     rootdataKeyOrigin: parsedRootdataKeyOrigin,
+    openAIOrigins: parsedOpenAIOrigins,
     maxTurnsCap,
     maxBudgetCap,
     forceOverwrite,
   } = options;
   let parallel = parsedParallel;
   rootdataKeyOrigin = parsedRootdataKeyOrigin;
+  openAIOrigins = parsedOpenAIOrigins;
 
   if (providers.length === 0) {
     process.stderr.write('错误: 至少需要提供一个 provider（--display-name + --type）\n');
@@ -411,6 +516,21 @@ if (isMain) {
     maxBudget = n;
   }
 
+  for (const key of [
+    'OPENAI_INPUT_COST_PER_1M',
+    'OPENAI_OUTPUT_COST_PER_1M',
+    'OPENAI_INPUT_COST_PER_1K',
+    'OPENAI_OUTPUT_COST_PER_1K',
+  ]) {
+    if (process.env[key] !== undefined) {
+      const n = Number(process.env[key]);
+      if (!Number.isFinite(n) || n < 0) {
+        process.stderr.write(`错误: ${key} 必须是非负数（当前: ${process.env[key]}）\n`);
+        process.exit(1);
+      }
+    }
+  }
+
   // dry-run forces parallel=1
   if (dryRun) parallel = 1;
 
@@ -431,12 +551,30 @@ if (isMain) {
   const rootdataLabel = ROOTDATA_ENABLED
     ? `enabled (Round 2) [key from ${rootdataKeyOrigin || 'shell-env'}]`
     : 'disabled (single-round; no ROOTDATA_API_KEY found — pass --rootdata-key, export the env var, or write ~/.config/protocol-info/.env)';
+  const openAIRouteRequested = [
+    'I18N_PROVIDER',
+    'R1_LLM_PROVIDER',
+    'R2_LLM_PROVIDER',
+    'ANALYZE_LLM_PROVIDER',
+    'REFRESH_LLM_PROVIDER',
+    'REFRESH_AUDITS_LLM_PROVIDER',
+  ].some((key) => String(process.env[key] || '').toLowerCase() === 'openai');
+  const openAIPricingReady = !!(
+    (process.env.OPENAI_INPUT_COST_PER_1M || process.env.OPENAI_INPUT_COST_PER_1K)
+    && (process.env.OPENAI_OUTPUT_COST_PER_1M || process.env.OPENAI_OUTPUT_COST_PER_1K)
+  );
+  const openAILabel = process.env.OPENAI_API_KEY
+    ? `configured [key from ${openAIOrigins.apiKey || 'shell-env'}, base=${process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'} (${openAIOrigins.baseUrl || 'default'}), model=${process.env.OPENAI_MODEL || 'unset'} (${openAIOrigins.model || 'unset'}), pricing=${openAIPricingReady ? 'configured' : 'unknown'}]`
+    : openAIRouteRequested
+      ? 'requested but missing OPENAI_API_KEY — pass --openai-api-key, export env, or write ~/.config/protocol-info/.env'
+      : 'not configured';
 
   console.log('=== Protocol-info crawl ===');
   console.log(`Providers:   ${providers.length}`);
   console.log(`Model:       ${model || 'default'}`);
   console.log(`Parallel:    ${parallel}`);
   console.log(`RootData:    ${rootdataLabel}`);
+  console.log(`External LLM: ${openAILabel}`);
   console.log(`i18n:        ${i18nLabel} [model=${i18nModel || 'default'}, parallel=${i18nParallel}]`);
   console.log(`Run id:      ${RUN_TS}`);
   console.log(`Out root:    ${outputRoot}`);
@@ -459,6 +597,7 @@ if (isMain) {
         i18nArg,
         i18nParallel,
         i18nModel,
+        r2Routing,
         maxTurns,
         maxBudget,
         forceOverwrite,

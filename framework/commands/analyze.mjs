@@ -41,6 +41,7 @@ function parseArgs(args) {
     query: '',
     apply: false,
     model: null,
+    llmProvider: null,
     maxTurns: null,
     maxBudgetUsd: null,
   };
@@ -52,6 +53,8 @@ function parseArgs(args) {
       opts.apply = true;
     } else if (arg === '--model') {
       opts.model = args[++i] || null;
+    } else if (arg === '--llm-provider') {
+      opts.llmProvider = args[++i] || null;
     } else if (arg === '--max-turns') {
       opts.maxTurns = Number(args[++i] || '');
     } else if (arg === '--max-budget') {
@@ -120,6 +123,7 @@ export default async function analyzeCmd(args, ctx = {}) {
       evidence,
       manifestPath,
       model: opts.model || ctx.model || null,
+      llmProvider: opts.llmProvider || ctx.llmProvider || null,
       maxTurns: opts.maxTurns,
       maxBudgetUsd: opts.maxBudgetUsd,
       budgetLedger: ctx.budgetLedger || null,

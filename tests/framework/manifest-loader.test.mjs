@@ -36,18 +36,20 @@ export const tests = [
         name: 'x', version: '0.1.0',
         fetchers: [{ name: 'a', module: './a.mjs' }],
         system_prompt: './p/sys.md',
-        subtasks: [{ name: 's', prompt: './p/s.md', schema_slice: './sch/s.json' }],
+        subtasks: [{ name: 's', prompt: './p/s.md', evidence_prompt: './p/s.evidence.md', schema_slice: './sch/s.json' }],
       }, async (path, dir) => {
         await writeFile(join(dir, 'a.mjs'), 'export default async () => ({ ok: true })');
         await mkdir(join(dir, 'p'), { recursive: true });
         await mkdir(join(dir, 'sch'), { recursive: true });
         await writeFile(join(dir, 'p/sys.md'), 'system');
         await writeFile(join(dir, 'p/s.md'), 'prompt');
+        await writeFile(join(dir, 'p/s.evidence.md'), 'evidence prompt');
         await writeFile(join(dir, 'sch/s.json'), '{"type":"object"}');
         const m = await loadManifest(path);
         assert.equal(m._abs.fetchers[0].module_abs, join(dir, 'a.mjs'));
         assert.equal(m._abs.system_prompt, join(dir, 'p/sys.md'));
         assert.equal(m._abs.subtasks[0].prompt_abs, join(dir, 'p/s.md'));
+        assert.equal(m._abs.subtasks[0].evidence_prompt_abs, join(dir, 'p/s.evidence.md'));
         assert.equal(m._abs.subtasks[0].schema_slice_abs, join(dir, 'sch/s.json'));
       });
     },

@@ -53,9 +53,11 @@ export async function loadManifest(manifestPath) {
     subtasks: (manifest.subtasks || []).map(s => ({
       ...s,
       prompt_abs: abs(baseDir, s.prompt),
+      evidence_prompt_abs: abs(baseDir, s.evidence_prompt),
       schema_slice_abs: abs(baseDir, s.schema_slice),
     })),
     reconcile_prompt: abs(baseDir, manifest.reconcile?.prompt),
+    reconcile_evidence_prompt: abs(baseDir, manifest.reconcile?.evidence_prompt),
     i18n: manifest.i18n ? {
       ...manifest.i18n,
       system_prompt_abs: abs(baseDir, manifest.i18n.system_prompt),
@@ -76,9 +78,11 @@ export async function loadManifest(manifestPath) {
     ['full schema', manifest._abs.full_schema],
     ['system prompt', manifest._abs.system_prompt],
     ['reconcile prompt', manifest._abs.reconcile_prompt],
+    ['reconcile evidence prompt', manifest._abs.reconcile_evidence_prompt],
     ...(manifest._abs.fetchers || []).map(f => [`fetcher:${f.name}`, f.module_abs]),
     ...(manifest._abs.subtasks || []).flatMap(s => [
       [`subtask prompt:${s.name}`, s.prompt_abs],
+      [`subtask evidence prompt:${s.name}`, s.evidence_prompt_abs],
       [`subtask schema:${s.name}`, s.schema_slice_abs],
     ]),
     ...(manifest._abs.normalizers || []).map(n => [`normalizer:${n.name}`, n.module_abs]),

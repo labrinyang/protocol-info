@@ -1,7 +1,173 @@
 import { strict as assert } from 'node:assert';
 import { dispatchWorkflowCommand, parseArgv } from '../../framework/cli.mjs';
 
+const OPENAI_ENV_KEYS = [
+  'OPENAI_API_KEY',
+  'OPENAI_BASE_URL',
+  'OPENAI_MODEL',
+  'OPENAI_INPUT_COST_PER_1M',
+  'OPENAI_OUTPUT_COST_PER_1M',
+  'PROTOCOL_INFO_ENV_ORIGIN_OPENAI_API_KEY',
+  'PROTOCOL_INFO_ENV_ORIGIN_OPENAI_BASE_URL',
+  'PROTOCOL_INFO_ENV_ORIGIN_OPENAI_MODEL',
+  'PROTOCOL_INFO_ENV_ORIGIN_OPENAI_INPUT_COST_PER_1M',
+  'PROTOCOL_INFO_ENV_ORIGIN_OPENAI_OUTPUT_COST_PER_1M',
+];
+
+async function withEnvRestored(keys, fn) {
+  const snapshot = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    return await fn();
+  } finally {
+    for (const key of keys) {
+      if (snapshot[key] === undefined) delete process.env[key];
+      else process.env[key] = snapshot[key];
+    }
+  }
+}
+
 export const tests = [
+  {
+    name: 'importing cli.mjs does not autoload user .env',
+    fn: async () => {
+      const { mkdtemp, mkdir, writeFile } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { pathToFileURL } = await import('node:url');
+      const { spawn } = await import('node:child_process');
+      const home = await mkdtemp(join(tmpdir(), 'pi-cli-env-'));
+      const configDir = join(home, '.config', 'protocol-info');
+      await mkdir(configDir, { recursive: true });
+      await writeFile(join(configDir, '.env'), [
+        'I18N_PROVIDER=openai',
+        'OPENAI_API_KEY=secret',
+        'OPENAI_BASE_URL=https://llm.example/v1',
+        'OPENAI_MODEL=gpt-test',
+        'ROOTDATA_API_KEY=root-secret',
+        '',
+      ].join('\n'));
+      const env = { ...process.env, HOME: home };
+      delete env.I18N_PROVIDER;
+      delete env.OPENAI_API_KEY;
+      delete env.OPENAI_BASE_URL;
+      delete env.OPENAI_MODEL;
+      delete env.ROOTDATA_API_KEY;
+      const cliUrl = pathToFileURL(join(process.cwd(), 'framework', 'cli.mjs')).href;
+      const stdout = await new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [
+          '--input-type=module',
+          '-e',
+          `await import(${JSON.stringify(cliUrl)}); console.log([process.env.I18N_PROVIDER || '', process.env.OPENAI_API_KEY || '', process.env.OPENAI_BASE_URL || '', process.env.OPENAI_MODEL || '', process.env.ROOTDATA_API_KEY || ''].join('|'));`,
+        ], { env });
+        let out = '';
+        let err = '';
+        child.stdout.on('data', (chunk) => { out += chunk.toString(); });
+        child.stderr.on('data', (chunk) => { err += chunk.toString(); });
+        child.on('close', (code) => {
+          if (code === 0) resolve(out.trim());
+          else reject(new Error(err || `node exited ${code}`));
+        });
+      });
+      assert.equal(stdout, '||||');
+    },
+  },
+  {
+    name: 'loadRuntimeEnv loads OpenAI-compatible config from the same .env candidates as RootData',
+    fn: async () => {
+      const { mkdtemp, writeFile } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { pathToFileURL } = await import('node:url');
+      const { spawn } = await import('node:child_process');
+      const dir = await mkdtemp(join(tmpdir(), 'pi-cli-env-load-'));
+      const envFile = join(dir, '.env');
+      await writeFile(envFile, [
+        'ROOTDATA_API_KEY=root-secret',
+        'OPENAI_API_KEY=openai-secret',
+        'OPENAI_BASE_URL=https://llm.example/v1',
+        'OPENAI_MODEL=gpt-test',
+        'OPENAI_INPUT_COST_PER_1M=2',
+        'OPENAI_OUTPUT_COST_PER_1M=8',
+        '',
+      ].join('\n'));
+      const cliUrl = pathToFileURL(join(process.cwd(), 'framework', 'cli.mjs')).href;
+      const stdout = await new Promise((resolve, reject) => {
+        const env = { ...process.env };
+        for (const key of ['ROOTDATA_API_KEY', ...OPENAI_ENV_KEYS]) delete env[key];
+        const child = spawn(process.execPath, [
+          '--input-type=module',
+          '-e',
+          [
+            `import { loadRuntimeEnv, parseArgv } from ${JSON.stringify(cliUrl)};`,
+            `loadRuntimeEnv([${JSON.stringify(envFile)}]);`,
+            `const parsed = parseArgv(['--display-name','Pendle','--type','fixed_rate']);`,
+            `console.log(JSON.stringify({`,
+            `root: parsed.options.rootdataKeyOrigin,`,
+            `api: parsed.options.openAIOrigins.apiKey,`,
+            `base: parsed.options.openAIOrigins.baseUrl,`,
+            `model: parsed.options.openAIOrigins.model,`,
+            `input: parsed.options.openAIOrigins.inputCost,`,
+            `output: parsed.options.openAIOrigins.outputCost,`,
+            `baseUrl: process.env.OPENAI_BASE_URL`,
+            `}));`,
+          ].join('\n'),
+        ], { env });
+        let out = '';
+        let err = '';
+        child.stdout.on('data', (chunk) => { out += chunk.toString(); });
+        child.stderr.on('data', (chunk) => { err += chunk.toString(); });
+        child.on('close', (code) => {
+          if (code === 0) resolve(out.trim());
+          else reject(new Error(err || `node exited ${code}`));
+        });
+      });
+      const parsed = JSON.parse(stdout);
+      assert.equal(parsed.root, envFile);
+      assert.equal(parsed.api, envFile);
+      assert.equal(parsed.base, envFile);
+      assert.equal(parsed.model, envFile);
+      assert.equal(parsed.input, envFile);
+      assert.equal(parsed.output, envFile);
+      assert.equal(parsed.baseUrl, 'https://llm.example/v1');
+    },
+  },
+  {
+    name: 'stale origin markers do not count as configured secrets',
+    fn: async () => {
+      const { join } = await import('node:path');
+      const { pathToFileURL } = await import('node:url');
+      const { spawn } = await import('node:child_process');
+      const cliUrl = pathToFileURL(join(process.cwd(), 'framework', 'cli.mjs')).href;
+      const stdout = await new Promise((resolve, reject) => {
+        const env = { ...process.env };
+        delete env.ROOTDATA_API_KEY;
+        delete env.OPENAI_API_KEY;
+        env.PROTOCOL_INFO_ENV_ORIGIN_ROOTDATA_API_KEY = '/tmp/stale-rootdata.env';
+        env.PROTOCOL_INFO_ENV_ORIGIN_OPENAI_API_KEY = '/tmp/stale-openai.env';
+        const child = spawn(process.execPath, [
+          '--input-type=module',
+          '-e',
+          [
+            `import { parseArgv } from ${JSON.stringify(cliUrl)};`,
+            `const parsed = parseArgv(['--display-name','Pendle','--type','fixed_rate']);`,
+            `console.log(JSON.stringify({`,
+            `root: parsed.options.rootdataKeyOrigin,`,
+            `api: parsed.options.openAIOrigins.apiKey`,
+            `}));`,
+          ].join('\n'),
+        ], { env });
+        let out = '';
+        let err = '';
+        child.stdout.on('data', (chunk) => { out += chunk.toString(); });
+        child.stderr.on('data', (chunk) => { err += chunk.toString(); });
+        child.on('close', (code) => {
+          if (code === 0) resolve(out.trim());
+          else reject(new Error(err || `node exited ${code}`));
+        });
+      });
+      assert.deepEqual(JSON.parse(stdout), { root: null, api: null });
+    },
+  },
   {
     name: 'dispatchWorkflowCommand routes known workflow command',
     fn: async () => {
@@ -31,7 +197,7 @@ export const tests = [
   },
   {
     name: 'dispatchWorkflowCommand parses workflow flags before and after the command',
-    fn: async () => {
+    fn: async () => await withEnvRestored(['ROOTDATA_API_KEY', 'PROTOCOL_INFO_ENV_ORIGIN_ROOTDATA_API_KEY', ...OPENAI_ENV_KEYS], async () => {
       const calls = [];
       const commandMap = {
         set: async () => ({
@@ -43,14 +209,24 @@ export const tests = [
       };
       const code = await dispatchWorkflowCommand([
         '--manifest', '/tmp/manifest.json',
+        '--openai-api-key', 'test-openai-key',
         'set', 'pendle', 'description', '"new"',
         '--force-overwrite',
+        '--openai-base-url', 'https://llm.example/v1',
+        '--openai-model', 'gpt-test',
+        '--openai-input-cost-per-1m', '2',
+        '--openai-output-cost-per-1m', '8',
       ], { commandMap });
       assert.equal(code, 0);
       assert.deepEqual(calls[0].args, ['pendle', 'description', '"new"']);
       assert.equal(calls[0].ctx.manifestPath, '/tmp/manifest.json');
       assert.equal(calls[0].ctx.forceOverwrite, true);
-    },
+      assert.equal(process.env.OPENAI_API_KEY, 'test-openai-key');
+      assert.equal(process.env.OPENAI_BASE_URL, 'https://llm.example/v1');
+      assert.equal(process.env.OPENAI_MODEL, 'gpt-test');
+      assert.equal(process.env.OPENAI_INPUT_COST_PER_1M, '2');
+      assert.equal(process.env.OPENAI_OUTPUT_COST_PER_1M, '8');
+    }),
   },
   {
     name: 'dispatchWorkflowCommand still returns null for crawl argv with global-looking flags',
@@ -62,9 +238,32 @@ export const tests = [
   {
     name: 'parseArgv still handles crawl flags',
     fn: async () => {
-      const parsed = parseArgv(['--display-name', 'Pendle', '--type', 'fixed_rate']);
+      const parsed = parseArgv(['--r2-routing', 'external_first_with_claude_fallback', '--display-name', 'Pendle', '--type', 'fixed_rate']);
       assert.equal(parsed.providers[0].slug, 'pendle');
       assert.equal(parsed.providers[0].type, 'fixed_rate');
+      assert.equal(parsed.options.r2Routing, 'external_first_with_claude_fallback');
     },
+  },
+  {
+    name: 'parseArgv accepts one-shot OpenAI-compatible config flags',
+    fn: async () => await withEnvRestored(OPENAI_ENV_KEYS, async () => {
+      const parsed = parseArgv([
+        '--openai-api-key', 'test-openai-key',
+        '--openai-base-url', 'https://llm.example/v1',
+        '--openai-model', 'gpt-test',
+        '--openai-input-cost-per-1m', '2',
+        '--openai-output-cost-per-1m', '8',
+        '--display-name', 'Pendle',
+        '--type', 'fixed_rate',
+      ]);
+      assert.equal(process.env.OPENAI_API_KEY, 'test-openai-key');
+      assert.equal(process.env.OPENAI_BASE_URL, 'https://llm.example/v1');
+      assert.equal(process.env.OPENAI_MODEL, 'gpt-test');
+      assert.equal(parsed.options.openAIOrigins.apiKey, '--openai-api-key');
+      assert.equal(parsed.options.openAIOrigins.baseUrl, '--openai-base-url');
+      assert.equal(parsed.options.openAIOrigins.model, '--openai-model');
+      assert.equal(parsed.options.openAIOrigins.inputCost, '--openai-input-cost-per-1m');
+      assert.equal(parsed.options.openAIOrigins.outputCost, '--openai-output-cost-per-1m');
+    }),
   },
 ];

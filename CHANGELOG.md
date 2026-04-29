@@ -17,6 +17,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   values, the runner downloads PDF/HTML reports, extracts the first pages or
   report text, and feeds `audit_reports` evidence into R2 and `refresh audits`
   so audit dates/scopes are not based only on Claude's web reading.
+- OpenAI-compatible structured LLM routing for low/no-web stages. `i18n` can
+  use `I18N_PROVIDER=openai`; R2, analyze, and refresh subtasks can opt in
+  with stage-specific `*_LLM_PROVIDER=openai` environment variables. Gateway
+  costs are recorded as unknown until pricing env vars are configured, and
+  stage policy blocks web-required stages from accidentally using an
+  evidence-only external provider.
 
 ### Changed
 - Write workflows now run consumer normalizers before validation/post-processing
@@ -24,6 +30,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fields consistent with full crawls.
 - Audit logo handling reuses matching auditor logos already present in existing
   `out/*/record.json` records before fetching a new image.
+- External audit refresh now uses an evidence-only audits prompt, and R2 routing
+  modes are normalized so `external_first` fails closed while
+  `external_first_with_claude_fallback` is the only automatic Claude fallback.
 
 ## [2.1.0] — 2026-04-27
 

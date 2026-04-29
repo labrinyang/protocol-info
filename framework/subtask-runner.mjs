@@ -1,7 +1,8 @@
-// Runs one subtask: render prompt → call claude → parse structured_output → return slice.
+// Runs one subtask: render prompt → call configured structured LLM → parse
+// structured_output → return slice.
 // α-shape: returns just `slice`. β-shape (slice + findings + gaps) added in phase 5.
 
-import { runClaude } from './claude-wrapper.mjs';
+import { resolveLLMProvider, runStructuredLLM } from './llm-router.mjs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -93,6 +94,12 @@ export async function runSubtask({
   resumeSession = null,
   model = null,
   budgetLedger = null,
+  budgetEnforced = false,
+  llmProvider = null,
+  stage = 'r1',
+  manifest = null,
+  env = process.env,
+  runLLM = runStructuredLLM,
 }) {
   const useBeta = findingsSchema && gapsSchema;
   const schemaJson = useBeta
@@ -101,18 +108,27 @@ export async function runSubtask({
 
   let envelope;
   try {
-    envelope = await runClaude({
-      claudeBin, systemPrompt, userPrompt,
+    envelope = await runLLM({
+      stage,
+      provider: llmProvider,
+      manifest,
+      env,
+      claudeBin,
+      systemPrompt,
+      userPrompt,
       schemaJson,
       maxTurns: subtask.max_turns,
       maxBudgetUsd: subtask.max_budget_usd,
       resumeSession,
       model,
       budgetLedger,
+      budgetEnforced,
     });
   } catch (err) {
+    const provider = resolveLLMProvider({ stage, provider: llmProvider, env });
+    const label = String(provider).toLowerCase() === 'claude' ? 'claude' : 'llm';
     return {
-      ok: false, error: `claude invocation failed: ${err.message}`,
+      ok: false, error: `${label} invocation failed: ${err.message}`,
       error_kind: err.kind ?? null,
       cost_usd: 0, turns: 0, envelope: null, session_id: null,
     };
@@ -127,7 +143,7 @@ export async function runSubtask({
     return {
       ok: false, error: errMsg,
       error_kind: null,
-      cost_usd: envelope.total_cost_usd ?? 0,
+      cost_usd: Object.hasOwn(envelope, 'total_cost_usd') ? envelope.total_cost_usd : 0,
       turns: envelope.num_turns ?? 0,
       session_id: envelope.session_id ?? null,
       envelope,
@@ -139,7 +155,7 @@ export async function runSubtask({
       return {
         ok: false, error: `β output missing ${outputKey}/findings/gaps`,
         error_kind: null,
-        cost_usd: envelope.total_cost_usd ?? 0,
+        cost_usd: Object.hasOwn(envelope, 'total_cost_usd') ? envelope.total_cost_usd : 0,
         turns: envelope.num_turns ?? 0,
         session_id: envelope.session_id ?? null,
         envelope,
@@ -149,7 +165,7 @@ export async function runSubtask({
       return {
         ok: false, error: 'β output missing changes',
         error_kind: null,
-        cost_usd: envelope.total_cost_usd ?? 0,
+        cost_usd: Object.hasOwn(envelope, 'total_cost_usd') ? envelope.total_cost_usd : 0,
         turns: envelope.num_turns ?? 0,
         session_id: envelope.session_id ?? null,
         envelope,
@@ -163,7 +179,7 @@ export async function runSubtask({
       gaps: parsed.gaps,
       handoff_notes: parsed.handoff_notes || [],
       search_requests: parsed.search_requests || [],
-      cost_usd: envelope.total_cost_usd ?? 0,
+      cost_usd: Object.hasOwn(envelope, 'total_cost_usd') ? envelope.total_cost_usd : 0,
       turns: envelope.num_turns ?? 0,
       session_id: envelope.session_id ?? null,
       envelope,
@@ -174,7 +190,7 @@ export async function runSubtask({
   return {
     ok: true,
     slice: parsed,
-    cost_usd: envelope.total_cost_usd ?? 0,
+    cost_usd: Object.hasOwn(envelope, 'total_cost_usd') ? envelope.total_cost_usd : 0,
     turns: envelope.num_turns ?? 0,
     session_id: envelope.session_id ?? null,
     envelope,

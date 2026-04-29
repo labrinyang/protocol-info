@@ -8,6 +8,31 @@
     "name":    { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
     "version": { "type": "string" },
     "model_default": { "type": "string", "minLength": 1 },
+    "llm": {
+      "type": "object",
+      "properties": {
+        "providers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "capabilities": { "type": "array", "items": { "type": "string" } },
+              "pricing": { "type": "object" }
+            }
+          }
+        },
+        "stages": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "allowed_providers": { "type": "array", "items": { "type": "string" } },
+              "required_capabilities": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
     "schemas": {
       "type": "object",
       "properties": { "full": { "type": "string" } }
@@ -36,6 +61,7 @@
         "properties": {
           "name":           { "type": "string" },
           "prompt":         { "type": "string" },
+          "evidence_prompt": { "type": "string" },
           "schema_slice":   { "type": "string" },
           "max_turns":      { "type": "integer", "minimum": 1 },
           "max_budget_usd": { "type": "number",  "minimum": 0 },
@@ -48,6 +74,8 @@
       "properties": {
         "enabled":      { "type": "boolean" },
         "prompt":       { "type": "string" },
+        "evidence_prompt": { "type": "string" },
+        "routing": { "type": "string" },
         "max_turns":    { "type": "integer" },
         "max_budget_usd": { "type": "number" },
         "mode": { "type": "string", "enum": ["deep", "fast"] },

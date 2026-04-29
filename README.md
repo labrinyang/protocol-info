@@ -4,7 +4,7 @@ English | [简体中文](README.zh-CN.md)
 
 `protocol-info` is a Claude Code plugin and standalone CLI for researching DeFi earn/yield/staking protocols and producing schema-validated `EarnProtocolInfo` JSON.
 
-It runs Claude in headless mode, gathers structured evidence from optional fetchers such as RootData and DeFiLlama, reconciles field-level evidence, validates the final record against JSON Schema, rehosts protocol/member/auditor logos into stable output folders, and can optionally translate selected fields with Haiku for 19 locales.
+It runs Claude in headless mode, gathers structured evidence from optional fetchers such as RootData and DeFiLlama, reconciles field-level evidence, validates the final record against JSON Schema, rehosts protocol/member/auditor logos into stable output folders, and can optionally translate selected fields with Claude Haiku or an OpenAI-compatible gateway for 19 locales.
 
 The output is intended for human review first, then import into the dashboard through the `earn-protocol-info` import endpoint.
 
@@ -32,7 +32,11 @@ Recommended installation:
 /plugin install protocol-info@labrinyang
 ```
 
-Optional RootData configuration. Pick whichever fits your workflow — the runner looks them up in this order on every run:
+Optional runtime configuration lives in `~/.config/protocol-info/.env` or
+`<repo>/.env`. Already-exported shell variables win; `.env` only fills missing
+values.
+
+RootData key lookup order:
 
 1. `--rootdata-key <key>` CLI flag (one-shot; never written to disk)
 2. `ROOTDATA_API_KEY` exported in the calling shell
@@ -53,7 +57,54 @@ Or use it once without writing a file:
 /protocol-info:protocol-info --rootdata-key sk-... --display-name "Pendle" --type fixed_rate
 ```
 
-The first line of the run banner reports which source the key came from (`shell-env`, `--rootdata-key`, or the resolved `.env` path). Without `ROOTDATA_API_KEY`, the pipeline still works and simply skips RootData-backed evidence.
+The startup banner reports which source the key came from (`shell-env`, `--rootdata-key`, or the resolved `.env` path). Without `ROOTDATA_API_KEY`, the pipeline still works and simply skips RootData-backed evidence.
+
+Optional OpenAI-compatible LLM gateway for no-web stages:
+
+```bash
+I18N_PROVIDER=openai
+OPENAI_BASE_URL=https://llm.example.com/v1
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-5.5
+# Optional, enables cost accounting and --max-budget for external routes:
+OPENAI_INPUT_COST_PER_1M=1.25
+OPENAI_OUTPUT_COST_PER_1M=10
+```
+
+OpenAI-compatible config uses the same precedence model as RootData:
+
+1. One-shot CLI flags: `--openai-api-key`, `--openai-base-url`, `--openai-model`, `--openai-input-cost-per-1m`, `--openai-output-cost-per-1m`
+2. Already-exported shell variables: `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`, pricing vars
+3. `~/.config/protocol-info/.env` (recommended for plugin users)
+4. `<repo>/.env` (standalone CLI only)
+
+Example one-shot run:
+
+```bash
+./run.sh --openai-api-key sk-... \
+  --openai-base-url https://llm.example.com/v1 \
+  --openai-model gpt-5.5 \
+  --i18n all \
+  --display-name "Pendle" --type fixed_rate
+```
+
+`i18n` is the safest default external-LLM use. R2 and field analysis can also
+opt in with `R2_LLM_PROVIDER=openai` or `ANALYZE_LLM_PROVIDER=openai`; they use
+existing evidence and approved search channels, not Claude WebFetch/WebSearch.
+For R2, `R2_LLM_PROVIDER=openai` uses the evidence-only reconcile prompt.
+`--r2-routing external_first` or `R2_ROUTING=external_first` runs an external
+evidence-only R2 and fails closed when the deterministic gate rejects the
+result. `--r2-routing external_first_with_claude_fallback` or
+`R2_ROUTING=external_first_with_claude_fallback` runs the same external pass
+first, then falls back to Claude web reconcile when the gate rejects the result.
+`REFRESH_AUDITS_LLM_PROVIDER=openai` is also allowed because audit report text
+is extracted deterministically before the model call and the refresh uses an
+evidence-only audits prompt. R1 and other refresh subtasks stay on Claude by
+policy unless the manifest explicitly opts them in.
+OpenAI-compatible gateway calls report `cost_usd: null` until pricing env vars
+are configured; with pricing, external routes can participate in `--max-budget`
+accounting. The startup banner reports OpenAI-compatible key/base/model/pricing
+sources without printing the API key.
 
 After installation, you can call the slash command directly:
 
@@ -131,15 +182,23 @@ i18n:
 ./run.sh --display-name "Pendle" --type fixed_rate --i18n none
 ```
 
+OpenAI-compatible no-web routes:
+
+```bash
+I18N_PROVIDER=openai ./run.sh --display-name "Pendle" --type fixed_rate --i18n all
+R2_ROUTING=external_first_with_claude_fallback ./run.sh --display-name "Pendle" --type fixed_rate
+R2_LLM_PROVIDER=openai ./run.sh --display-name "Pendle" --type fixed_rate
+```
+
 Workflow commands on an existing `out/<slug>/`:
 
 ```bash
 ./run.sh get pendle description
 ./run.sh set pendle description '"Updated source-language description"'
 ./run.sh analyze pendle fundingRounds --query "verify latest funding rounds"
-./run.sh analyze pendle fundingRounds --query "verify latest funding rounds" --apply
+./run.sh analyze pendle fundingRounds --query "verify latest funding rounds" --llm-provider openai --apply
 ./run.sh i18n pendle --locales zh_CN,ja_JP
-./run.sh refresh pendle funding
+./run.sh refresh pendle audits --llm-provider openai
 ./run.sh history pendle
 ./run.sh diff pendle
 ./run.sh restore pendle <sha>
@@ -149,7 +208,10 @@ Write commands normalize deterministic fields, validate the full record,
 invalidate stale i18n artifacts when source fields change, run post-processing
 so `record.import.json` stays aligned, create one scoped local git commit in
 `out/`, and refresh `out/index.html`. `analyze` without `--apply` is
-proposal-only and writes nothing.
+proposal-only and writes nothing. Workflow commands can use one-shot
+`--openai-*` config flags; `analyze` and `refresh` also accept
+`--llm-provider openai`. External refresh is policy-allowed for `audits`; other
+refresh subtasks stay on Claude unless the manifest opts them in.
 
 Dry run:
 
@@ -169,8 +231,14 @@ Dry run:
 | `--batch` | No | Flushes the current provider and starts another one. |
 | `--model <name>` | No | Override model for R1 and R2. Manifest default: `claude-sonnet-4-6`. |
 | `--rootdata-key <key>` | No | RootData API key for this run; overrides shell env and `.env` files. Never persisted. |
+| `--openai-api-key <key>` | No | OpenAI-compatible API key for this run; overrides shell env and `.env` files. Never persisted. |
+| `--openai-base-url <url>` | No | OpenAI-compatible base URL for this run. |
+| `--openai-model <name>` | No | Model for OpenAI-compatible i18n/R2/analyze/refresh routes. |
+| `--openai-input-cost-per-1m <usd>` | No | External input-token price per 1M tokens, used for cost reporting and `--max-budget`. |
+| `--openai-output-cost-per-1m <usd>` | No | External output-token price per 1M tokens, used for cost reporting and `--max-budget`. |
 | `--max-turns <n>` | No | Per-Claude-call turn cap; clamps manifest defaults down. |
 | `--max-budget <usd>` | No | Total single-provider LLM budget cap. The orchestrator splits it across R1, R2, and i18n. |
+| `--r2-routing <mode>` | No | R2 route. Default `single_provider`; `external_first` tries OpenAI-compatible evidence reconcile and fails closed on gate rejection; `external_first_with_claude_fallback` falls back to Claude web reconcile. |
 | `--parallel <n>` | No | Number of providers to run concurrently. Default: `1`. |
 | `--i18n <flag>` | No | `none`, `all`, or comma-separated locale codes such as `zh_CN,ja_JP`. Empty means silent skip. |
 | `--i18n-parallel <n>` | No | Locale translation concurrency. Default: `8`. |
@@ -322,6 +390,7 @@ R2 merges R1 slices and evidence with an audit-first policy:
 - High-confidence R1 fields are not overwritten by uncited R2 changes.
 - R2 can add missing fields when it has cited evidence.
 - Audit `reportUrl` PDF/HTML pages discovered by R1 are downloaded and text-extracted before R2; the resulting `audit_reports` evidence helps verify audit dates, scopes, auditors, and report URLs.
+- Claude R2 uses the web reconcile prompt and can perform fresh WebFetch/WebSearch. OpenAI-compatible R2 uses an evidence-only prompt. With `external_first`, the external result must pass schema validation, merge-guard checks, and high-risk change checks before it is accepted; otherwise R2 fails closed. With `external_first_with_claude_fallback`, Claude R2 reruns from the original R1 record plus any enriched search evidence when the external result is rejected.
 - Search requests are limited and routed through approved fetcher search channels.
 - Every accepted change is recorded in `changes.json`.
 
@@ -341,7 +410,7 @@ The final `record.json` must pass `consumers/protocol-info/schemas/full.json`.
 
 ### i18n And Export
 
-If `--i18n` is set, Haiku translates configured fields from the manifest:
+If `--i18n` is set, the configured i18n provider translates fields from the manifest. By default this is Claude Haiku; set `I18N_PROVIDER=openai` plus OpenAI-compatible config to use an external gateway instead. You can provide that config with one-shot `--openai-*` flags, exported shell env, `~/.config/protocol-info/.env`, or `<repo>/.env`, in that order. Add `OPENAI_INPUT_COST_PER_1M` and `OPENAI_OUTPUT_COST_PER_1M` or their matching CLI flags when combining OpenAI-compatible i18n with `--max-budget`.
 
 - `description`
 - `members[].memberPosition`

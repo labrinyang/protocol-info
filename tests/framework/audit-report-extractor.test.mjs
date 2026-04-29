@@ -142,6 +142,11 @@ This report reviews the protocol smart contracts.
       const merged = mergeAuditReportEvidence({ rootdata: { ok: true } }, { reports: [{ reportUrl: 'x' }], failures: [] });
       assert.deepEqual(merged.audit_reports.reports, [{ reportUrl: 'x' }]);
       assert.deepEqual(merged.rootdata, { ok: true });
+      const cleared = mergeAuditReportEvidence(
+        { audit_reports: { reports: [{ reportUrl: 'old' }], failures: [] }, rootdata: { ok: true } },
+        { reports: [], failures: [] },
+      );
+      assert.deepEqual(cleared.audit_reports, { reports: [], failures: [] });
     },
   },
 ];

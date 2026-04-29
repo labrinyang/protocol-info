@@ -1,12 +1,14 @@
 // Generic i18n stage. Consumer's manifest.i18n.translatable_fields drives
-// which subset of the record gets translated. Per-locale Haiku call writes
-// out a sidecar JSON of just the translated subset.
+// which subset of the record gets translated. Per-locale provider calls write
+// out sidecar JSON files of just the translated subset.
 //
 // Path syntax in translatable_fields:
 //   - "description"               → top-level field
 //   - "members[].memberPosition"  → field under each array element
 
 import { runClaude } from './claude-wrapper.mjs';
+import { runOpenAIChatCompletion } from './openai-wrapper.mjs';
+import { assertProviderAllowed, resolveOpenAIPricing, resolveOpenAIModel } from './llm-router.mjs';
 import { runWithLimit } from './parallel-runner.mjs';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -59,6 +61,9 @@ export async function runI18nStage({
   turnsCap = null,
   budgetCap = null,
   logger = console,
+  provider = process.env.I18N_PROVIDER || 'claude',
+  env = process.env,
+  runOpenAI = runOpenAIChatCompletion,
 }) {
   if (!manifest.i18n?.enabled) return { ok: 0, failed: [], translations: {} };
   if (selectedLocales.length === 0) return { ok: 0, failed: [], translations: {} };
@@ -74,10 +79,58 @@ export async function runI18nStage({
   const userTmpl = await readFile(i18nCfg.user_prompt_abs, 'utf8');
   const i18nSchema = JSON.parse(await readFile(i18nCfg.schema_abs, 'utf8'));
   const sourceJson = extractTranslatable(record, manifest.i18n.translatable_fields);
+  const normalizedProvider = String(provider || 'claude').toLowerCase();
+  assertProviderAllowed({ stage: 'i18n', provider: normalizedProvider, manifest });
+  const openAIPricing = normalizedProvider === 'openai'
+    ? resolveOpenAIPricing({ stage: 'i18n', env, manifest })
+    : null;
+  if (normalizedProvider === 'openai' && (budgetCap != null || budgetLedger) && !openAIPricing) {
+    throw Object.assign(new Error('OpenAI-compatible i18n provider cannot honor USD budget caps without pricing configuration'), {
+      kind: 'budget_unknown',
+    });
+  }
 
   const localeNameByCode = Object.fromEntries(
     (manifest.i18n.locale_catalog || []).map(e => [e.code, e.name_en])
   );
+
+  async function runTranslation({ userPrompt, localeBudget }) {
+    if (normalizedProvider === 'openai') {
+      const openAIModelOverride = modelOverride && !/^claude[-_]/i.test(String(modelOverride))
+        ? modelOverride
+        : null;
+      return runOpenAI({
+        systemPrompt: sysPrompt,
+        userPrompt,
+        schemaJson: i18nSchema,
+        model: resolveOpenAIModel({
+          stage: 'i18n',
+          model: openAIModelOverride,
+          env,
+          fallback: manifest.i18n.openai_model_default || 'gpt-5.5',
+        }),
+        baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+        apiKey: env.OPENAI_API_KEY,
+        pricing: openAIPricing,
+        maxBudgetUsd: budgetCap != null ? localeBudget : null,
+        budgetLedger,
+      });
+    }
+    if (normalizedProvider !== 'claude') {
+      throw new Error(`unsupported I18N_PROVIDER "${provider}"`);
+    }
+    const baseTurns = 3;
+    return runClaude({
+      claudeBin,
+      systemPrompt: sysPrompt,
+      userPrompt,
+      schemaJson: i18nSchema,
+      maxTurns: turnsCap != null ? Math.min(baseTurns, turnsCap) : baseTurns,
+      maxBudgetUsd: localeBudget,
+      model: modelOverride || manifest.i18n.model_default,
+      budgetLedger,
+    });
+  }
 
   const tasks = selectedLocales.map(code => async () => {
     const localeName = localeNameByCode[code] || code;
@@ -86,21 +139,14 @@ export async function runI18nStage({
       .replaceAll('{{LOCALE_NAME}}', localeName)
       .replaceAll('{{SOURCE_JSON}}', JSON.stringify(sourceJson, null, 2));
 
-    const baseTurns = 3;
     const baseBudget = manifest.i18n.max_budget_usd_per_call ?? 0.10;
     const localeBudget = budgetCap != null && selectedLocales.length > 0
       ? Math.min(baseBudget, budgetCap / selectedLocales.length)
       : baseBudget;
     try {
-      const env = await runClaude({
-        claudeBin,
-        systemPrompt: sysPrompt,
+      const env = await runTranslation({
         userPrompt,
-        schemaJson: i18nSchema,
-        maxTurns: turnsCap != null ? Math.min(baseTurns, turnsCap) : baseTurns,
-        maxBudgetUsd: localeBudget,
-        model: modelOverride || manifest.i18n.model_default,
-        budgetLedger,
+        localeBudget,
       });
       const out = env.structured_output && typeof env.structured_output === 'object'
         ? env.structured_output
@@ -108,7 +154,12 @@ export async function runI18nStage({
       if (!out) throw new Error('no structured_output');
       await writeFile(join(outputDir, `${code}.json`), JSON.stringify(out, null, 2));
       await writeFile(join(outputDir, `${code}.envelope.json`), JSON.stringify(env, null, 2));
-      return { code, ok: true, translation: out, cost_usd: env.total_cost_usd ?? 0 };
+      return {
+        code,
+        ok: true,
+        translation: out,
+        cost_usd: Object.hasOwn(env, 'total_cost_usd') ? env.total_cost_usd : 0,
+      };
     } catch (err) {
       const fl = join(outputDir, 'failures.log');
       const sanitized = String(err.message || err).replace(/[\r\n]+/g, ' ');

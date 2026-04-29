@@ -40,6 +40,7 @@ const evidencePath = arg('evidence');
 const recordOut = arg('record-out');
 const debugDir = arg('debug-dir');
 const model = arg('model', null);
+const llmProvider = arg('llm-provider', null);
 const findingsOut = arg('findings-out');
 const gapsOut = arg('gaps-out');
 const handoffOut = arg('handoff-out');
@@ -106,7 +107,7 @@ const tasks = manifest._abs.subtasks.map(st => async () => {
     console.error(`[r1:${st.name}] starting (max_budget=$${effSubtask.max_budget_usd} max_turns=${effSubtask.max_turns})`);
     const r = await runSubtask({
       claudeBin, subtask: effSubtask, systemPrompt, userPrompt, schemaSlice: slice, model,
-      findingsSchema, gapsSchema,
+      findingsSchema, gapsSchema, llmProvider, stage: 'r1', manifest, budgetEnforced: budgetCap != null,
     });
 
     if (r.envelope) {

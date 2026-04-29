@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { loadManifest, selectEvidence } from './manifest-loader.mjs';
 import { runSubtask as defaultRunSubtask } from './subtask-runner.mjs';
 import { collectAuditReportEvidence, mergeAuditReportEvidence } from './audit-report-extractor.mjs';
+import { resolveLLMProvider } from './llm-router.mjs';
 
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -26,7 +27,10 @@ export async function runRefreshSubtask({
   manifestPath,
   outputRoot,
   model = null,
+  llmProvider = null,
   budgetLedger = null,
+  budgetEnforced = false,
+  env = process.env,
   runSubtask = defaultRunSubtask,
   collectAuditReports = collectAuditReportEvidence,
 }) {
@@ -38,7 +42,12 @@ export async function runRefreshSubtask({
 
   const systemPrompt = await readFile(manifest._abs.system_prompt, 'utf8');
   const schemaSlice = JSON.parse(await readFile(subtask.schema_slice_abs, 'utf8'));
-  const userTemplate = await readFile(subtask.prompt_abs, 'utf8');
+  const stage = `refresh:${subtaskName}`;
+  const selectedProvider = resolveLLMProvider({ stage, provider: llmProvider, env });
+  const promptAbs = selectedProvider === 'claude'
+    ? subtask.prompt_abs
+    : (subtask.evidence_prompt_abs || subtask.prompt_abs);
+  const userTemplate = await readFile(promptAbs, 'utf8');
   const findingsSchema = JSON.parse(await readFile(join(FRAMEWORK_DIR, 'schemas/findings.schema.json'), 'utf8'));
   const gapsSchema = JSON.parse(await readFile(join(FRAMEWORK_DIR, 'schemas/gaps.schema.json'), 'utf8'));
   let rootdata = await readJsonDefault(join(outputRoot, slug, '_debug', 'rootdata.json'), {});
@@ -68,7 +77,12 @@ export async function runRefreshSubtask({
     gapsSchema,
     outputKey: 'slice',
     model,
+    llmProvider,
     budgetLedger,
+    budgetEnforced,
+    manifest,
+    stage,
+    env,
   });
 
   if (result?.ok) {

@@ -70,10 +70,16 @@ if (i18nDirExists) {
 
 // Aggregate i18n cost from envelopes
 let i18nCost = 0;
+let i18nCostUnknown = false;
+const i18nProviders = new Set();
+const i18nModels = new Set();
 for (const f of envFiles) {
   try {
     const env = JSON.parse(await readFile(f, 'utf8'));
-    i18nCost += Number(env.total_cost_usd || 0);
+    if (typeof env.total_cost_usd === 'number') i18nCost += env.total_cost_usd;
+    else if (Object.hasOwn(env, 'total_cost_usd') && env.total_cost_usd == null) i18nCostUnknown = true;
+    if (env.provider) i18nProviders.add(env.provider);
+    if (env.model) i18nModels.add(env.model);
   } catch { /* skip malformed */ }
 }
 
@@ -107,12 +113,19 @@ if (i18nDirExists && (okCodes.length > 0 || failedCodes.length > 0)) {
   try {
     const meta = JSON.parse(await readFile(metaFile, 'utf8'));
     const localesRequested = Array.from(new Set([...okCodes, ...failedCodes])).sort();
+    const provider = i18nProviders.size > 0
+      ? Array.from(i18nProviders).sort().join(',')
+      : (process.env.I18N_PROVIDER || 'claude');
+    const model = i18nModels.size > 0
+      ? Array.from(i18nModels).sort().join(',')
+      : manifest.i18n?.model_default ?? null;
     meta.i18n = {
-      model: manifest.i18n?.model_default ?? null,
+      provider,
+      model,
       locales_requested: localesRequested,
       locales_ok: okCodes.sort(),
       locales_failed: failedCodes.sort(),
-      cost_usd: i18nCost,
+      cost_usd: i18nCostUnknown ? null : i18nCost,
     };
     await writeFile(metaFile, JSON.stringify(meta, null, 2));
   } catch (err) {

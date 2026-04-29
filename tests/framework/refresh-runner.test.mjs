@@ -103,6 +103,121 @@ export const tests = [
     },
   },
   {
+    name: 'runRefreshSubtask uses evidence-only audits prompt for external LLM routing',
+    fn: async () => {
+      const out = await mkdtemp(join(tmpdir(), 'pi-refresh-runner-'));
+      await mkdir(join(out, 'pendle', '_debug'), { recursive: true });
+      await writeFile(join(out, 'pendle', '_debug', 'rootdata.json'), JSON.stringify({}));
+      let call = null;
+      const result = await runRefreshSubtask({
+        slug: 'pendle',
+        subtaskName: 'audits',
+        existingRecord: {
+          displayName: 'Pendle',
+          audits: {
+            items: [
+              { auditor: 'OpenZeppelin', reportUrl: 'https://example.com/pendle.pdf' },
+            ],
+          },
+        },
+        manifestPath,
+        outputRoot: out,
+        llmProvider: 'openai',
+        env: { OPENAI_API_KEY: 'test', OPENAI_MODEL: 'gpt-test' },
+        collectAuditReports: async () => ({
+          reports: [
+            {
+              auditor: 'OpenZeppelin',
+              reportUrl: 'https://example.com/pendle.pdf',
+              text_excerpt: 'Scope: Core contracts. Date: 2024-05.',
+            },
+          ],
+          failures: [],
+        }),
+        runSubtask: async (args) => {
+          call = args;
+          return {
+            ok: true,
+            slice: { audits: { items: [], lastScannedAt: '1970-01-01' } },
+            findings: [],
+            gaps: [],
+          };
+        },
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(call.llmProvider, 'openai');
+      assert.equal(call.stage, 'refresh:audits');
+      assert.match(call.userPrompt, /using only the\s+structured evidence/i);
+      assert.match(call.userPrompt, /"existing_record"/);
+      assert.match(call.userPrompt, /Core contracts/);
+      assert.doesNotMatch(call.userPrompt, /Use WebSearch/);
+      assert.doesNotMatch(call.userPrompt, /follow links/);
+      assert.doesNotMatch(call.userPrompt, /download\/inspect PDFs/);
+    },
+  },
+  {
+    name: 'runRefreshSubtask clears stale audit report evidence when current record has no reports',
+    fn: async () => {
+      const out = await mkdtemp(join(tmpdir(), 'pi-refresh-runner-'));
+      await mkdir(join(out, 'pendle', '_debug'), { recursive: true });
+      await writeFile(join(out, 'pendle', '_debug', 'rootdata.json'), JSON.stringify({
+        audit_reports: {
+          reports: [
+            {
+              auditor: 'Old Auditor',
+              reportUrl: 'https://old.example/report.pdf',
+              text_excerpt: 'Old stale scope.',
+            },
+          ],
+          failures: [],
+        },
+      }));
+      let prompt = '';
+      await runRefreshSubtask({
+        slug: 'pendle',
+        subtaskName: 'audits',
+        existingRecord: { displayName: 'Pendle', audits: { items: [] } },
+        manifestPath,
+        outputRoot: out,
+        collectAuditReports: async () => ({ reports: [], failures: [] }),
+        runSubtask: async (args) => {
+          prompt = args.userPrompt;
+          return {
+            ok: true,
+            slice: { audits: { items: [], lastScannedAt: '1970-01-01' } },
+            findings: [],
+            gaps: [],
+          };
+        },
+      });
+
+      assert.match(prompt, /"audit_reports"/);
+      assert.match(prompt, /"reports": \[\]/);
+      assert.doesNotMatch(prompt, /old\.example/);
+      assert.doesNotMatch(prompt, /Old stale scope/);
+    },
+  },
+  {
+    name: 'runRefreshSubtask blocks external LLM for web-required refresh subtasks by policy',
+    fn: async () => {
+      const out = await mkdtemp(join(tmpdir(), 'pi-refresh-runner-'));
+      await mkdir(join(out, 'pendle', '_debug'), { recursive: true });
+      const result = await runRefreshSubtask({
+        slug: 'pendle',
+        subtaskName: 'metadata',
+        existingRecord: { name: 'Pendle' },
+        manifestPath,
+        outputRoot: out,
+        llmProvider: 'openai',
+      });
+
+      assert.equal(result.ok, false);
+      assert.equal(result.error_kind, 'provider_not_allowed');
+      assert.match(result.error, /not allowed/);
+    },
+  },
+  {
     name: 'runRefreshSubtask rejects unknown subtask',
     fn: async () => {
       const out = await mkdtemp(join(tmpdir(), 'pi-refresh-runner-'));

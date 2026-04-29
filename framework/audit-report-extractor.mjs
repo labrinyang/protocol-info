@@ -272,7 +272,7 @@ export async function collectAuditReportEvidence({
 }
 
 export function mergeAuditReportEvidence(evidence, auditReports) {
-  if (!auditReports || (!auditReports.reports?.length && !auditReports.failures?.length)) return evidence || {};
+  if (!auditReports) return evidence || {};
   return {
     ...(evidence || {}),
     audit_reports: auditReports,

@@ -4,7 +4,7 @@
 
 `protocol-info` 是一个 Claude Code 插件，也可以作为独立 CLI 使用。它用于调研 DeFi earn/yield/staking 协议，并生成通过 JSON Schema 校验的 `EarnProtocolInfo` JSON。
 
-它会以 headless 模式调用 Claude，从 RootData、DeFiLlama 等可选 fetcher 获取结构化证据，按字段合并和对账，校验最终记录，把 protocol/team member/auditor logo 下载到稳定输出目录，并可选择用 Haiku 翻译 19 个 locale 的字段。
+它会以 headless 模式调用 Claude，从 RootData、DeFiLlama 等可选 fetcher 获取结构化证据，按字段合并和对账，校验最终记录，把 protocol/team member/auditor logo 下载到稳定输出目录，并可选择用 Claude Haiku 或 OpenAI-compatible 网关翻译 19 个 locale 的字段。
 
 输出应先人工审核，再通过 dashboard 的 `earn-protocol-info` import endpoint 导入。
 
@@ -32,7 +32,10 @@
 /plugin install protocol-info@labrinyang
 ```
 
-可选 RootData 配置。每次运行时按以下顺序解析 key：
+可选运行时配置可以放在 `~/.config/protocol-info/.env` 或 `<repo>/.env`。
+shell 里已经导出的变量优先；`.env` 只补齐缺失变量。
+
+RootData key 解析顺序：
 
 1. `--rootdata-key <key>` CLI 参数（一次性，不写入磁盘）
 2. 调用 shell 中导出的 `ROOTDATA_API_KEY`
@@ -53,7 +56,40 @@ chmod 600 ~/.config/protocol-info/.env
 /protocol-info:protocol-info --rootdata-key sk-... --display-name "Pendle" --type fixed_rate
 ```
 
-启动横幅的第一行会标明 key 的来源（`shell-env`、`--rootdata-key`，或解析到的 `.env` 路径）。不配置 `ROOTDATA_API_KEY` 时，管线仍然可用，只会跳过 RootData 证据。
+启动横幅会标明 key 的来源（`shell-env`、`--rootdata-key`，或解析到的 `.env` 路径）。不配置 `ROOTDATA_API_KEY` 时，管线仍然可用，只会跳过 RootData 证据。
+
+可选的 OpenAI-compatible LLM 网关配置：
+
+```bash
+I18N_PROVIDER=openai
+OPENAI_BASE_URL=https://llm.example.com/v1
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-5.5
+# 可选：配置后外部路由可计费并参与 --max-budget
+OPENAI_INPUT_COST_PER_1M=1.25
+OPENAI_OUTPUT_COST_PER_1M=10
+```
+
+OpenAI-compatible 配置使用和 RootData 一样的优先级：
+
+1. 一次性 CLI 参数：`--openai-api-key`、`--openai-base-url`、`--openai-model`、`--openai-input-cost-per-1m`、`--openai-output-cost-per-1m`
+2. shell 中已导出的变量：`OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`、pricing vars
+3. `~/.config/protocol-info/.env`（推荐：插件用户使用）
+4. `<repo>/.env`（仅独立 CLI）
+
+一次性运行示例：
+
+```bash
+./run.sh --openai-api-key sk-... \
+  --openai-base-url https://llm.example.com/v1 \
+  --openai-model gpt-5.5 \
+  --i18n all \
+  --display-name "Pendle" --type fixed_rate
+```
+
+`i18n` 是最适合外部 LLM 的阶段。R2 和字段级 analyze 也可以通过
+`R2_LLM_PROVIDER=openai` 或 `ANALYZE_LLM_PROVIDER=openai` 显式启用；它们只使用现有 evidence 和已批准 search channel，不具备 Claude WebFetch/WebSearch。R2 直接使用 `R2_LLM_PROVIDER=openai` 时会切到 evidence-only reconcile prompt。`--r2-routing external_first` 或 `R2_ROUTING=external_first` 会先跑外部 evidence-only R2，并在 deterministic gate 拒绝时 fail closed；`--r2-routing external_first_with_claude_fallback` 或 `R2_ROUTING=external_first_with_claude_fallback` 会在 gate 拒绝时回退到 Claude web reconcile。`REFRESH_AUDITS_LLM_PROVIDER=openai` 也允许，因为 audit report 文本会先被确定性抽取，并使用 evidence-only audit refresh prompt。R1 和其他 refresh subtask 默认由策略锁定为 Claude，除非 manifest 明确放开。OpenAI-compatible 网关在未配置价格时记录 `cost_usd: null`；配置价格后可参与 `--max-budget` 核算。
+启动横幅会报告 OpenAI-compatible key/base/model/pricing 的来源，但不会打印 API key。
 
 安装后可以直接调用 slash command：
 
@@ -131,15 +167,23 @@ i18n：
 ./run.sh --display-name "Pendle" --type fixed_rate --i18n none
 ```
 
+OpenAI-compatible no-web 路由：
+
+```bash
+I18N_PROVIDER=openai ./run.sh --display-name "Pendle" --type fixed_rate --i18n all
+R2_ROUTING=external_first_with_claude_fallback ./run.sh --display-name "Pendle" --type fixed_rate
+R2_LLM_PROVIDER=openai ./run.sh --display-name "Pendle" --type fixed_rate
+```
+
 基于已有 `out/<slug>/` 的工作流命令：
 
 ```bash
 ./run.sh get pendle description
 ./run.sh set pendle description '"更新后的源语言描述"'
 ./run.sh analyze pendle fundingRounds --query "verify latest funding rounds"
-./run.sh analyze pendle fundingRounds --query "verify latest funding rounds" --apply
+./run.sh analyze pendle fundingRounds --query "verify latest funding rounds" --llm-provider openai --apply
 ./run.sh i18n pendle --locales zh_CN,ja_JP
-./run.sh refresh pendle funding
+./run.sh refresh pendle audits --llm-provider openai
 ./run.sh history pendle
 ./run.sh diff pendle
 ./run.sh restore pendle <sha>
@@ -149,6 +193,9 @@ i18n：
 会清理 stale i18n 产物，随后运行 post-processing 以保持
 `record.import.json` 同步，在 `out/` 的本地 git 仓库里生成一个 scoped commit，
 并刷新 `out/index.html`。不带 `--apply` 的 `analyze` 只输出提案，不写文件。
+工作流命令可以使用一次性 `--openai-*` 配置参数；`analyze` 和 `refresh`
+也接受 `--llm-provider openai`。外部 refresh 默认只允许 `audits`；其他
+refresh subtask 继续使用 Claude，除非 manifest 显式放开。
 
 Dry run：
 
@@ -168,8 +215,14 @@ Dry run：
 | `--batch` | 否 | 结束当前 provider，开始下一个 provider。 |
 | `--model <name>` | 否 | 覆盖 R1 和 R2 使用的模型。manifest 默认值为 `claude-sonnet-4-6`。 |
 | `--rootdata-key <key>` | 否 | 本次运行的 RootData API key，优先于 shell env 和 `.env` 文件，不会写入磁盘。 |
+| `--openai-api-key <key>` | 否 | 本次运行的 OpenAI-compatible API key，优先于 shell env 和 `.env` 文件，不会写入磁盘。 |
+| `--openai-base-url <url>` | 否 | 本次运行的 OpenAI-compatible base URL。 |
+| `--openai-model <name>` | 否 | OpenAI-compatible i18n/R2/analyze/refresh 路由使用的模型。 |
+| `--openai-input-cost-per-1m <usd>` | 否 | 外部输入 token 单价，按 1M tokens 计，用于 cost 记录和 `--max-budget`。 |
+| `--openai-output-cost-per-1m <usd>` | 否 | 外部输出 token 单价，按 1M tokens 计，用于 cost 记录和 `--max-budget`。 |
 | `--max-turns <n>` | 否 | 每次 Claude 调用的 turn 上限，会向下 clamp manifest 默认值。 |
 | `--max-budget <usd>` | 否 | 单个 provider 的总 LLM 预算上限，由 orchestrator 分配给 R1、R2、i18n。 |
+| `--r2-routing <mode>` | 否 | R2 路由。默认 `single_provider`；`external_first` 会先跑 OpenAI-compatible evidence reconcile 并在 gate 拒绝时 fail closed；`external_first_with_claude_fallback` 会按需回退 Claude web reconcile。 |
 | `--parallel <n>` | 否 | 并发 provider 数量，默认 `1`。 |
 | `--i18n <flag>` | 否 | `none`、`all`，或逗号分隔 locale，例如 `zh_CN,ja_JP`。为空时静默跳过。 |
 | `--i18n-parallel <n>` | 否 | locale 翻译并发数，默认 `8`。 |
@@ -317,6 +370,7 @@ R2 使用 audit-first 策略合并 R1 slice 和证据：
 - R1 高置信字段不会被无来源的 R2 改动覆盖。
 - R2 可以在有来源证据时补充缺失字段。
 - R1 发现的 audit `reportUrl` PDF/HTML 页面会在 R2 前下载并抽取文本；生成的 `audit_reports` evidence 用于校验审计日期、范围、审计机构和报告链接。
+- Claude R2 使用 web reconcile prompt，可以做 fresh WebFetch/WebSearch。OpenAI-compatible R2 使用 evidence-only prompt。启用 `external_first` 时，外部结果必须通过 schema、merge guard 和高风险改动检查才会被接受；否则 R2 fail closed。启用 `external_first_with_claude_fallback` 时，外部结果被拒绝后 Claude R2 会基于原始 R1 record 和已补充的 search evidence 重新运行。
 - 搜索请求受限，并通过允许的 fetcher search channel 执行。
 - 每个接受的改动都会写入 `changes.json`。
 
@@ -336,7 +390,7 @@ Consumer normalizer 会做决定性后处理：
 
 ### i18n And Export
 
-如果设置了 `--i18n`，Haiku 会翻译 manifest 配置的字段：
+如果设置了 `--i18n`，配置的 i18n provider 会翻译 manifest 中的字段。默认是 Claude Haiku；设置 `I18N_PROVIDER=openai` 并提供 OpenAI-compatible 配置后，可改用外部网关。配置来源顺序是一次性 `--openai-*` 参数、shell env、`~/.config/protocol-info/.env`、`<repo>/.env`。如需与 `--max-budget` 一起使用，请同时配置 `OPENAI_INPUT_COST_PER_1M` 和 `OPENAI_OUTPUT_COST_PER_1M`，或传入对应的一次性 pricing 参数。
 
 - `description`
 - `members[].memberPosition`

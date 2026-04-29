@@ -96,6 +96,26 @@ export const tests = [
     },
   },
   {
+    name: 'run() rejects unsupported R2 routing before provider work starts',
+    fn: async () => {
+      const { mkdtemp } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const dir = await mkdtemp(join(tmpdir(), 'pi-r2-routing-'));
+      const manifestPath = join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json');
+      await assert.rejects(
+        () => run({
+          manifestPath,
+          providers: [],
+          outputRoot: dir,
+          runId: 'R-bad-routing',
+          options: { r2Routing: 'external_frist' },
+        }),
+        (err) => err.kind === 'arg_invalid' && /unsupported R2 routing/.test(err.message),
+      );
+    },
+  },
+  {
     name: 'run() auto-commits each successful slug with crawl() message + Run-Id (sequential post-parallel)',
     fn: async () => {
       const { mkdtemp, mkdir, writeFile } = await import('node:fs/promises');

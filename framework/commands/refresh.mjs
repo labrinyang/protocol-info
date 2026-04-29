@@ -14,6 +14,23 @@ const COMMAND_DIR = dirname(fileURLToPath(import.meta.url));
 const FRAMEWORK_DIR = dirname(COMMAND_DIR);
 const VALID_SUBTASKS = new Set(['metadata', 'team', 'funding', 'audits']);
 
+function parseArgs(args) {
+  const opts = {
+    slug: args[0],
+    subtaskName: args[1],
+    llmProvider: null,
+  };
+  for (let i = 2; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--llm-provider') {
+      opts.llmProvider = args[++i] || null;
+    } else {
+      throw new Error(`unknown argument ${arg}`);
+    }
+  }
+  return opts;
+}
+
 function freshRunId() {
   return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
 }
@@ -38,7 +55,14 @@ export default async function refreshCmd(args, ctx = {}) {
   const stderr = ctx.stderr || process.stderr;
   const outputRoot = ctx.outputRoot;
   const manifestPath = ctx.manifestPath;
-  const [slug, subtaskName] = args;
+  let opts;
+  try {
+    opts = parseArgs(args);
+  } catch (err) {
+    stderr.write(`refresh: ${err.message}\n`);
+    return 1;
+  }
+  const { slug, subtaskName } = opts;
   const runRefreshSubtask = ctx.runRefreshSubtask || defaultRunRefreshSubtask;
   const merge = ctx.merge || mergeR2;
   const validate = ctx.validate || ((record) => defaultValidate(record, manifestPath));
@@ -47,7 +71,7 @@ export default async function refreshCmd(args, ctx = {}) {
   const writeCtx = createWriteCommandContext(outputRoot, { slug, manifestPath, ctx });
 
   if (!outputRoot || !manifestPath || !slug || !subtaskName) {
-    stderr.write('Usage: protocol-info refresh <slug> <subtask>\n');
+    stderr.write('Usage: protocol-info refresh <slug> <subtask> [--llm-provider claude|openai]\n');
     stderr.write('  <subtask> must be one of: metadata, team, funding, audits\n');
     return 1;
   }
@@ -66,7 +90,9 @@ export default async function refreshCmd(args, ctx = {}) {
       manifestPath,
       outputRoot,
       model: ctx.model || null,
+      llmProvider: opts.llmProvider || ctx.llmProvider || null,
       budgetLedger: ctx.budgetLedger || null,
+      budgetEnforced: !!ctx.budgetLedger,
     });
     if (!result || result.ok !== true || !result.slice) {
       stderr.write(`refresh: subtask failed or returned no slice: ${result?.error || 'unknown'}\n`);

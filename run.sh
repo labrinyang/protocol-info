@@ -41,6 +41,7 @@ load_env_file_missing() {
       [[ -z "$val" ]] && continue
       if [[ -z "${!key+x}" ]]; then
         export "$key=$val"
+        export "PROTOCOL_INFO_ENV_ORIGIN_${key}=$env_file"
       fi
     fi
   done < "$env_file"

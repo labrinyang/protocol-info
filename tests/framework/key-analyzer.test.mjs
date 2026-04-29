@@ -45,6 +45,73 @@ export const tests = [
     },
   },
   {
+    name: 'analyzeKey can route through structured LLM runner',
+    fn: async () => {
+      let call = null;
+      const proposal = await analyzeKey({
+        slug: 'pendle',
+        jsonpath: 'description',
+        query: 'verify current description',
+        currentValue: 'old description',
+        record: { name: 'Pendle', description: 'old description' },
+        evidence: {},
+        manifestPath,
+        llmProvider: 'openai',
+        runLLM: async (args) => {
+          call = args;
+          return {
+            structured_output: {
+              ok: true,
+              path: 'description',
+              proposed_value: 'new description',
+              reason: 'evidence-only proposal',
+              confidence: 0.8,
+              findings: [],
+              changes: [],
+              gaps: [],
+            },
+          };
+        },
+        searchFetchers: [],
+      });
+
+      assert.equal(call.stage, 'analyze');
+      assert.equal(call.provider, 'openai');
+      assert.equal(proposal.ok, true);
+      assert.equal(proposal.proposed_value, 'new description');
+    },
+  },
+  {
+    name: 'analyzeKey treats explicit max budget as enforced for external LLM routing',
+    fn: async () => {
+      let call = null;
+      const proposal = await analyzeKey({
+        slug: 'pendle',
+        jsonpath: 'description',
+        query: 'verify current description',
+        currentValue: 'old description',
+        record: { name: 'Pendle', description: 'old description' },
+        evidence: {},
+        manifestPath,
+        llmProvider: 'openai',
+        maxBudgetUsd: 0.25,
+        runLLM: async (args) => {
+          call = args;
+          assert.equal(args.budgetEnforced, true);
+          throw Object.assign(new Error('OpenAI-compatible LLM provider cannot honor USD budget caps without pricing configuration'), {
+            kind: 'budget_unknown',
+          });
+        },
+        searchFetchers: [],
+      });
+
+      assert.equal(call.provider, 'openai');
+      assert.equal(call.maxBudgetUsd, 0.25);
+      assert.equal(proposal.ok, false);
+      assert.match(proposal.reason, /cannot honor USD budget caps/);
+    },
+  },
+  {
     name: 'analyzeKey executes approved search requests before final proposal',
     fn: async () => {
       const prompts = [];

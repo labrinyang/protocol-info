@@ -2,6 +2,47 @@
   "name": "protocol-info",
   "version": "2.1.0",
   "model_default": "claude-sonnet-4-6",
+  "llm": {
+    "providers": {
+      "claude": {
+        "capabilities": ["structured_json", "web_fetch", "web_search"]
+      },
+      "openai": {
+        "capabilities": ["structured_json"],
+        "pricing": {
+          "source": "env",
+          "input_env": "OPENAI_INPUT_COST_PER_1M",
+          "output_env": "OPENAI_OUTPUT_COST_PER_1M"
+        }
+      }
+    },
+    "stages": {
+      "r1": {
+        "allowed_providers": ["claude"],
+        "required_capabilities": ["structured_json", "web_fetch", "web_search"]
+      },
+      "r2": {
+        "allowed_providers": ["claude", "openai"],
+        "required_capabilities": ["structured_json"]
+      },
+      "analyze": {
+        "allowed_providers": ["claude", "openai"],
+        "required_capabilities": ["structured_json"]
+      },
+      "refresh": {
+        "allowed_providers": ["claude"],
+        "required_capabilities": ["structured_json", "web_fetch", "web_search"]
+      },
+      "refresh:audits": {
+        "allowed_providers": ["claude", "openai"],
+        "required_capabilities": ["structured_json"]
+      },
+      "i18n": {
+        "allowed_providers": ["claude", "openai"],
+        "required_capabilities": ["structured_json"]
+      }
+    }
+  },
   "schemas": { "full": "./schemas/full.json" },
   "fetchers": [
     { "name": "rootdata", "module": "./fetchers/rootdata.mjs", "required_env": ["ROOTDATA_API_KEY"], "optional": true, "search": { "enabled": true, "types": ["project", "person"], "max_queries_per_round": 4 } },
@@ -11,6 +52,7 @@
   "reconcile": {
     "enabled": true,
     "prompt": "./prompts/reconcile.user.md.tmpl",
+    "evidence_prompt": "./prompts/reconcile.evidence.user.md.tmpl",
     "max_turns": 30,
     "max_budget_usd": 1.50,
     "mode": "deep",
@@ -102,6 +144,7 @@
     {
       "name": "audits",
       "prompt": "./prompts/audits.user.md.tmpl",
+      "evidence_prompt": "./prompts/audits.evidence.user.md.tmpl",
       "schema_slice": "./schemas/audits.slice.json",
       "max_turns": 40,
       "max_budget_usd": 1.50,

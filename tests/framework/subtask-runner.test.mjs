@@ -106,6 +106,41 @@ export const tests = [
     },
   },
   {
+    name: 'routes subtask calls through injected structured LLM runner',
+    fn: async () => {
+      let call = null;
+      const result = await runSubtask({
+        subtask: { name: 'team', max_turns: 5, max_budget_usd: 0.5 },
+        systemPrompt: 'sys',
+        userPrompt: 'usr',
+        schemaSlice: { type: 'object' },
+        findingsSchema: { type: 'array' },
+        gapsSchema: { type: 'array' },
+        llmProvider: 'openai',
+        stage: 'refresh:team',
+        runLLM: async (args) => {
+          call = args;
+          return {
+            session_id: 's',
+            total_cost_usd: 0,
+            num_turns: 1,
+            structured_output: {
+              slice: { members: [] },
+              findings: [],
+              gaps: [],
+            },
+          };
+        },
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(call.provider, 'openai');
+      assert.equal(call.stage, 'refresh:team');
+      assert.equal(call.maxTurns, 5);
+      assert.equal(call.maxBudgetUsd, 0.5);
+    },
+  },
+  {
     name: 'returns ok:false when β-mode envelope is missing findings',
     fn: async () => {
       const env = JSON.stringify({

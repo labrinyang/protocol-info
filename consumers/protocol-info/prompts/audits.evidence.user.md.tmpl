@@ -1,0 +1,80 @@
+You are refreshing a DeFi protocol's **security audits** slice using only the
+structured evidence supplied below.
+
+Do not claim fresh web research or external browsing. Use only the deterministic
+`audit_reports` excerpts already provided. If evidence is insufficient, preserve
+the existing value and emit a gap.
+
+## Inputs
+
+- `displayName`: `{{DISPLAY_NAME}}`
+- `slug`: `{{SLUG}}`
+
+## Schema
+
+Return only `audits` in `slice`.
+
+```json
+{{SCHEMA}}
+```
+
+## Evidence
+
+The runner provides:
+
+- `existing_record`: the current full record.
+- `audit_reports.reports[]`: deterministic text extracted from audit
+  `reportUrl` PDF/HTML pages already present in the record.
+- `audit_reports.failures[]`: report URLs that could not be fetched or parsed.
+
+```json
+{{EVIDENCE}}
+```
+
+## Rules
+
+- One entry per distinct audit report, newest first.
+- Prefer the existing audit item when there is no stronger report excerpt.
+- Use `audit_reports.reports[].detected_dates`, `scope_hints`, `title_hint`,
+  and `text_excerpt` to correct weak `date`, `scope`, `auditor`, or
+  `reportUrl` values.
+- `auditorLogoUrl`: keep the existing value when present. If missing, do not
+  invent one; return `null`. The logo-assets normalizer can reuse verified
+  audit-firm logos from existing output records.
+- `date`: `YYYY-MM-DD` or `YYYY-MM`. Bare years are invalid. If only a year is
+  supported by evidence, use `YYYY-01` and mention uncertainty in `scope`.
+- `scope`: brief description such as `Core contracts`, `vePENDLE`, or
+  `LP token wrapper`. Use `null` when unknown.
+- `reportUrl`: direct PDF or report page URL from the existing record or
+  `audit_reports.reports[]`.
+- `lastScannedAt`: emit any valid `YYYY-MM-DD`; the runner overwrites it before
+  validation.
+- If there are no existing audit items and no extracted report evidence, return
+  the empty-audits sentinel plus a gap explaining that no current report evidence
+  was available.
+
+## Output format
+
+Return a JSON object with four fields:
+
+```json
+{
+  "slice": { "audits": { "items": [], "lastScannedAt": "1970-01-01" } },
+  "findings": [],
+  "gaps": [],
+  "handoff_notes": []
+}
+```
+
+Rules for findings:
+
+- Emit one finding per audit field you changed or re-verified.
+- Cite the report URL or deterministic excerpt source you actually used.
+- Use `confidence < 0.7` when evidence is weak.
+
+Rules for gaps:
+
+- Use gaps for missing dates, scopes, logos, or report evidence.
+- Include concise `tried` entries based on provided evidence only.
+
+No prose. JSON only.

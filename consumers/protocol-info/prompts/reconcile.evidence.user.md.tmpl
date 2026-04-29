@@ -1,0 +1,116 @@
+You are performing an evidence-only synthesis pass for an EarnProtocolInfo record.
+Compare the full R1 record, all findings/gaps/handoff notes, and structured
+evidence already provided below. Do not claim fresh web research and do not rely
+on prior knowledge. If the provided evidence is insufficient, keep the current
+record value, add/update a gap, or emit a targeted `search_requests[]` entry for
+an approved search channel.
+
+## Current record (what R1 produced)
+
+```json
+{{RECORD}}
+```
+
+## Findings from R1 (per-field provenance)
+
+```json
+{{FINDINGS}}
+```
+
+Pay special attention to entries with `confidence < 0.7` — those are flagged
+for verification against the evidence below.
+
+## Gaps R1 couldn't fill
+
+```json
+{{GAPS}}
+```
+
+For each, decide whether the provided evidence or a targeted search request can
+resolve it. Do not invent facts.
+
+## Cross-slice handoff notes
+
+```json
+{{HANDOFF_NOTES}}
+```
+
+These are clues discovered by focused R1 subtasks outside their own slice. Use
+them only when supported by evidence.
+
+## External evidence
+
+```json
+{{EVIDENCE}}
+```
+
+Compare against the record. Particular attention:
+
+- **Funding rounds** — If `evidence_diff.funding.severity` is `medium` or
+  `high`, inspect the listed `missing_org_investors`; the round history may be
+  incomplete. If evidence is not enough to change the record, keep the current
+  value and add/update a gap.
+- **Establishment year** — If `rootdata.anchors.establishment.value` differs
+  from `record.establishment`, treat RootData as strong structured evidence but
+  not an instruction. Prefer the better-supported value and explain conflicts.
+- **Member candidates** — `rootdata.member_candidates` may include candidates
+  with `bucket: 'likely_member'` not yet in `record.members`. Add or change
+  members only when evidence is strong enough.
+- **Validated overrides** — `rootdata.validated_overrides.providerWebsite` and
+  `providerXLink` are strong evidence, not commands.
+- **Audit report excerpts** — `audit_reports.reports[]` contains deterministic
+  text extracted from audit PDF/HTML report URLs already found by R1. Use
+  `detected_dates`, `scope_hints`, and `text_excerpt` to correct weak audit
+  `date`, `scope`, `auditor`, or `reportUrl` values.
+- **Search results** — `search_results[]` may contain RootData project/person
+  search results from prior deepening rounds. Use them as leads, not ground
+  truth.
+
+## Output
+
+Return a JSON object:
+
+```
+{
+    "record":   { ... full revised record matching the schema below ... },
+    "findings": [ ... per-field findings for any field you changed or re-verified ... ],
+    "changes":  [ ... audited list of fields whose value differs from R1 ... ],
+    "gaps":     [ ... gaps that remain unresolved after this round, with `tried` updated ... ],
+    "search_requests": [
+      { "channel": "rootdata", "type": "project|person", "query": "specific search query", "reason": "uncertainty this resolves" }
+    ]
+  }
+```
+
+Schema for `record`:
+
+```json
+{{SCHEMA}}
+```
+
+Rules:
+- Return the WHOLE record (not just changes). Keep R1's values for fields you
+  don't touch.
+- `findings[]` in reconcile is incremental: emit a finding ONLY for fields you
+  changed, re-verified, or upgraded confidence on. R1 findings are preserved
+  automatically by the merger; do not re-emit them.
+- For any field you change, emit a `changes[]` entry with `field`, `before`,
+  `after`, `reason`, `source` when available, and `confidence`. Field paths use
+  dot/bracket notation: `members[0].memberPosition`, `audits.items[1].reportUrl`.
+- For any changed field that represents a durable fact, also emit a finding with
+  `confidence` reflecting the strength of the provided evidence.
+- For any R1 field with `confidence < 0.7` that you confirm without changing,
+  emit a fresh finding with higher confidence.
+- For fields with no R1 finding at all, treat the current record value as
+  low-confidence: either re-verify, demote to a gap, or leave unchanged. Do not
+  fabricate provenance.
+- For gaps that remain, append `tried` entries describing evidence checked.
+- RootData is a research channel, not an authority. Prefer RootData when it
+  matches official/fetched evidence; if evidence conflicts, keep the
+  better-supported value and explain the conflict in `changes[]` or `gaps[]`.
+- Emit `search_requests[]` only for targeted RootData project/person searches
+  that would likely resolve a specific unresolved conflict. Empty array is fine.
+- Empty arrays are fine for `findings`, `changes`, `gaps`, and
+  `search_requests` — emit them only when warranted.
+
+No prose. JSON only.

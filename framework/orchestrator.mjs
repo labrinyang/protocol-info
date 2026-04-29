@@ -29,6 +29,7 @@ import { buildOutBrowser } from './out-browser.mjs';
 import { ensureRepo, commit, isClean, resetSlugToHead } from './version-store.mjs';
 import { invalidateI18nArtifacts } from './i18n-cache.mjs';
 import { cleanupCreatedLogoAssets } from './logo-assets.mjs';
+import { resolveR2Routing } from './r2-runner.mjs';
 
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_DIR = dirname(FRAMEWORK_DIR);
@@ -97,7 +98,7 @@ function logProvider(slug, message) {
 }
 
 function formatUsd(n) {
-  return `$${(Number(n) || 0).toFixed(4)}`;
+  return Number.isFinite(n) ? `$${n.toFixed(4)}` : 'unknown';
 }
 
 async function fileNonEmpty(path) {
@@ -126,6 +127,7 @@ async function cleanupLogoAssetsFile(outputRoot, path) {
 
 async function sumEnvelopeTelemetry(dir, pattern = /\.envelope\.json$/) {
   let cost = 0;
+  let costUnknown = false;
   let turns = 0;
   try {
     for (const f of await readdir(dir)) {
@@ -133,10 +135,11 @@ async function sumEnvelopeTelemetry(dir, pattern = /\.envelope\.json$/) {
       const env = await readJsonSafe(join(dir, f), null);
       if (!env) continue;
       if (typeof env.total_cost_usd === 'number') cost += env.total_cost_usd;
+      else if (Object.hasOwn(env, 'total_cost_usd') && env.total_cost_usd == null) costUnknown = true;
       if (typeof env.num_turns === 'number') turns += env.num_turns;
     }
   } catch { /* directory may not exist */ }
-  return { cost_usd: cost, turns };
+  return { cost_usd: costUnknown ? null : cost, turns };
 }
 
 function roundBudget(n) {
@@ -385,7 +388,8 @@ export async function runOne({
   if (type) r1Args.push('--type', type);
   if (options.model) r1Args.push('--model', options.model);
   if (options.maxTurns) r1Args.push('--max-turns', String(options.maxTurns));
-  if (options.budgetPlan?.effective?.r1_total) {
+  const hasUserBudgetCap = options.budgetPlan?.user_max_budget_usd != null;
+  if (hasUserBudgetCap && options.budgetPlan?.effective?.r1_total) {
     r1Args.push('--max-budget', String(options.budgetPlan.effective.r1_total));
   }
 
@@ -506,8 +510,9 @@ export async function runOne({
     '--debug-dir', r2DebugDir,
   ];
   if (options.model) r2Args.push('--model', options.model);
+  if (options.r2Routing) r2Args.push('--routing', options.r2Routing);
   if (options.maxTurns) r2Args.push('--max-turns', String(options.maxTurns));
-  if (options.budgetPlan?.effective?.r2_total) {
+  if (hasUserBudgetCap && options.budgetPlan?.effective?.r2_total) {
     r2Args.push('--max-budget', String(options.budgetPlan.effective.r2_total));
   }
   await mkdir(r2DebugDir, { recursive: true });
@@ -529,12 +534,12 @@ export async function runOne({
     finalSource = 'r2';
 
     // Aggregate r2 cost + turns across rounds
-    const t = await sumEnvelopeTelemetry(r2DebugDir, /^reconcile\.round\d+\.envelope\.json$/);
+    const t = await sumEnvelopeTelemetry(r2DebugDir, /^reconcile(?:\.[a-z-]+)?\.round\d+\.envelope\.json$/);
     r2Cost = t.cost_usd;
     r2Turns = t.turns;
     logProvider(slug, `R2 reconcile done: promoted R2 record, cost=${formatUsd(r2Cost)}, turns=${r2Turns}`);
   } else {
-    const t = await sumEnvelopeTelemetry(r2DebugDir, /^reconcile\.round\d+\.envelope\.json$/);
+    const t = await sumEnvelopeTelemetry(r2DebugDir, /^reconcile(?:\.[a-z-]+)?\.round\d+\.envelope\.json$/);
     r2Cost = t.cost_usd;
     r2Turns = t.turns;
     logProvider(slug, `R2 reconcile fallback: keeping R1 record, cost=${formatUsd(r2Cost)}, turns=${r2Turns}`);
@@ -679,6 +684,10 @@ export async function run({
   if (!options.model && manifest.model_default) {
     options = { ...options, model: manifest.model_default };
   }
+  const normalizedR2Routing = resolveR2Routing({ routing: options.r2Routing, manifest, env: process.env });
+  if (options.r2Routing) {
+    options = { ...options, r2Routing: normalizedR2Routing };
+  }
 
   await mkdir(outputRoot, { recursive: true });
   await ensureRepo(outputRoot);
@@ -785,8 +794,10 @@ export async function run({
   }
 
   if (okSlugs.length > 0 && i18nSelected.length > 0) {
+    const i18nProvider = (process.env.I18N_PROVIDER || 'claude').toLowerCase();
+    const i18nProviderLabel = i18nProvider === 'openai' ? 'OpenAI-compatible API' : 'Claude';
     console.log('');
-    console.log('=== i18n translation (Haiku) ===');
+    console.log(`=== i18n translation (${i18nProviderLabel}) ===`);
     console.log(`Records:  ${okSlugs.length}`);
     console.log(`Locales:  ${i18nSelected.length} (${i18nSelected.join(' ')})`);
     console.log(`Parallel: ${options.i18nParallel ?? 8}`);
@@ -802,7 +813,9 @@ export async function run({
       ];
       if (options.i18nModel) args.push('--model', options.i18nModel);
       if (options.maxTurns) args.push('--max-turns', String(options.maxTurns));
-      if (budgetPlan.effective.i18n_total) args.push('--max-budget', String(budgetPlan.effective.i18n_total));
+      if (budgetPlan.user_max_budget_usd != null && budgetPlan.effective.i18n_total) {
+        args.push('--max-budget', String(budgetPlan.effective.i18n_total));
+      }
       logProvider(slug, `i18n started: ${i18nSelected.length} locales`);
       const r = await callStage('i18n', args, { progressLabel: `[${slug}] i18n` });
       const combined = (r.stdout || '') + (r.stderr || '');

@@ -13,7 +13,7 @@ Run the protocol-info crawler pipeline with the user's arguments. The pipeline i
 3. **R2 reconcile** — Claude cross-checks R1 against structured evidence
 4. **Normalize** — deterministic post-R2 fixes, including RootData member avatars and rehosted provider/member/audit logos
 5. **Validate** — zero-dep JSON Schema validation
-6. **i18n** (optional) — Haiku translates `description` + `members[].{memberPosition, oneLiner}` to selected locales
+6. **i18n** (optional) — Claude Haiku by default, or `I18N_PROVIDER=openai` for OpenAI-compatible API translation
 7. **Post/export + history** — writes dashboard import artifacts, scoped local git commits, and `out/index.html`
 
 The same runner also supports workflow subcommands on an existing
@@ -116,3 +116,25 @@ chmod 600 ~/.config/protocol-info/.env
 ```
 
 Pipeline needs `claude` and `node` on PATH. The user has Claude Code installed, so `claude` is usually available.
+
+External LLM provider knobs:
+
+- `I18N_PROVIDER=openai` routes i18n to an OpenAI-compatible Chat Completions API.
+- `R2_LLM_PROVIDER=openai` routes R2 synthesis to that API.
+- `ANALYZE_LLM_PROVIDER=openai` routes workflow `analyze` to that API.
+- `REFRESH_<SUBTASK>_LLM_PROVIDER=openai`, for example `REFRESH_AUDITS_LLM_PROVIDER=openai`, routes one refresh subtask.
+- `R2_ROUTING=external_first` or `--r2-routing external_first` tries OpenAI-compatible evidence-only R2 and fails closed when the deterministic gate rejects it.
+- `R2_ROUTING=external_first_with_claude_fallback` or `--r2-routing external_first_with_claude_fallback` tries OpenAI-compatible evidence-only R2 first and falls back to Claude web R2 when the deterministic gate rejects it.
+
+OpenAI-compatible config follows the same lookup order as RootData:
+1. One-shot flags: `--openai-api-key`, `--openai-base-url`, `--openai-model`, `--openai-input-cost-per-1m`, `--openai-output-cost-per-1m`
+2. Shell env: `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`, pricing vars
+3. `$HOME/.config/protocol-info/.env`
+4. `.env` next to `run.sh`
+
+Example:
+```
+/protocol-info:protocol-info --openai-api-key sk-... --openai-base-url https://llm.example.com/v1 --openai-model gpt-5.5 --i18n all --display-name "Pendle" --type fixed_rate
+```
+
+All OpenAI-compatible routes read `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL`. Configure `OPENAI_INPUT_COST_PER_1M` and `OPENAI_OUTPUT_COST_PER_1M`, or pass the matching one-shot pricing flags, to make those calls produce numeric `cost_usd` and participate in `--max-budget`; without pricing they report `cost_usd: null`. Stage policy allows external LLM by default for i18n, R2, analyze, and refresh audits, but blocks R1 and other refresh subtasks unless the manifest explicitly opts them in. Direct OpenAI-compatible R2 and external audit refresh use evidence-only prompts; Claude R2 and Claude refresh keep the web-research prompts. The startup banner reports key/base/model/pricing sources without printing the API key.

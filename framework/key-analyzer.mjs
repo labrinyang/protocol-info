@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadManifest } from './manifest-loader.mjs';
-import { runClaude as defaultRunClaude } from './claude-wrapper.mjs';
+import { resolveLLMProvider, runStructuredLLM as defaultRunLLM } from './llm-router.mjs';
 import { runSearchRequests as defaultRunSearchRequests } from './search-channel.mjs';
 
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
@@ -176,7 +176,9 @@ export async function analyzeKey({
   budgetLedger = null,
   env = process.env,
   logger = console,
-  runClaude = defaultRunClaude,
+  runClaude = null,
+  runLLM = defaultRunLLM,
+  llmProvider = null,
   runSearchRequests = defaultRunSearchRequests,
   searchFetchers = null,
 }) {
@@ -196,6 +198,7 @@ export async function analyzeKey({
   const maxQueries = manifest.reconcile?.max_search_queries_per_round || 4;
   const turns = maxTurns || manifest.reconcile?.max_turns || 30;
   const budget = maxBudgetUsd || manifest.reconcile?.max_budget_usd || 1.5;
+  const budgetEnforced = maxBudgetUsd != null || !!budgetLedger;
   let workingEvidence = evidence || {};
   let lastProposal = null;
 
@@ -213,7 +216,11 @@ export async function analyzeKey({
 
     let envelope;
     try {
-      envelope = await runClaude({
+      const llmArgs = {
+        stage: 'analyze',
+        provider: llmProvider,
+        manifest,
+        env,
         systemPrompt: '',
         userPrompt,
         schemaJson,
@@ -221,9 +228,15 @@ export async function analyzeKey({
         maxBudgetUsd: budget,
         model,
         budgetLedger,
-      });
+        budgetEnforced,
+      };
+      envelope = runClaude
+        ? await runClaude(llmArgs)
+        : await runLLM(llmArgs);
     } catch (err) {
-      return failureProposal(jsonpath, `claude invocation failed: ${err.message}`);
+      const providerName = resolveLLMProvider({ stage: 'analyze', provider: llmProvider, env });
+      const label = providerName === 'claude' ? 'claude' : 'llm';
+      return failureProposal(jsonpath, `${label} invocation failed: ${err.message}`);
     }
 
     const parsed = parseProposalEnvelope(envelope);
