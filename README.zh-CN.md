@@ -11,6 +11,36 @@
 默认情况下，生成产物会写入调用命令时当前目录下的 `out/`。输出根目录不绑定
 plugin cache，因此更新插件不会改变历史输出所在位置。
 
+当前版本：`2.4.0`。
+
+## 2.4 重点更新
+
+- 实时 out browser 成为主要审核 UI。它直接读取 `out/`，因此
+  `out/<slug>/record.json` 更新后无需重建静态 HTML。
+- RootData 支持多个 API key，并发批量运行时会随机起点轮换，并在限流/失败时 fallback。
+- Provider、成员、审计机构 logo 会下载到可直接上传的目录，并改写为 OneKey CDN URL。
+- R2 前会抓取 audit report URL；PDF/HTML 文本可通过
+  `AUDIT_REPORTS_LLM_PROVIDER=openai` 交给 OpenAI-compatible LLM 做结构化阅读。
+- Claude 调用有 wall-clock watchdog；R1 会把实时 subtask telemetry 写到
+  `out/<slug>/_debug/r1/r1-status.json`。
+
+## 快速开始
+
+```bash
+# 抓取单个协议到 ./out/<slug>/
+./run.sh --display-name "Pendle"
+
+# 用实时浏览器审核当前 out/ 数据。
+./run.sh browse
+
+# RootData 多 key + i18n 批量抓取。
+ROOTDATA_API_KEYS=sk-a,sk-b \
+I18N_PROVIDER=openai \
+./run.sh --parallel 4 --i18n zh_CN,ja_JP \
+  --batch --display-name "Pendle" \
+  --batch --display-name "Morpho"
+```
+
 ## 适用场景
 
 当你需要可重复的协议调研管线时，使用本项目：
@@ -330,7 +360,8 @@ node framework/out-browser.mjs --out ./out --port 8765
 | `changes.json` | R2 对账改动及原因。 |
 | `meta.json` | 运行状态、RootData 使用情况、预算计划、R1/R2 telemetry、i18n 状态。 |
 | `summary.tsv` | 供本地管理页使用的单协议生成 summary row。Gitignored。 |
-| `_debug/` | 原始 envelope、stderr 日志、中间 evidence、i18n sidecar。 |
+| `_debug/` | 原始 envelope、stderr 日志、中间 evidence、i18n sidecar、实时 R1 状态。 |
+| `_debug/r1/r1-status.json` | 实时 R1 调度状态，包含 queued/running/ok/failed 计数、subtask pid、elapsed time、timeout、error kind。 |
 | `../protocol-logo/` | `providerLogoUrl` 引用的 protocol/provider logo。上传到 `/static/logo/protocol-logo/`。 |
 | `../protocol-member-logo/` | `members[].avatarUrl` 引用的团队成员 logo。上传到 `/static/logo/protocol-member-logo/`。 |
 | `../audit-logo/` | `audits.items[].auditorLogoUrl` 引用的审计机构 logo。上传到 `/static/logo/audit-logo/`。 |
@@ -581,6 +612,20 @@ out/<slug>/_debug/i18n/
 ```
 
 成功生成的 locale sidecar 仍会被 post-processing 使用。
+
+### R1 看起来卡住
+
+R1 在运行中会持续写调度 telemetry：
+
+```bash
+jq . out/<slug>/_debug/r1/r1-status.json
+tail -f out/<slug>/_debug/r1.stderr.log
+```
+
+`r1-status.json` 会显示每个 subtask 的 `state`、`pid`、`elapsed_ms`、
+`timeout_ms` 和 `error_kind`。Claude 调用默认 30 分钟 wall-clock watchdog；
+可以用 `CLAUDE_TIMEOUT_MS` 或 `R1_CLAUDE_TIMEOUT_MS` 调整。只有明确要禁用
+watchdog 时才把值设为 `0`。
 
 ### 输出路径变化
 

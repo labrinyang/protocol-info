@@ -12,6 +12,38 @@ By default, generated artifacts are written to `out/` under the current working
 directory where the command is invoked. Plugin updates do not move the output
 root because it is not tied to the plugin cache path.
 
+Current release: `2.4.0`.
+
+## 2.4 Highlights
+
+- Live out browser is the primary review UI. It reads `out/` directly, so
+  updates to `out/<slug>/record.json` appear without rebuilding static HTML.
+- RootData accepts multiple API keys and rotates/falls back across the pool
+  during concurrent batches.
+- Provider, member, and auditor logos are downloaded into upload-ready folders
+  and rewritten to OneKey CDN URLs.
+- Audit report URLs are fetched before R2; PDF/HTML text can be read by an
+  OpenAI-compatible LLM via `AUDIT_REPORTS_LLM_PROVIDER=openai`.
+- Claude calls have a wall-clock watchdog and R1 writes live subtask telemetry
+  to `out/<slug>/_debug/r1/r1-status.json`.
+
+## Quick Start
+
+```bash
+# Crawl one protocol into ./out/<slug>/
+./run.sh --display-name "Pendle"
+
+# Review current out/ data in the live browser.
+./run.sh browse
+
+# Batch crawl with RootData key rotation and i18n.
+ROOTDATA_API_KEYS=sk-a,sk-b \
+I18N_PROVIDER=openai \
+./run.sh --parallel 4 --i18n zh_CN,ja_JP \
+  --batch --display-name "Pendle" \
+  --batch --display-name "Morpho"
+```
+
 ## When To Use It
 
 Use this project when you need a repeatable research pipeline for protocol metadata:
@@ -364,7 +396,8 @@ Typical files:
 | `changes.json` | R2 reconciliation changes and reasons. |
 | `meta.json` | Run status, RootData usage, budget plan, R1/R2 telemetry, i18n status. |
 | `summary.tsv` | Per-protocol generated summary row for the local browser. Gitignored. |
-| `_debug/` | Raw envelopes, stderr logs, intermediate evidence, i18n sidecars. |
+| `_debug/` | Raw envelopes, stderr logs, intermediate evidence, i18n sidecars, and live R1 status. |
+| `_debug/r1/r1-status.json` | Live R1 scheduler status with queued/running/ok/failed counts, subtask pid, elapsed time, timeout, and error kind. |
 | `../protocol-logo/` | Provider/protocol logos referenced by `providerLogoUrl`. Upload this folder to `/static/logo/protocol-logo/`. |
 | `../protocol-member-logo/` | Team member logos referenced by `members[].avatarUrl`. Upload this folder to `/static/logo/protocol-member-logo/`. |
 | `../audit-logo/` | Auditor logos referenced by `audits.items[].auditorLogoUrl`. Upload this folder to `/static/logo/audit-logo/`. |
@@ -615,6 +648,20 @@ out/<slug>/_debug/i18n/
 ```
 
 Successful locale sidecars are still used by post-processing.
+
+### R1 appears stuck
+
+R1 writes live scheduler telemetry while the run is still active:
+
+```bash
+jq . out/<slug>/_debug/r1/r1-status.json
+tail -f out/<slug>/_debug/r1.stderr.log
+```
+
+`r1-status.json` shows each subtask's `state`, `pid`, `elapsed_ms`,
+`timeout_ms`, and `error_kind`. Claude calls default to a 30-minute wall-clock
+watchdog; tune it with `CLAUDE_TIMEOUT_MS` or `R1_CLAUDE_TIMEOUT_MS`. Set the
+value to `0` only when deliberately disabling the watchdog.
 
 ### Output path changed
 
