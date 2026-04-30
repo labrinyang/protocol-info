@@ -54,7 +54,7 @@ const logoAssetPathsToCommit = [];
 const result = await runNormalizers({
   normalizers: manifest._abs.normalizers || [],
   record, evidence, manifest, incomingChanges, incomingGaps,
-  outputRoot, slugDir, createdLogoAssetPaths, logoAssetPathsToCommit,
+  outputRoot, slugDir, env: process.env, createdLogoAssetPaths, logoAssetPathsToCommit,
 });
 
 await writeFile(recordOut, JSON.stringify(result.record, null, 2));

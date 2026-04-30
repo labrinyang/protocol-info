@@ -7,6 +7,8 @@ import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { cdnLogoUrl, parseCdnLogoPath } from '../../../framework/logo-assets.mjs';
+import { extractProviderLogoUrl, search as defaultSearchRootData } from '../fetchers/rootdata.mjs';
+import { unavatarSourceForMember } from './rootdata-avatar.mjs';
 
 export const LOGO_FOLDERS = Object.freeze({
   member: 'protocol-member-logo',
@@ -24,6 +26,7 @@ const EXT_BY_CONTENT_TYPE = {
   'image/webp': 'webp',
   'image/svg+xml': 'svg',
 };
+const GITHUB_HOST_RE = /(?:^|\.)github\.com$/i;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -37,6 +40,17 @@ function normalizeKey(value) {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
+}
+
+function canonicalEntityKey(value) {
+  return normalizeKey(value)
+    .replace(/-(?:inc|incorporated|llc|ltd|limited|labs|lab|foundation|security|audit|audits)$/g, '');
+}
+
+function withFallbackFalse(url) {
+  const parsed = new URL(url);
+  parsed.searchParams.set('fallback', 'false');
+  return parsed.toString();
 }
 
 export function logoName(parts) {
@@ -54,7 +68,6 @@ function rejectSourceUrl(url) {
   }
   if (parsed.protocol !== 'https:') return 'non_https';
   if (PBS_TWIMG_RE.test(parsed.hostname)) return 'twimg_unstable';
-  if (UNAVATAR_RE.test(parsed.hostname)) return 'unavatar_unstable';
   return null;
 }
 
@@ -93,12 +106,27 @@ function cdnPathForFolder(url, folder) {
   return rel;
 }
 
+function fetchOptionsForSource(sourceUrl, env = {}) {
+  let parsed;
+  try {
+    parsed = new URL(sourceUrl);
+  } catch {
+    return undefined;
+  }
+  if (!UNAVATAR_RE.test(parsed.hostname)) return undefined;
+  const apiKey = typeof env?.UNAVATAR_API_KEY === 'string' ? env.UNAVATAR_API_KEY.trim() : '';
+  if (!apiKey) return undefined;
+  return { headers: { 'x-api-key': apiKey } };
+}
+
 export async function rehostLogoAsset({
   sourceUrl,
   outputRoot,
   folder,
   nameBase,
   fetchImage = globalThis.fetch,
+  env = {},
+  reuseExisting = true,
 }) {
   if (!sourceUrl) return { url: null, reason: 'empty' };
   if (!outputRoot) return { url: sourceUrl, reason: 'output_root_missing' };
@@ -118,12 +146,13 @@ export async function rehostLogoAsset({
   if (typeof fetchImage !== 'function') return { url: null, reason: 'fetch_unavailable' };
 
   const extHint = extensionFromUrl(sourceUrl);
-  const preexisting = existingAsset(outputRoot, folder, nameBase, extHint);
+  const preexisting = reuseExisting ? existingAsset(outputRoot, folder, nameBase, extHint) : null;
   if (preexisting) return { ...preexisting, reused: true };
 
   let response;
   try {
-    response = await fetchImage(sourceUrl);
+    const fetchOptions = fetchOptionsForSource(sourceUrl, env);
+    response = fetchOptions ? await fetchImage(sourceUrl, fetchOptions) : await fetchImage(sourceUrl);
   } catch (err) {
     return { url: null, reason: `fetch_failed:${err.message}` };
   }
@@ -137,7 +166,7 @@ export async function rehostLogoAsset({
   const relPath = `${folder}/${filename}`;
   const filePath = join(outputRoot, relPath);
 
-  if (existsSync(filePath)) return { url: cdnLogoUrl(folder, filename), relPath, reused: true };
+  if (reuseExisting && existsSync(filePath)) return { url: cdnLogoUrl(folder, filename), relPath, reused: true };
 
   const bytes = Buffer.from(await response.arrayBuffer());
   await mkdir(join(outputRoot, folder), { recursive: true });
@@ -160,6 +189,111 @@ function sourceFromRootData(evidence) {
     if (candidate && typeof candidate.value === 'string' && candidate.value.trim()) return candidate.value;
   }
   return null;
+}
+
+function rootDataResultNameCandidates(item) {
+  return [
+    item?.name,
+    item?.item_name,
+    item?.project_name,
+    item?.display_name,
+    item?.title,
+  ].filter((value) => typeof value === 'string' && value.trim());
+}
+
+function collectStringValues(value, out = []) {
+  if (typeof value === 'string') {
+    out.push(value);
+    return out;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectStringValues(item, out);
+    return out;
+  }
+  if (value && typeof value === 'object') {
+    for (const nested of Object.values(value)) collectStringValues(nested, out);
+  }
+  return out;
+}
+
+function githubOwnerFromUrl(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  let parsed;
+  try {
+    parsed = new URL(value.trim());
+  } catch {
+    return null;
+  }
+  if (!GITHUB_HOST_RE.test(parsed.hostname)) return null;
+  const owner = parsed.pathname.split('/').filter(Boolean)[0] || '';
+  if (!owner || owner.startsWith('.') || owner.includes('..')) return null;
+  return /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(owner) ? owner : null;
+}
+
+function githubOwnerFromRootDataItem(item) {
+  const explicitValues = [
+    item?.github,
+    item?.github_url,
+    item?.githubUrl,
+    item?.github_link,
+    item?.githubLink,
+    item?.links?.github,
+    item?.links?.github_url,
+    item?.social?.github,
+    item?.socials?.github,
+    item?.social_links?.github,
+  ];
+  for (const value of explicitValues) {
+    const owner = githubOwnerFromUrl(value);
+    if (owner) return owner;
+  }
+
+  for (const value of collectStringValues(item)) {
+    const owner = githubOwnerFromUrl(value);
+    if (owner) return owner;
+  }
+  return null;
+}
+
+function isExactRootDataEntityMatch(query, item) {
+  const queryKey = canonicalEntityKey(query);
+  if (!queryKey) return false;
+  return rootDataResultNameCandidates(item).some((candidate) => canonicalEntityKey(candidate) === queryKey);
+}
+
+async function sourceFromRootDataAudit({
+  auditor,
+  env,
+  logger,
+  searchRootData,
+}) {
+  if (!auditor || typeof searchRootData !== 'function') return { url: null, reason: 'rootdata_search_unavailable' };
+  if (!env?.ROOTDATA_API_KEY) return { url: null, reason: 'rootdata_key_missing' };
+
+  let packet;
+  try {
+    packet = await searchRootData({ query: auditor, type: 'project', limit: 5, env, logger });
+  } catch (err) {
+    logger?.warn?.(`rootdata audit logo search failed for ${auditor}: ${err.message}`);
+    return { url: null, reason: `rootdata_search_failed:${err.message}` };
+  }
+
+  if (!packet?.ok) return { url: null, reason: packet?.error || 'rootdata_search_failed' };
+
+  for (const item of packet.results || []) {
+    if (!isExactRootDataEntityMatch(auditor, item)) continue;
+    const url = extractProviderLogoUrl(item);
+    if (url) return { url, reason: 'rootdata_exact_match' };
+    const githubOwner = githubOwnerFromRootDataItem(item);
+    if (githubOwner) {
+      return {
+        url: withFallbackFalse(`https://unavatar.io/github/${encodeURIComponent(githubOwner)}`),
+        reason: 'rootdata_exact_match_github_unavatar',
+      };
+    }
+  }
+
+  return { url: null, reason: 'rootdata_no_exact_logo_match' };
 }
 
 function scoreCachedUrl(outputRoot, value) {
@@ -202,17 +336,6 @@ async function buildAuditLogoCache(outputRoot) {
     }
   }
   return new Map([...cache].map(([key, value]) => [key, value.url]));
-}
-
-function preferCachedLogo(current, cached, outputRoot) {
-  if (!cached) return current;
-  if (!current) return cached;
-  if (!outputRoot) return current;
-  const currentRel = parseCdnLogoPath(current);
-  if (currentRel && existsSync(join(outputRoot, currentRel))) return current;
-  const cachedRel = parseCdnLogoPath(cached);
-  if (cachedRel && existsSync(join(outputRoot, cachedRel))) return cached;
-  return currentRel ? current : cached;
 }
 
 function reorderProviderLogo(record) {
@@ -258,6 +381,9 @@ export default async function normalize({
   evidence,
   outputRoot,
   fetchImage = globalThis.fetch,
+  searchRootData = defaultSearchRootData,
+  env = {},
+  logger = null,
   createdLogoAssetPaths = null,
   logoAssetPathsToCommit = null,
 }) {
@@ -289,6 +415,7 @@ export default async function normalize({
         folder: LOGO_FOLDERS.provider,
         nameBase: logoName([slug]),
         fetchImage,
+        env,
       });
       trackCreated(result);
       if (result.url) break;
@@ -320,13 +447,27 @@ export default async function normalize({
     if (!before) continue;
     const field = `members[${i}].avatarUrl`;
     const entityKey = `member:${member.memberName || ''}`;
-    const result = await rehostLogoAsset({
+    let result = await rehostLogoAsset({
       sourceUrl: before,
       outputRoot,
       folder: LOGO_FOLDERS.member,
       nameBase: logoName([slug, member.memberName]),
       fetchImage,
+      env,
     });
+    const failedPrimaryReason = result.url ? null : result.reason;
+    const unavatarFallback = !result.url ? unavatarSourceForMember(member) : null;
+    if (unavatarFallback?.url && unavatarFallback.url !== before) {
+      const fallbackResult = await rehostLogoAsset({
+        sourceUrl: unavatarFallback.url,
+        outputRoot,
+        folder: LOGO_FOLDERS.member,
+        nameBase: logoName([slug, member.memberName]),
+        fetchImage,
+        env,
+      });
+      if (fallbackResult.url) result = { ...fallbackResult, fallbackSource: unavatarFallback.source, primaryReason: failedPrimaryReason };
+    }
     trackCreated(result);
     member.avatarUrl = result.url;
     trackForCommit(result, before, member.avatarUrl ?? null);
@@ -335,8 +476,14 @@ export default async function normalize({
       entityKey,
       before,
       after: member.avatarUrl ?? null,
-      reason: result.url ? 'member_logo_rehosted' : `member_logo_rejected:${result.reason}`,
-      source: result.url ? 'framework:logo-assets' : 'framework:normalizer',
+      reason: result.url
+        ? result.fallbackSource
+          ? `member_logo_rehosted_via_unavatar_fallback:${result.primaryReason}`
+          : 'member_logo_rehosted'
+        : `member_logo_rejected:${result.reason}`,
+      source: result.url
+        ? result.fallbackSource || 'framework:logo-assets'
+        : 'framework:normalizer',
       confidence: result.url ? 0.9 : 1,
     });
     if (!result.url) {
@@ -344,7 +491,7 @@ export default async function normalize({
         field,
         entityKey,
         reason: `Member logo URL could not be rehosted (${result.reason}); avatarUrl set to null.`,
-        tried: ['members[].avatarUrl', 'rootdata.member_candidates[].avatar_url'],
+        tried: ['members[].avatarUrl', 'unavatar paid avatar source', 'rootdata.member_candidates[].avatar_url'],
       });
     }
   }
@@ -353,21 +500,83 @@ export default async function normalize({
     const item = out.audits.items[i];
     const before = item.auditorLogoUrl ?? null;
     const auditorKey = normalizeKey(item.auditor);
-    const cached = auditorKey ? auditCache.get(auditorKey) : null;
-    const source = preferCachedLogo(before, cached, outputRoot);
-    if (!source) {
-      item.auditorLogoUrl = null;
-      continue;
-    }
     const field = `audits.items[${i}].auditorLogoUrl`;
     const entityKey = `auditor:${item.auditor || ''}`;
-    const result = await rehostLogoAsset({
-      sourceUrl: source,
-      outputRoot,
-      folder: LOGO_FOLDERS.audit,
-      nameBase: logoName([item.auditor || 'auditor']),
-      fetchImage,
-    });
+    const local = outputRoot && item.auditor
+      ? existingAsset(outputRoot, LOGO_FOLDERS.audit, logoName([item.auditor || 'auditor']))
+      : null;
+    const cached = auditorKey ? auditCache.get(auditorKey) : null;
+    const sourceCandidates = [];
+    if (before) sourceCandidates.push({ url: before, source: 'record:auditorLogoUrl' });
+    if (local?.url && local.url !== before) sourceCandidates.push({ url: local.url, source: 'out:audit-logo-local' });
+    if (cached && cached !== before && cached !== local?.url) sourceCandidates.push({ url: cached, source: 'out:audit-logo-cache' });
+
+    let rootDataSource = { url: null, reason: sourceCandidates.length ? 'deferred_until_local_sources_fail' : null };
+    let result = null;
+    let selectedSource = null;
+    const failedReasons = [];
+
+    for (const candidate of sourceCandidates) {
+      const candidateResult = await rehostLogoAsset({
+        sourceUrl: candidate.url,
+        outputRoot,
+        folder: LOGO_FOLDERS.audit,
+        nameBase: logoName([item.auditor || 'auditor']),
+        fetchImage,
+        env,
+        reuseExisting: !(candidate.source === 'record:auditorLogoUrl' && !cdnPathForFolder(candidate.url, LOGO_FOLDERS.audit)),
+      });
+      if (candidateResult.url) {
+        result = candidateResult;
+        selectedSource = candidate;
+        break;
+      }
+      failedReasons.push(`${candidate.source}:${candidateResult.reason}`);
+    }
+
+    if (!result) {
+      rootDataSource = await sourceFromRootDataAudit({ auditor: item.auditor, env, logger, searchRootData });
+      if (rootDataSource.url) {
+        const candidateResult = await rehostLogoAsset({
+          sourceUrl: rootDataSource.url,
+          outputRoot,
+          folder: LOGO_FOLDERS.audit,
+          nameBase: logoName([item.auditor || 'auditor']),
+          fetchImage,
+          env,
+        });
+        if (candidateResult.url) {
+          result = candidateResult;
+          selectedSource = { url: rootDataSource.url, source: 'rootdata:audit-logo' };
+        } else {
+          failedReasons.push(`rootdata:audit-logo:${candidateResult.reason}`);
+        }
+      }
+    }
+
+    if (!result) {
+      item.auditorLogoUrl = null;
+      if (before !== null) {
+        pushChange(changes, {
+          field,
+          entityKey,
+          before,
+          after: null,
+          reason: `audit_logo_missing:${rootDataSource.reason || failedReasons.join(',') || 'no_source'}`,
+          source: 'framework:normalizer',
+          confidence: 1,
+        });
+      }
+      if (rootDataSource.reason && !['rootdata_key_missing', 'rootdata_search_unavailable'].includes(rootDataSource.reason)) {
+        pushGap(gaps, {
+          field,
+          entityKey,
+          reason: `Audit logo could not be resolved from local cache or RootData (${rootDataSource.reason}); auditorLogoUrl set to null.`,
+          tried: ['local audit-logo asset', 'existing out/*/record.json audit logo cache', 'RootData project search'],
+        });
+      }
+      continue;
+    }
     trackCreated(result);
     item.auditorLogoUrl = result.url;
     trackForCommit(result, before, item.auditorLogoUrl ?? null);
@@ -377,7 +586,7 @@ export default async function normalize({
       before,
       after: item.auditorLogoUrl ?? null,
       reason: result.url ? 'audit_logo_rehosted' : `audit_logo_rejected:${result.reason}`,
-      source: cached && source === cached ? 'out:audit-logo-cache' : 'framework:logo-assets',
+      source: selectedSource?.source || 'framework:logo-assets',
       confidence: result.url ? 0.88 : 1,
     });
     if (!result.url) {
@@ -385,7 +594,7 @@ export default async function normalize({
         field,
         entityKey,
         reason: `Audit logo URL could not be rehosted (${result.reason}); auditorLogoUrl set to null.`,
-        tried: ['audits.items[].auditorLogoUrl', 'existing out/*/record.json audit logo cache'],
+        tried: ['local audit-logo asset', 'existing out/*/record.json audit logo cache', 'RootData project search', 'audits.items[].auditorLogoUrl'],
       });
     }
   }

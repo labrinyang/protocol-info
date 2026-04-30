@@ -28,14 +28,7 @@ const manifestPath = arg('manifest');
 const slug = arg('slug');
 const provider = arg('provider', slug);
 const displayName = arg('display-name');
-// `type` is OPTIONAL: the metadata subtask infers it from evidence. When
-// supplied via --type, fold into hints as a soft preference — the prompt
-// already documents the override semantics for type tokens in {{HINTS}}.
-const type = arg('type', '');
-const rawHints = arg('hints', '');
-const hints = type
-  ? (rawHints ? `${rawHints}; type=${type}` : `type=${type}`)
-  : rawHints;
+const hints = arg('hints', '');
 const evidencePath = arg('evidence');
 const recordOut = arg('record-out');
 const debugDir = arg('debug-dir');
@@ -55,7 +48,7 @@ const turnsCap = maxTurnsCap ? Math.max(1, parseInt(maxTurnsCap, 10)) : null;
 const budgetCap = maxBudgetCap ? Math.max(0, Number(maxBudgetCap)) : null;
 
 if (!manifestPath || !slug || !displayName || !recordOut || !debugDir) {
-  console.error('usage: r1.mjs --manifest M --slug S --display-name D [--type T] [--provider P] [--hints H] [--model M] --evidence E --record-out R --debug-dir D2 [--findings-out F] [--gaps-out G] [--handoff-out H]');
+  console.error('usage: r1.mjs --manifest M --slug S --display-name D [--provider P] [--hints H] [--model M] --evidence E --record-out R --debug-dir D2 [--findings-out F] [--gaps-out G] [--handoff-out H]');
   process.exit(2);
 }
 

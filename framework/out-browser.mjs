@@ -5,13 +5,11 @@
 
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { log as gitLog, diff as gitDiff } from './version-store.mjs';
 import { parseCdnLogoPath } from './logo-assets.mjs';
 
-const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
-const SCRIPT_DIR = dirname(FRAMEWORK_DIR);
-const DEFAULT_OUT_ROOT = join(SCRIPT_DIR, 'out');
+const DEFAULT_OUT_ROOT = join(process.cwd(), 'out');
 const MAX_EMBED_BYTES = 1_500_000;
 const RUN_ID_RE = /^\d{8}T\d{6}Z$/;
 

@@ -8,6 +8,9 @@
 
 输出应先人工审核，再通过 dashboard 的 `earn-protocol-info` import endpoint 导入。
 
+默认情况下，生成产物会写入调用命令时当前目录下的 `out/`。输出根目录不绑定
+plugin cache，因此更新插件不会改变历史输出所在位置。
+
 ## 适用场景
 
 当你需要可重复的协议调研管线时，使用本项目：
@@ -53,10 +56,19 @@ chmod 600 ~/.config/protocol-info/.env
 或者临时使用一次：
 
 ```bash
-/protocol-info:protocol-info --rootdata-key sk-... --display-name "Pendle" --type fixed_rate
+/protocol-info:protocol-info --rootdata-key sk-... --display-name "Pendle"
 ```
 
 启动横幅会标明 key 的来源（`shell-env`、`--rootdata-key`，或解析到的 `.env` 路径）。不配置 `ROOTDATA_API_KEY` 时，管线仍然可用，只会跳过 RootData 证据。
+
+付费 Unavatar key 用于成员 / 审计机构头像下载和 rehost：
+
+```bash
+UNAVATAR_API_KEY=sk-...
+```
+
+`UNAVATAR_API_KEY` 使用与 RootData 相同的 shell / `~/.config/protocol-info/.env` /
+`<repo>/.env` 优先级。也可以用 `--unavatar-key <key>` 临时传入一次。不配置时仍可匿名尝试 Unavatar，但可能触发公共限流。
 
 可选的 OpenAI-compatible LLM 网关配置：
 
@@ -84,7 +96,7 @@ OpenAI-compatible 配置使用和 RootData 一样的优先级：
   --openai-base-url https://llm.example.com/v1 \
   --openai-model gpt-5.5 \
   --i18n all \
-  --display-name "Pendle" --type fixed_rate
+  --display-name "Pendle"
 ```
 
 `i18n` 是最适合外部 LLM 的阶段。R2 和字段级 analyze 也可以通过
@@ -94,18 +106,18 @@ OpenAI-compatible 配置使用和 RootData 一样的优先级：
 安装后可以直接调用 slash command：
 
 ```text
-/protocol-info:protocol-info --display-name "Pendle" --type fixed_rate
-/protocol-info:protocol-info --display-name "Pendle" --type fixed_rate --i18n all
+/protocol-info:protocol-info --display-name "Pendle"
+/protocol-info:protocol-info --display-name "Pendle" --i18n all
 /protocol-info:protocol-info --parallel 4 --i18n zh_CN,ja_JP \
-  --batch --display-name "Pendle" --type fixed_rate \
-  --batch --display-name "Morpho" --type simple_earn
+  --batch --display-name "Pendle" \
+  --batch --display-name "Morpho"
 ```
 
 也可以用自然语言触发内置 skill，例如：
 
 - “调研 Pendle 的 protocol info，并翻译成中文和日文。”
 - “批量抓 Morpho 和 Aave 的 earn 信息，不要翻译。”
-- “给我做一份 Lido 的 protocol-info。” 如果类型不明确，skill 会先问一个短问题。
+- “给我做一份 Lido 的 protocol-info。”
 - “Crawl protocol info for Morpho and translate to all locales.”
 - “把已有 Pendle 记录补翻成日语。”
 - “核实 Pendle 的 fundingRounds 并应用更新。”
@@ -117,7 +129,7 @@ Skill 位于 `skills/protocol-info-crawler/SKILL.md`，最终会派发到 `/prot
 克隆仓库后运行：
 
 ```bash
-./run.sh --display-name "Pendle" --type fixed_rate
+./run.sh --display-name "Pendle"
 ```
 
 `run.sh` 只负责加载环境变量，然后委托给 `framework/cli.mjs`。它按以下顺序填充缺失的环境变量：
@@ -138,13 +150,13 @@ Skill 位于 `skills/protocol-info-crawler/SKILL.md`，最终会派发到 `/prot
 单协议：
 
 ```bash
-./run.sh --display-name "f(x)Protocol" --type simple_earn
+./run.sh --display-name "f(x)Protocol"
 ```
 
 指定 slug、RootData ID 或调研提示：
 
 ```bash
-./run.sh --display-name "Pendle" --type fixed_rate \
+./run.sh --display-name "Pendle" \
   --slug pendle \
   --rootdata-id 874 \
   --hints "Yield trading protocol with PT/YT markets"
@@ -154,25 +166,25 @@ Skill 位于 `skills/protocol-info-crawler/SKILL.md`，最终会派发到 `/prot
 
 ```bash
 ./run.sh --parallel 4 \
-  --batch --display-name "Pendle" --type fixed_rate \
-  --batch --display-name "Morpho" --type simple_earn \
-  --batch --display-name "Aave" --type simple_earn
+  --batch --display-name "Pendle" \
+  --batch --display-name "Morpho" \
+  --batch --display-name "Aave"
 ```
 
 i18n：
 
 ```bash
-./run.sh --display-name "Pendle" --type fixed_rate --i18n all
-./run.sh --display-name "Pendle" --type fixed_rate --i18n zh_CN,ja_JP,en_US
-./run.sh --display-name "Pendle" --type fixed_rate --i18n none
+./run.sh --display-name "Pendle" --i18n all
+./run.sh --display-name "Pendle" --i18n zh_CN,ja_JP,en_US
+./run.sh --display-name "Pendle" --i18n none
 ```
 
 OpenAI-compatible no-web 路由：
 
 ```bash
-I18N_PROVIDER=openai ./run.sh --display-name "Pendle" --type fixed_rate --i18n all
-R2_ROUTING=external_first_with_claude_fallback ./run.sh --display-name "Pendle" --type fixed_rate
-R2_LLM_PROVIDER=openai ./run.sh --display-name "Pendle" --type fixed_rate
+I18N_PROVIDER=openai ./run.sh --display-name "Pendle" --i18n all
+R2_ROUTING=external_first_with_claude_fallback ./run.sh --display-name "Pendle"
+R2_LLM_PROVIDER=openai ./run.sh --display-name "Pendle"
 ```
 
 基于已有 `out/<slug>/` 的工作流命令：
@@ -200,7 +212,7 @@ refresh subtask 继续使用 Claude，除非 manifest 显式放开。
 Dry run：
 
 ```bash
-./run.sh --dry-run --display-name "Pendle" --type fixed_rate
+./run.sh --dry-run --display-name "Pendle"
 ```
 
 ## CLI 参数
@@ -208,13 +220,13 @@ Dry run：
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
 | `--display-name <name>` | 是 | 协议显示名称。 |
-| `--type <type>` | 否，推荐填写 | `fixed_rate`、`simple_earn`、`staking` 之一。不填时 metadata subtask 会尝试推断。 |
 | `--slug <slug>` | 否 | 业务 key。默认由 display name 生成。 |
 | `--hints <text>` | 否 | 传给 Claude 的额外调研上下文。 |
 | `--rootdata-id <int>` | 否 | RootData 项目 ID。不填时，如果设置了 `ROOTDATA_API_KEY`，fetcher 会按名称搜索。 |
 | `--batch` | 否 | 结束当前 provider，开始下一个 provider。 |
 | `--model <name>` | 否 | 覆盖 R1 和 R2 使用的模型。manifest 默认值为 `claude-sonnet-4-6`。 |
 | `--rootdata-key <key>` | 否 | 本次运行的 RootData API key，优先于 shell env 和 `.env` 文件，不会写入磁盘。 |
+| `--unavatar-key <key>` | 否 | 本次运行的付费 Unavatar API key，优先于 shell env 和 `.env` 文件，不会写入磁盘。 |
 | `--openai-api-key <key>` | 否 | 本次运行的 OpenAI-compatible API key，优先于 shell env 和 `.env` 文件，不会写入磁盘。 |
 | `--openai-base-url <url>` | 否 | 本次运行的 OpenAI-compatible base URL。 |
 | `--openai-model <name>` | 否 | OpenAI-compatible i18n/R2/analyze/refresh 路由使用的模型。 |
@@ -230,6 +242,8 @@ Dry run：
 | `--dry-run` | 否 | 打印解析后的 provider 后退出，并强制 `--parallel 1`。 |
 | `--force-overwrite` | 否 | 覆盖存在未提交改动的协议目录。不加时，v2 会拒绝覆盖手动修改。 |
 | `--manifest <path>` | 否 | 高级用法：运行其他 consumer manifest。 |
+
+`record.type` 不作为 CLI 输入字段，由 metadata subtask 根据证据推断。
 
 ## 工作流命令
 
@@ -378,13 +392,13 @@ R2 使用 audit-first 策略合并 R1 slice 和证据：
 
 Consumer normalizer 会做决定性后处理：
 
-- `rootdata-avatar` — `members[].avatarUrl` 由 RootData 提供（`member_candidates[].avatar_url`），按姓名匹配。team 子任务输出 `null`，由该 normalizer 在 R2 之后填入。RootData 没有匹配的成员保留 `avatarUrl: null`，同时在 `gaps.json` 留一条记录。`pbs.twimg.com` 的临时签名 URL 会被拒绝。
+- `rootdata-avatar` — `members[].avatarUrl` 在 R2 后确定性填充。已有 OneKey 成员头像 CDN 路径会保留；否则先按精确姓名匹配 RootData project member candidates。如果 project-scoped candidates 漏掉已验证成员，normalizer 会按 `memberName` 直接搜索 RootData people，并要求人物简介能关联当前 protocol。RootData 都没有可用头像时，最后再用已验证 X/LinkedIn 链接或 handle-like pseudonym 生成付费 Unavatar 源 URL。`pbs.twimg.com` 的临时签名 URL 会被拒绝。team 子任务仍输出 `null`；`logo-assets` 会下载源图并把最终 JSON 改写到 OneKey CDN。
 - `logo-assets` — 下载/托管 logo 字段到 `out/` 下的共享目录，并把 JSON 改写成 `https://uni.onekey-asset.com/static/logo/...`：
   - `providerLogoUrl` → `out/protocol-logo/`
   - `members[].avatarUrl` → `out/protocol-member-logo/`
   - `audits.items[].auditorLogoUrl` → `out/audit-logo/`
-  文件名是确定性的：protocol logo 使用 `<slug>.<ext>`，成员 logo 使用 `<slug>-<member-name>.<ext>`，审计机构 logo 使用 `<auditor>.<ext>`；名称会转小写，标点会折叠成 `-`。本地已有文件会复用，重复 refresh 不会重新下载同一个 logo。审计机构 logo 也会按 auditor 名称从已有 `out/*/record.json` 中复用。
-- `protocol-info-final` — 把 `audits.lastScannedAt` 设为 UTC 今日。
+  文件名是确定性的：protocol logo 使用 `<slug>.<ext>`，成员 logo 使用 `<slug>-<member-name>.<ext>`，审计机构 logo 使用 `<auditor>.<ext>`；名称会转小写，标点会折叠成 `-`。本地已有文件会复用，重复 refresh 不会重新下载同一个 logo。审计机构 logo 优先保留当前 record 值，然后复用本地文件和已有 `out/*/record.json`；缺失时再做 RootData project 精确搜索，并托管 RootData 的 `logo` 值。如果 RootData 精确命中的审计机构只有 GitHub 链接没有 logo，会用付费 Unavatar 获取 GitHub org 头像并 rehost。
+- `protocol-info-final` — 把 `audits.lastScannedAt` 设为 UTC 今日，并把占位式 `members[].oneLiner` 归零为 `null`。
 
 最终 `record.json` 必须通过 `consumers/protocol-info/schemas/full.json`。
 
@@ -455,7 +469,8 @@ Consumer normalizer 会做决定性后处理：
 - `type`：`fixed_rate`、`simple_earn`、`staking`
 - `status`：crawler 输出应为 `draft`
 - `members`：至少 1 个成员
-- `providerLogoUrl`、`members[].avatarUrl`、`audits.items[].auditorLogoUrl`：绝对 URL 或 `null`；找到 logo 时 normalizer 会改写为 `https://uni.onekey-asset.com/static/logo/...`
+- `members[].oneLiner`：具体且可验证的背景信息，或 `null`；`Unverified`、`TBD`、`N/A`、`暂未提供` 等占位文案会被 normalizer 改回 `null`
+- `providerLogoUrl`、`members[].avatarUrl`、`audits.items[].auditorLogoUrl`：绝对 URL 或 `null`；找到 logo 时 normalizer 会改写为 `https://uni.onekey-asset.com/static/logo/...`。成员头像先用 RootData，再用直接 RootData person search，最后才用已验证社交链接或 handle-like pseudonym 的付费 Unavatar。审计机构 logo 优先当前/手工值，然后本地/跨 protocol 缓存，再 RootData project 精确搜索；RootData GitHub 链接可作为付费 Unavatar 兜底。
 - `fundingRounds`：完整融资历史，最新轮次在前
 - `audits.items[].date`：`YYYY-MM` 或 `YYYY-MM-DD`；裸年份无效
 - URL 字段必须是绝对 URI；可空字段可为 `null`
@@ -514,12 +529,12 @@ curl -X POST "$DASHBOARD/api/earn-protocol-info/import" \
 安装 Claude Code，并确保 `claude` 在 `PATH` 中，或设置 `CLAUDE_BIN`：
 
 ```bash
-CLAUDE_BIN=/path/to/claude ./run.sh --display-name "Pendle" --type fixed_rate
+CLAUDE_BIN=/path/to/claude ./run.sh --display-name "Pendle"
 ```
 
 ### RootData disabled
 
-本次运行可加 `--rootdata-key sk-...`，或在 shell 中 `export ROOTDATA_API_KEY=...`，或写到 `~/.config/protocol-info/.env`（推荐）/ `<repo>/.env`。启动横幅会显示 key 来源。不配置时，RootData fetch 和 search channel 会被跳过。
+本次运行可加 `--rootdata-key sk-...`，或在 shell 中 `export ROOTDATA_API_KEY=...`，或写到 `~/.config/protocol-info/.env`（推荐）/ `<repo>/.env`。启动横幅会显示 key 来源。不配置时，RootData fetch 和 search channel 会被跳过。付费 Unavatar 使用 `--unavatar-key` 或同样配置位置中的 `UNAVATAR_API_KEY`。
 
 ### `SCHEMA_FAIL`
 

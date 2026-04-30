@@ -1,6 +1,6 @@
 ---
 description: Crawl or edit DeFi protocol-info records with schema validation, i18n, and local git history
-argument-hint: "--display-name <name> --type <simple_earn|fixed_rate|staking> [...] | get/set/analyze/i18n/refresh/history/diff/restore <slug> [...]"
+argument-hint: "--display-name <name> [...] | get/set/analyze/i18n/refresh/history/diff/restore <slug> [...]"
 allowed-tools: Bash
 ---
 
@@ -11,7 +11,7 @@ Run the protocol-info crawler pipeline with the user's arguments. The pipeline i
 1. **R0 fetchers** — RootData/DeFiLlama evidence when keys are available
 2. **R1 synthesis** — Claude produces schema-slice records for metadata/team/funding/audits
 3. **R2 reconcile** — Claude cross-checks R1 against structured evidence
-4. **Normalize** — deterministic post-R2 fixes, including RootData member avatars and rehosted provider/member/audit logos
+4. **Normalize** — deterministic post-R2 fixes, including RootData member avatars, RootData-backed audit logos, rehosted provider/member/audit logos, and `oneLiner` placeholder cleanup
 5. **Validate** — zero-dep JSON Schema validation
 6. **i18n** (optional) — Claude Haiku by default, or `I18N_PROVIDER=openai` for OpenAI-compatible API translation
 7. **Post/export + history** — writes dashboard import artifacts, scoped local git commits, and `out/index.html`
@@ -29,6 +29,13 @@ bash "${CLAUDE_PLUGIN_ROOT}/run.sh" $ARGUMENTS
 ```
 
 Do not re-parse the args or transform them — pass through verbatim. If the user omits required arguments, the script will error clearly; don't pre-validate.
+
+Do not pass a protocol type argument. `record.type` is inferred from evidence by
+the metadata subtask, not supplied as a CLI input.
+
+By default, the runner writes to `out/` under the current working directory
+where this slash command is invoked, not under the plugin cache. This keeps
+protocol history stable across plugin updates.
 
 ## Runtime output in Claude Code
 
@@ -82,12 +89,12 @@ Do **not**:
 ## Examples the user may invoke
 
 ```
-/protocol-info:protocol-info --display-name "Pendle" --type fixed_rate
-/protocol-info:protocol-info --display-name "Pendle" --type fixed_rate --i18n all
+/protocol-info:protocol-info --display-name "Pendle"
+/protocol-info:protocol-info --display-name "Pendle" --i18n all
 /protocol-info:protocol-info --parallel 4 --i18n zh_CN,ja_JP \
-  --batch --display-name "Pendle" --type fixed_rate \
-  --batch --display-name "Morpho" --type simple_earn
-/protocol-info:protocol-info --dry-run --display-name "Pendle" --type fixed_rate
+  --batch --display-name "Pendle" \
+  --batch --display-name "Morpho"
+/protocol-info:protocol-info --dry-run --display-name "Pendle"
 /protocol-info:protocol-info get pendle description
 /protocol-info:protocol-info analyze pendle fundingRounds --query "verify latest funding rounds"
 /protocol-info:protocol-info analyze pendle fundingRounds --query "verify latest funding rounds" --apply
@@ -105,7 +112,7 @@ The runner's startup banner reports which source supplied the key.
 
 To enable Round 2 via plugin without writing a file:
 ```
-/protocol-info:protocol-info --rootdata-key sk-... --display-name "Pendle" --type fixed_rate
+/protocol-info:protocol-info --rootdata-key sk-... --display-name "Pendle"
 ```
 
 Or persist the key once:
@@ -114,6 +121,13 @@ mkdir -p ~/.config/protocol-info
 echo "ROOTDATA_API_KEY=sk-..." > ~/.config/protocol-info/.env
 chmod 600 ~/.config/protocol-info/.env
 ```
+
+`UNAVATAR_API_KEY` is optional but recommended for stable paid avatar/logo
+rehosting. It follows the same lookup order as RootData, or can be passed once
+with `--unavatar-key <key>`. Member avatars use RootData first, then direct
+RootData person search, then verified social links through Unavatar as a final
+fallback; audit logos may use RootData GitHub links as a Unavatar fallback when
+no RootData logo is available.
 
 Pipeline needs `claude` and `node` on PATH. The user has Claude Code installed, so `claude` is usually available.
 
@@ -134,7 +148,7 @@ OpenAI-compatible config follows the same lookup order as RootData:
 
 Example:
 ```
-/protocol-info:protocol-info --openai-api-key sk-... --openai-base-url https://llm.example.com/v1 --openai-model gpt-5.5 --i18n all --display-name "Pendle" --type fixed_rate
+/protocol-info:protocol-info --openai-api-key sk-... --openai-base-url https://llm.example.com/v1 --openai-model gpt-5.5 --i18n all --display-name "Pendle"
 ```
 
 All OpenAI-compatible routes read `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL`. Configure `OPENAI_INPUT_COST_PER_1M` and `OPENAI_OUTPUT_COST_PER_1M`, or pass the matching one-shot pricing flags, to make those calls produce numeric `cost_usd` and participate in `--max-budget`; without pricing they report `cost_usd: null`. Stage policy allows external LLM by default for i18n, R2, analyze, and refresh audits, but blocks R1 and other refresh subtasks unless the manifest explicitly opts them in. Direct OpenAI-compatible R2 and external audit refresh use evidence-only prompts; Claude R2 and Claude refresh keep the web-research prompts. The startup banner reports key/base/model/pricing sources without printing the API key.

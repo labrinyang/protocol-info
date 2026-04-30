@@ -6,7 +6,6 @@
 //
 // Argv contract (matches run.sh):
 //   --display-name <name>     (per-provider; required at least once)
-//   --type <type>             (per-provider; OPTIONAL — model-inferred if absent)
 //   --slug <slug>             (per-provider; OPTIONAL — slugified from display)
 //   --hints <text>            (per-provider; OPTIONAL)
 //   --rootdata-id <int>       (per-provider; OPTIONAL)
@@ -22,6 +21,9 @@
 //   --dry-run                 list providers + bail
 //   --force-overwrite         overwrite an out/<slug>/ that has uncommitted changes
 //   -h, --help                print help
+//
+// Default output root is the caller's current working directory:
+//   <cwd>/out
 //
 // .env autoload order (only fills variables not already set):
 //   1. $HOME/.config/protocol-info/.env
@@ -114,15 +116,23 @@ let openAIOrigins = {
   inputCost: envOrigin('OPENAI_INPUT_COST_PER_1M') || envOrigin('OPENAI_INPUT_COST_PER_1K'),
   outputCost: envOrigin('OPENAI_OUTPUT_COST_PER_1M') || envOrigin('OPENAI_OUTPUT_COST_PER_1K'),
 };
+let unavatarKeyOrigin = envOrigin('UNAVATAR_API_KEY');
 let runtimeEnvLoaded = false;
 
+export function defaultOutputRoot(cwd = process.cwd()) {
+  return join(cwd, 'out');
+}
+
 export function loadRuntimeEnv(candidates = ROOTDATA_ENV_CANDIDATES) {
-  if (runtimeEnvLoaded) return { rootdataKeyOrigin, openAIOrigins };
+  if (runtimeEnvLoaded) return { rootdataKeyOrigin, openAIOrigins, unavatarKeyOrigin };
   runtimeEnvLoaded = true;
   for (const candidate of candidates) {
     const r = loadEnvFile(candidate);
     if (!rootdataKeyOrigin && r.found && r.setKeys.includes('ROOTDATA_API_KEY')) {
       rootdataKeyOrigin = candidate;
+    }
+    if (!unavatarKeyOrigin && r.found && r.setKeys.includes('UNAVATAR_API_KEY')) {
+      unavatarKeyOrigin = candidate;
     }
   }
   openAIOrigins = {
@@ -132,7 +142,8 @@ export function loadRuntimeEnv(candidates = ROOTDATA_ENV_CANDIDATES) {
     inputCost: envOrigin('OPENAI_INPUT_COST_PER_1M') || envOrigin('OPENAI_INPUT_COST_PER_1K'),
     outputCost: envOrigin('OPENAI_OUTPUT_COST_PER_1M') || envOrigin('OPENAI_OUTPUT_COST_PER_1K'),
   };
-  return { rootdataKeyOrigin, openAIOrigins };
+  unavatarKeyOrigin = envOrigin('UNAVATAR_API_KEY');
+  return { rootdataKeyOrigin, openAIOrigins, unavatarKeyOrigin };
 }
 
 // ── argv parsing ────────────────────────────────────────────────────────────
@@ -140,21 +151,22 @@ export function loadRuntimeEnv(candidates = ROOTDATA_ENV_CANDIDATES) {
 const HELP = `通过 framework/cli.mjs 批量抓取协议信息记录。
 
 用法：
-  node framework/cli.mjs --display-name "Pendle" --type fixed_rate
-  node framework/cli.mjs --batch --display-name "A" --type t1 --batch --display-name "B" --type t2
-  node framework/cli.mjs --i18n all --display-name "Pendle" --type fixed_rate
+  node framework/cli.mjs --display-name "Pendle"
+  node framework/cli.mjs --batch --display-name "A" --batch --display-name "B"
+  node framework/cli.mjs --i18n all --display-name "Pendle"
 
 Per-provider flags (use --batch to separate multiple providers):
   --display-name <name>   required
-  --type <type>           OPTIONAL (model-inferred if absent)
   --slug <slug>           OPTIONAL (slugified from display-name if absent)
   --hints <text>          OPTIONAL
   --rootdata-id <int>     OPTIONAL
   --batch                 flush accumulated provider; start a new one
+  record.type is inferred from evidence; it is not a CLI input.
 
 Run-wide flags:
   --model <name>          override Claude model for R1+R2 (manifest default: claude-sonnet-4-6)
   --rootdata-key <key>    ROOTDATA_API_KEY for this run; overrides env + .env files
+  --unavatar-key <key>    UNAVATAR_API_KEY for paid Unavatar avatar/logo rehosting
   --openai-api-key <key>  OPENAI_API_KEY for this run; overrides env + .env files
   --openai-base-url <url> OPENAI_BASE_URL for this run
   --openai-model <name>   OPENAI_MODEL for OpenAI-compatible routes
@@ -177,12 +189,12 @@ Run-wide flags:
   -h, --help              this help
 
 Outputs:
-  out/<slug>/record.json
-  out/<slug>/record.full.json   (only when --i18n produced translations)
-  out/<slug>/meta.json
-  out/<slug>/_debug/             audit / debug artefacts (gitignored)
-  out/.runs/<run-id>/summary.tsv batch summary (gitignored)
-  out/.runs.log                  append-only TSV of every batch run (gitignored)
+  <current-directory>/out/<slug>/record.json
+  <current-directory>/out/<slug>/record.full.json   (only when --i18n produced translations)
+  <current-directory>/out/<slug>/meta.json
+  <current-directory>/out/<slug>/_debug/             audit / debug artefacts (gitignored)
+  <current-directory>/out/.runs/<run-id>/summary.tsv batch summary (gitignored)
+  <current-directory>/out/.runs.log                  append-only TSV of every batch run (gitignored)
 
 Workflow commands (v2.1):
   get <slug> <jsonpath>          print one value from out/<slug>/record.json
@@ -208,7 +220,7 @@ export async function dispatchWorkflowCommand(argv, {
     throw new Error(`workflow command ${parsed.name} has no default export`);
   }
   return await fn(parsed.args, {
-    outputRoot: join(SCRIPT_DIR, 'out'),
+    outputRoot: defaultOutputRoot(),
     manifestPath: DEFAULT_MANIFEST,
     ...parsed.context,
     ...context,
@@ -250,6 +262,11 @@ export function parseWorkflowArgv(argv, commandMap = WORKFLOW_COMMANDS) {
     }
     if (a === '--rootdata-key') {
       setEnvFromFlag('ROOTDATA_API_KEY', nextArg(i, a), '--rootdata-key');
+      i += 1;
+      continue;
+    }
+    if (a === '--unavatar-key') {
+      setEnvFromFlag('UNAVATAR_API_KEY', nextArg(i, a), '--unavatar-key');
       i += 1;
       continue;
     }
@@ -298,7 +315,7 @@ export function parseWorkflowArgv(argv, commandMap = WORKFLOW_COMMANDS) {
 // fetcher dispatcher picks the key up).
 export function parseArgv(argv) {
   const providers = [];
-  let cur = { dn: '', type: '', slug: '', hints: '', rid: '' };
+  let cur = { dn: '', slug: '', hints: '', rid: '' };
   let manifestPath = DEFAULT_MANIFEST;
   let model = '';
   let parallel = 1;
@@ -312,19 +329,16 @@ export function parseArgv(argv) {
   let forceOverwrite = false;
   let helpRequested = false;
   let localRootdataKeyOrigin = rootdataKeyOrigin;
+  let localUnavatarKeyOrigin = unavatarKeyOrigin;
   let localOpenAIOrigins = { ...openAIOrigins };
 
   function flush() {
-    if (!cur.dn && !cur.type) return;
-    if (!cur.dn) {
-      throw new Error('--display-name 为必填参数');
-    }
+    if (!cur.dn) return;
     const slug = cur.slug || slugify(cur.dn);
     const provider = {
       slug,
       provider: slug,
       displayName: cur.dn,
-      type: cur.type || '',
       hints: cur.hints || '',
     };
     if (cur.rid) {
@@ -335,7 +349,7 @@ export function parseArgv(argv) {
       provider.rootdataId = n;
     }
     providers.push(provider);
-    cur = { dn: '', type: '', slug: '', hints: '', rid: '' };
+    cur = { dn: '', slug: '', hints: '', rid: '' };
   }
 
   for (let i = 0; i < argv.length; i++) {
@@ -352,6 +366,12 @@ export function parseArgv(argv) {
       case '--rootdata-key': {
         if (setEnvFromFlag('ROOTDATA_API_KEY', nextArg(), '--rootdata-key')) {
           localRootdataKeyOrigin = '--rootdata-key';
+        }
+        break;
+      }
+      case '--unavatar-key': {
+        if (setEnvFromFlag('UNAVATAR_API_KEY', nextArg(), '--unavatar-key')) {
+          localUnavatarKeyOrigin = '--unavatar-key';
         }
         break;
       }
@@ -395,7 +415,8 @@ export function parseArgv(argv) {
       case '--dry-run':        dryRun = true; break;
       case '--force-overwrite': forceOverwrite = true; break;
       case '--display-name':   cur.dn = nextArg(); break;
-      case '--type':           cur.type = nextArg(); break;
+      case '--type':
+        throw new Error('--type 不再是 CLI 输入字段；record.type 由 metadata 阶段根据证据推断');
       case '--slug':           cur.slug = nextArg(); break;
       case '--hints':          cur.hints = nextArg(); break;
       case '--rootdata-id':    cur.rid = nextArg(); break;
@@ -423,6 +444,7 @@ export function parseArgv(argv) {
       model,
       dryRun,
       rootdataKeyOrigin: localRootdataKeyOrigin,
+      unavatarKeyOrigin: localUnavatarKeyOrigin,
       openAIOrigins: localOpenAIOrigins,
       maxTurnsCap,
       maxBudgetCap,
@@ -471,6 +493,7 @@ if (isMain) {
     model,
     dryRun,
     rootdataKeyOrigin: parsedRootdataKeyOrigin,
+    unavatarKeyOrigin: parsedUnavatarKeyOrigin,
     openAIOrigins: parsedOpenAIOrigins,
     maxTurnsCap,
     maxBudgetCap,
@@ -478,12 +501,13 @@ if (isMain) {
   } = options;
   let parallel = parsedParallel;
   rootdataKeyOrigin = parsedRootdataKeyOrigin;
+  unavatarKeyOrigin = parsedUnavatarKeyOrigin;
   openAIOrigins = parsedOpenAIOrigins;
 
   if (providers.length === 0) {
-    process.stderr.write('错误: 至少需要提供一个 provider（--display-name + --type）\n');
-    process.stderr.write('用法: node framework/cli.mjs --display-name "Protocol Name" --type simple_earn\n');
-    process.stderr.write('批量: node framework/cli.mjs --batch --display-name "A" --type t1 --batch --display-name "B" --type t2\n');
+    process.stderr.write('错误: 至少需要提供一个 provider（--display-name）\n');
+    process.stderr.write('用法: node framework/cli.mjs --display-name "Protocol Name"\n');
+    process.stderr.write('批量: node framework/cli.mjs --batch --display-name "A" --batch --display-name "B"\n');
     process.exit(1);
   }
 
@@ -545,12 +569,15 @@ if (isMain) {
 
   const ROOTDATA_ENABLED = !!process.env.ROOTDATA_API_KEY;
   const RUN_TS = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
-  const outputRoot = join(SCRIPT_DIR, 'out');
+  const outputRoot = defaultOutputRoot();
   const runSummaryDir = join(outputRoot, '.runs', RUN_TS);
 
   const rootdataLabel = ROOTDATA_ENABLED
     ? `enabled (Round 2) [key from ${rootdataKeyOrigin || 'shell-env'}]`
     : 'disabled (single-round; no ROOTDATA_API_KEY found — pass --rootdata-key, export the env var, or write ~/.config/protocol-info/.env)';
+  const unavatarLabel = process.env.UNAVATAR_API_KEY
+    ? `configured [key from ${unavatarKeyOrigin || 'shell-env'}]`
+    : 'not configured (avatar rehosting can still try anonymous Unavatar but may be rate-limited)';
   const openAIRouteRequested = [
     'I18N_PROVIDER',
     'R1_LLM_PROVIDER',
@@ -574,6 +601,7 @@ if (isMain) {
   console.log(`Model:       ${model || 'default'}`);
   console.log(`Parallel:    ${parallel}`);
   console.log(`RootData:    ${rootdataLabel}`);
+  console.log(`Unavatar:    ${unavatarLabel}`);
   console.log(`External LLM: ${openAILabel}`);
   console.log(`i18n:        ${i18nLabel} [model=${i18nModel || 'default'}, parallel=${i18nParallel}]`);
   console.log(`Run id:      ${RUN_TS}`);

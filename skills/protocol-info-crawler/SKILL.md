@@ -38,10 +38,6 @@ Use full crawl flags when the user asks to create or recrawl a protocol from scr
 | What the user said | Flag |
 |---|---|
 | Protocol's branded display name | `--display-name "..."` **required** |
-| "simple earn" / 纯 earn / Aave-Compound 风格借贷 / Yearn 风格 vault | `--type simple_earn` |
-| "fixed rate" / "yield trading" / "PT/YT" / 明确提到 Pendle 自己 | `--type fixed_rate` |
-| "liquid staking" / "staking" / "LST" / "LRT" | `--type staking` |
-| "vault aggregator" / "curator model" / Morpho/Spectra 这种混合形态 | ask first |
 | Custom kebab slug the user provided | `--slug <kebab>` |
 | Extra context (chain, category, focus) | `--hints "..."` |
 | Explicit RootData project id | `--rootdata-id <N>` |
@@ -52,10 +48,26 @@ Use full crawl flags when the user asks to create or recrawl a protocol from scr
 | >=3 providers, or user asks for speed/parallelism | `--parallel min(N_providers, 4)` |
 | User explicitly says to overwrite dirty existing output | `--force-overwrite` |
 
+Do not pass a protocol `type` flag. `record.type` is inferred by the metadata
+subtask from evidence. If the user provides category language such as
+"fixed-rate", "simple earn", "staking", "PT/YT", or "vault", keep it only as
+plain research context in `--hints` when it materially helps disambiguate the
+protocol.
+
 Logo fields are tool-managed. Do not ask the model to invent logo CDN paths:
 `providerLogoUrl`, `members[].avatarUrl`, and `audits.items[].auditorLogoUrl`
 are normalized and rehosted under `out/protocol-logo/`,
-`out/protocol-member-logo/`, and `out/audit-logo/`.
+`out/protocol-member-logo/`, and `out/audit-logo/`. Member avatars are resolved
+from RootData project candidates first, then direct RootData person search, then
+paid Unavatar from verified social links or handle-like pseudonyms. Audit firm
+logos prefer the current/manual value, then local cache/cross-protocol records,
+then exact RootData project search; RootData GitHub links can be used as a paid
+Unavatar fallback. If no source is found the JSON field remains `null`.
+
+Never use placeholder text in `members[].oneLiner`. If a member has no
+verifiable prior experience/source-backed bio, write `null`; values like
+`Unverified`, `TBD`, `N/A`, `暂未提供`, or "fill this later" are invalid and will
+be normalized back to `null`.
 
 ### Locale code cheat sheet
 
@@ -65,7 +77,6 @@ are normalized and rehosted under `out/protocol-logo/`,
 
 Ask ONE short question, then act. Never ask more than one.
 
-- If a full crawl type is ambiguous, ask: `"这是 fixed-rate / simple-earn / staking 哪种?"`
 - If a protocol name is ambiguous, ask which protocol or slug the user means.
 - If an existing-record workflow lacks a slug, ask for the slug.
 - If an edit lacks a JSONPath or explicit JSON value, ask for the missing piece.
@@ -75,12 +86,12 @@ Ask ONE short question, then act. Never ask more than one.
 
 **"帮我抓一份 Pendle 的 protocol-info, 翻成中日英"**
 ```
-/protocol-info:protocol-info --display-name "Pendle" --type fixed_rate --i18n zh_CN,ja_JP,en_US
+/protocol-info:protocol-info --display-name "Pendle" --i18n zh_CN,ja_JP,en_US
 ```
 
 **"批量爬 Morpho 和 Aave 的 earn 信息, 不用翻译"**
 ```
-/protocol-info:protocol-info --parallel 2 --i18n none --batch --display-name "Morpho" --type simple_earn --batch --display-name "Aave" --type simple_earn
+/protocol-info:protocol-info --parallel 2 --i18n none --batch --display-name "Morpho" --batch --display-name "Aave"
 ```
 
 **"把 Pendle 现有记录再补翻韩文"**
@@ -118,4 +129,4 @@ The `/protocol-info:protocol-info` command handles summary/error reporting. Keep
 - Do not translate manually when `i18n` is requested.
 - Do not manually edit `out/<slug>/*.json`; use `set`, `analyze --apply`, `i18n`, `refresh`, or `restore`.
 - Do not pre-validate arguments; the runner reports usage errors.
-- Do not assume `ROOTDATA_API_KEY` is set. Round 1 alone is still useful.
+- Do not assume `ROOTDATA_API_KEY` or `UNAVATAR_API_KEY` is set. Round 1 alone is still useful.

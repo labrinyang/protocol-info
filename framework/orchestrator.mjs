@@ -266,7 +266,6 @@ export async function runOne({
   const slug = provider.slug;
   const providerKey = provider.provider || slug;
   const display = provider.displayName;
-  const type = provider.type || '';
   const hints = provider.hints || '';
   const rootdataId = provider.rootdataId != null ? String(provider.rootdataId) : '';
 
@@ -276,11 +275,7 @@ export async function runOne({
   const callStage = options.callCli || callCli;
   const callSchemaValidator = options.callValidator || callValidator;
 
-  if (type) {
-    console.log(`[${index}/${total}] ${slug} (${type})`);
-  } else {
-    console.log(`[${index}/${total}] ${slug} (type: model-inferred)`);
-  }
+  console.log(`[${index}/${total}] ${slug} (type: model-inferred)`);
 
   if (options.dryRun) {
     // r1.mjs has no --dry-run flag today (per task instructions). Bail with
@@ -385,7 +380,6 @@ export async function runOne({
     '--gaps-out', gapsPath,
     '--handoff-out', handoffPath,
   ];
-  if (type) r1Args.push('--type', type);
   if (options.model) r1Args.push('--model', options.model);
   if (options.maxTurns) r1Args.push('--max-turns', String(options.maxTurns));
   const hasUserBudgetCap = options.budgetPlan?.user_max_budget_usd != null;

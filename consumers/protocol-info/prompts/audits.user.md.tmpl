@@ -34,7 +34,7 @@ The runner may provide deterministic text extracted from audit `reportUrl` PDF/H
 
 - One entry per distinct audit report, newest first.
 - `auditor`: firm name, e.g. `Certora`, `Trail of Bits`, `OpenZeppelin`, `Spearbit`, `ChainSecurity`, `Quantstamp`.
-- `auditorLogoUrl`: prefer a verified official logo URL when you find one, else null. The logo-assets normalizer downloads/rehosts verified URLs under `out/audit-logo/`; it also reuses matching audit-firm logos from existing `out/*/record.json` records.
+- `auditorLogoUrl`: always `null`. The logo-assets normalizer resolves audit-firm logos after R2 from existing local/cross-protocol cache first, then exact RootData project search, downloads the image under `out/audit-logo/`, and rewrites it to the OneKey static-logo CDN path.
 - `date`: report date — `YYYY-MM-DD` or `YYYY-MM`. Bare years like `2024` are invalid. If a GitHub audit folder only shows a year, open the actual report PDF or announcement page to recover the month. If the month truly cannot be determined, use `YYYY-01` and mention the uncertainty in `scope`.
 - `scope`: brief description (`Core contracts`, `vePENDLE`, `LP token wrapper`). Null if unknown.
 - `reportUrl`: direct PDF or blog post URL.

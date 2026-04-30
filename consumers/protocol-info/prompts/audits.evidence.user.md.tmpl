@@ -38,9 +38,10 @@ The runner provides:
 - Use `audit_reports.reports[].detected_dates`, `scope_hints`, `title_hint`,
   and `text_excerpt` to correct weak `date`, `scope`, `auditor`, or
   `reportUrl` values.
-- `auditorLogoUrl`: keep the existing value when present. If missing, do not
-  invent one; return `null`. The logo-assets normalizer can reuse verified
-  audit-firm logos from existing output records.
+- `auditorLogoUrl`: keep an existing value when present only if it is already in
+  the record; otherwise return `null`. Do not invent one. The logo-assets
+  normalizer resolves missing audit-firm logos from local cache and exact
+  RootData project search, then rehosts them under `out/audit-logo/`.
 - `date`: `YYYY-MM-DD` or `YYYY-MM`. Bare years are invalid. If only a year is
   supported by evidence, use `YYYY-01` and mention uncertainty in `scope`.
 - `scope`: brief description such as `Core contracts`, `vePENDLE`, or

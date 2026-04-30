@@ -38,11 +38,11 @@ finding/gap when sources conflict. `tags` should be informed by
 - `providerXLink`: official X account URL. Treat `validated_overrides.providerXLink` as strong evidence, but verify against the official website/docs when possible.
 - `providerDiscordLink`: invite URL or null.
 - `status`: always `"draft"`.
-- `type`: pick exactly one of `fixed_rate`, `simple_earn`, `staking` based on evidence — NOT on any caller-supplied hint:
+- `type`: pick exactly one of `fixed_rate`, `simple_earn`, `staking` based on evidence:
   - `fixed_rate`: protocols offering fixed/predictable yields, principal/yield separation, or PT/YT-style products (e.g., Pendle, Term Finance, Notional).
   - `simple_earn`: deposit-and-earn yield products — vaults, savings rates, money markets, yield-bearing stablecoins (e.g., Yearn vaults, sUSDe-style yield-bearing stablecoins, lending money markets where deposit yield is the primary product).
   - `staking`: native staking, liquid staking, or restaking products (e.g., Lido, Rocket Pool, EigenLayer).
-  - If `{{HINTS}}` contains a type token (`fixed_rate`/`simple_earn`/`staking`), treat it as a soft preference but override it when evidence clearly indicates otherwise. Record your choice rationale in `handoff_notes[]` if it differs from the hint, e.g., `{ "target": "metadata", "note": "evidence indicates simple_earn (USDat is yield-bearing stablecoin), overriding caller hint fixed_rate", "source": "https://..." }`.
+  - If `{{HINTS}}` contains category language such as fixed-rate, PT/YT, simple earn, vault, staking, LST, or LRT, use it only as a research clue. Do not treat it as an authoritative type value. Record your rationale in `handoff_notes[]` when the classification is non-obvious, e.g., `{ "target": "metadata", "note": "evidence indicates simple_earn because USDat is a yield-bearing stablecoin", "source": "https://..." }`.
 
 ## Output format
 

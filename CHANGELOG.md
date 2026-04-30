@@ -6,6 +6,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.3.0] — 2026-04-30
+
+### Changed
+- Default output root now resolves to the caller's current working directory
+  (`<cwd>/out`) instead of the plugin/repository directory. Plugin updates no
+  longer move where generated records, local history, and `out/index.html`
+  appear.
+- Full crawl CLI no longer accepts `--type`; `record.type` is inferred by the
+  metadata subtask from evidence instead of being supplied as a user input.
+- Audit-firm logos are now resolved deterministically from local/cross-protocol
+  cache first, then exact RootData project search, before being rehosted under
+  `out/audit-logo/`.
+- Member avatars now use RootData project candidates first, then direct
+  RootData person search by `memberName` when project-scoped candidates miss a
+  verified member, then paid Unavatar sources derived from verified X/LinkedIn
+  links or handle-like pseudonyms. Downloaded images still land in
+  `out/protocol-member-logo/`, so final JSON points at the OneKey static logo
+  CDN, not RootData or unavatar.io.
+- Audit-firm logo resolution now preserves current/manual values before cache
+  and RootData, and can use a RootData exact match's GitHub link as a paid
+  Unavatar fallback when RootData has no logo field.
+- `--unavatar-key` / `UNAVATAR_API_KEY` configure paid Unavatar requests with
+  the same one-shot/env/`~/.config/protocol-info/.env` pattern as RootData.
+- Placeholder `members[].oneLiner` strings such as `Unverified`, `TBD`, `N/A`,
+  or `暂未提供` are normalized back to `null` so missing member background
+  remains visible for later completion.
+- Normalizers now remove stale incoming gaps for fields they resolve to a
+  concrete value, so `gaps.json` reflects the current backlog instead of old
+  missing-field notes.
+
 ## [2.2.0] — 2026-04-29
 
 ### Added

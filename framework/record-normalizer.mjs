@@ -10,6 +10,7 @@ export async function normalizeRecordEnvelope(
   const manifest = await loadManifest(manifestPath);
   const slugDir = join(outputRoot, slug);
   const evidence = await readJsonDefault(join(slugDir, '_debug', 'rootdata.json'), {});
+  const context = { env: process.env, ...normalizerContext };
   const result = await runNormalizers({
     normalizers: manifest._abs.normalizers || [],
     record: envelope.record,
@@ -19,7 +20,7 @@ export async function normalizeRecordEnvelope(
     incomingGaps: envelope.gaps || [],
     outputRoot,
     slugDir,
-    ...normalizerContext,
+    ...context,
   });
   return {
     ...envelope,

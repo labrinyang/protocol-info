@@ -8,6 +8,10 @@ It runs Claude in headless mode, gathers structured evidence from optional fetch
 
 The output is intended for human review first, then import into the dashboard through the `earn-protocol-info` import endpoint.
 
+By default, generated artifacts are written to `out/` under the current working
+directory where the command is invoked. Plugin updates do not move the output
+root because it is not tied to the plugin cache path.
+
 ## When To Use It
 
 Use this project when you need a repeatable research pipeline for protocol metadata:
@@ -54,10 +58,21 @@ chmod 600 ~/.config/protocol-info/.env
 Or use it once without writing a file:
 
 ```bash
-/protocol-info:protocol-info --rootdata-key sk-... --display-name "Pendle" --type fixed_rate
+/protocol-info:protocol-info --rootdata-key sk-... --display-name "Pendle"
 ```
 
 The startup banner reports which source the key came from (`shell-env`, `--rootdata-key`, or the resolved `.env` path). Without `ROOTDATA_API_KEY`, the pipeline still works and simply skips RootData-backed evidence.
+
+Paid Unavatar key for member/auditor avatar rehosting:
+
+```bash
+UNAVATAR_API_KEY=sk-...
+```
+
+`UNAVATAR_API_KEY` follows the same shell / `~/.config/protocol-info/.env` /
+`<repo>/.env` precedence as RootData. You can also pass
+`--unavatar-key <key>` for one run. Without it, the pipeline can still try
+Unavatar anonymously, but may hit public rate limits.
 
 Optional OpenAI-compatible LLM gateway for no-web stages:
 
@@ -85,7 +100,7 @@ Example one-shot run:
   --openai-base-url https://llm.example.com/v1 \
   --openai-model gpt-5.5 \
   --i18n all \
-  --display-name "Pendle" --type fixed_rate
+  --display-name "Pendle"
 ```
 
 `i18n` is the safest default external-LLM use. R2 and field analysis can also
@@ -109,18 +124,18 @@ sources without printing the API key.
 After installation, you can call the slash command directly:
 
 ```text
-/protocol-info:protocol-info --display-name "Pendle" --type fixed_rate
-/protocol-info:protocol-info --display-name "Pendle" --type fixed_rate --i18n all
+/protocol-info:protocol-info --display-name "Pendle"
+/protocol-info:protocol-info --display-name "Pendle" --i18n all
 /protocol-info:protocol-info --parallel 4 --i18n zh_CN,ja_JP \
-  --batch --display-name "Pendle" --type fixed_rate \
-  --batch --display-name "Morpho" --type simple_earn
+  --batch --display-name "Pendle" \
+  --batch --display-name "Morpho"
 ```
 
 You can also trigger the bundled skill with natural language, for example:
 
 - "Research Pendle protocol info and translate it into Chinese and Japanese."
 - "Batch crawl Morpho and Aave earn metadata without translation."
-- "Create protocol-info for Lido." The skill may ask one short question if the protocol type is ambiguous.
+- "Create protocol-info for Lido."
 - "Crawl protocol info for Morpho and translate to all locales."
 - "Translate the existing Pendle record into Japanese."
 - "Verify Pendle fundingRounds and apply the update."
@@ -132,7 +147,7 @@ The skill lives at `skills/protocol-info-crawler/SKILL.md` and dispatches to `/p
 Clone the repository and run the shim:
 
 ```bash
-./run.sh --display-name "Pendle" --type fixed_rate
+./run.sh --display-name "Pendle"
 ```
 
 `run.sh` only loads environment variables and delegates to `framework/cli.mjs`. It fills missing environment variables in this order:
@@ -153,13 +168,13 @@ Required local tools:
 Single protocol:
 
 ```bash
-./run.sh --display-name "f(x)Protocol" --type simple_earn
+./run.sh --display-name "f(x)Protocol"
 ```
 
 Specify slug, RootData ID, or research hints:
 
 ```bash
-./run.sh --display-name "Pendle" --type fixed_rate \
+./run.sh --display-name "Pendle" \
   --slug pendle \
   --rootdata-id 874 \
   --hints "Yield trading protocol with PT/YT markets"
@@ -169,25 +184,25 @@ Batch run:
 
 ```bash
 ./run.sh --parallel 4 \
-  --batch --display-name "Pendle" --type fixed_rate \
-  --batch --display-name "Morpho" --type simple_earn \
-  --batch --display-name "Aave" --type simple_earn
+  --batch --display-name "Pendle" \
+  --batch --display-name "Morpho" \
+  --batch --display-name "Aave"
 ```
 
 i18n:
 
 ```bash
-./run.sh --display-name "Pendle" --type fixed_rate --i18n all
-./run.sh --display-name "Pendle" --type fixed_rate --i18n zh_CN,ja_JP,en_US
-./run.sh --display-name "Pendle" --type fixed_rate --i18n none
+./run.sh --display-name "Pendle" --i18n all
+./run.sh --display-name "Pendle" --i18n zh_CN,ja_JP,en_US
+./run.sh --display-name "Pendle" --i18n none
 ```
 
 OpenAI-compatible no-web routes:
 
 ```bash
-I18N_PROVIDER=openai ./run.sh --display-name "Pendle" --type fixed_rate --i18n all
-R2_ROUTING=external_first_with_claude_fallback ./run.sh --display-name "Pendle" --type fixed_rate
-R2_LLM_PROVIDER=openai ./run.sh --display-name "Pendle" --type fixed_rate
+I18N_PROVIDER=openai ./run.sh --display-name "Pendle" --i18n all
+R2_ROUTING=external_first_with_claude_fallback ./run.sh --display-name "Pendle"
+R2_LLM_PROVIDER=openai ./run.sh --display-name "Pendle"
 ```
 
 Workflow commands on an existing `out/<slug>/`:
@@ -216,7 +231,7 @@ refresh subtasks stay on Claude unless the manifest opts them in.
 Dry run:
 
 ```bash
-./run.sh --dry-run --display-name "Pendle" --type fixed_rate
+./run.sh --dry-run --display-name "Pendle"
 ```
 
 ## CLI Flags
@@ -224,13 +239,13 @@ Dry run:
 | Flag | Required | Description |
 | --- | --- | --- |
 | `--display-name <name>` | Yes | Protocol display name. |
-| `--type <type>` | No, recommended | One of `fixed_rate`, `simple_earn`, `staking`. If omitted, the metadata subtask tries to infer it. |
 | `--slug <slug>` | No | Business key. Defaults to a slugified display name. |
 | `--hints <text>` | No | Extra research context passed to Claude. |
 | `--rootdata-id <int>` | No | RootData project ID. If omitted, the fetcher searches by name when `ROOTDATA_API_KEY` is set. |
 | `--batch` | No | Flushes the current provider and starts another one. |
 | `--model <name>` | No | Override model for R1 and R2. Manifest default: `claude-sonnet-4-6`. |
 | `--rootdata-key <key>` | No | RootData API key for this run; overrides shell env and `.env` files. Never persisted. |
+| `--unavatar-key <key>` | No | Paid Unavatar API key for this run; overrides shell env and `.env` files. Never persisted. |
 | `--openai-api-key <key>` | No | OpenAI-compatible API key for this run; overrides shell env and `.env` files. Never persisted. |
 | `--openai-base-url <url>` | No | OpenAI-compatible base URL for this run. |
 | `--openai-model <name>` | No | Model for OpenAI-compatible i18n/R2/analyze/refresh routes. |
@@ -246,6 +261,8 @@ Dry run:
 | `--dry-run` | No | Print resolved providers and stop. Forces `--parallel 1`. |
 | `--force-overwrite` | No | Overwrite a protocol directory that has uncommitted edits. Without this, v2 refuses to clobber manual changes. |
 | `--manifest <path>` | No | Advanced: run a different consumer manifest. |
+
+`record.type` is not a CLI input. The metadata subtask infers it from evidence.
 
 ## Workflow Commands
 
@@ -398,13 +415,13 @@ R2 merges R1 slices and evidence with an audit-first policy:
 
 Consumer normalizers apply deterministic fixes:
 
-- `rootdata-avatar` — `members[].avatarUrl` is sourced from RootData (`member_candidates[].avatar_url`) by name match. The team subtask emits `null`; this normalizer fills it post-R2. Members with no RootData match keep `avatarUrl: null` and a `gaps.json` entry. URLs that point at `pbs.twimg.com` (X temp signed links) are rejected.
+- `rootdata-avatar` — `members[].avatarUrl` is filled after R2. Existing OneKey member-avatar CDN paths are preserved; otherwise RootData project member candidates are matched by exact name first. If the project-scoped candidates miss a verified member, the normalizer searches RootData people directly by `memberName` and requires the result bio to mention the protocol. Paid Unavatar from verified X/LinkedIn links or handle-like pseudonyms is the final fallback. `pbs.twimg.com` temp signed URLs are rejected. The team subtask still emits `null`; `logo-assets` downloads the source image and rewrites the final JSON to the OneKey CDN.
 - `logo-assets` — downloads/rehosts logo fields into shared folders under `out/` and rewrites JSON to `https://uni.onekey-asset.com/static/logo/...`:
   - `providerLogoUrl` → `out/protocol-logo/`
   - `members[].avatarUrl` → `out/protocol-member-logo/`
   - `audits.items[].auditorLogoUrl` → `out/audit-logo/`
-  Filenames are deterministic: provider logos use `<slug>.<ext>`, member logos use `<slug>-<member-name>.<ext>`, and audit logos use `<auditor>.<ext>`, with names lowercased and punctuation collapsed to `-`. Existing local files are reused, so repeated refreshes do not re-download the same logo. Audit firm logos are also reused from existing `out/*/record.json` records when the auditor name matches.
-- `protocol-info-final` — sets `audits.lastScannedAt` to UTC today.
+  Filenames are deterministic: provider logos use `<slug>.<ext>`, member logos use `<slug>-<member-name>.<ext>`, and audit logos use `<auditor>.<ext>`, with names lowercased and punctuation collapsed to `-`. Existing local files are reused, so repeated refreshes do not re-download the same logo. Audit firm logos prefer the current record value, then existing local files and `out/*/record.json` records; if missing, the normalizer performs an exact RootData project search and rehosts the RootData `logo` value. If RootData's exact audit-firm match exposes a GitHub link but no logo, the normalizer can fetch the GitHub organization avatar through paid Unavatar and rehost it.
+- `protocol-info-final` — sets `audits.lastScannedAt` to UTC today and removes placeholder `members[].oneLiner` text by setting it to `null`.
 
 The final `record.json` must pass `consumers/protocol-info/schemas/full.json`.
 
@@ -475,7 +492,8 @@ Important constraints:
 - `type`: `fixed_rate`, `simple_earn`, or `staking`
 - `status`: crawler output should be `draft`
 - `members`: at least one entry
-- `providerLogoUrl`, `members[].avatarUrl`, and `audits.items[].auditorLogoUrl`: absolute URLs or `null`; when found, the normalizer rewrites them to `https://uni.onekey-asset.com/static/logo/...`
+- `members[].oneLiner`: concrete verified background or `null`; placeholder text such as `Unverified`, `TBD`, `N/A`, or `暂未提供` is normalized back to `null`
+- `providerLogoUrl`, `members[].avatarUrl`, and `audits.items[].auditorLogoUrl`: absolute URLs or `null`; when found, the normalizer rewrites them to `https://uni.onekey-asset.com/static/logo/...`. Member avatars use RootData first, then direct RootData person search, then paid Unavatar from verified social links or handle-like pseudonyms. Audit logos prefer current/manual values, then local cache/cross-protocol records, then exact RootData project search, with RootData GitHub links as a paid Unavatar fallback.
 - `fundingRounds`: full funding history, newest first
 - `audits.items[].date`: `YYYY-MM` or `YYYY-MM-DD`; bare years are invalid
 - URL fields must be absolute URIs or `null` when nullable
@@ -534,12 +552,12 @@ Even without i18n, `record.import.json` contains one source-language record with
 Install Claude Code and ensure `claude` is on `PATH`, or set `CLAUDE_BIN`:
 
 ```bash
-CLAUDE_BIN=/path/to/claude ./run.sh --display-name "Pendle" --type fixed_rate
+CLAUDE_BIN=/path/to/claude ./run.sh --display-name "Pendle"
 ```
 
 ### RootData is disabled
 
-Pass `--rootdata-key sk-...` for a one-shot run, export `ROOTDATA_API_KEY` in your shell, or write it to `~/.config/protocol-info/.env` (preferred) or `<repo>/.env`. The startup banner shows which source was used. Without a key, RootData fetch and search channels are skipped.
+Pass `--rootdata-key sk-...` for a one-shot run, export `ROOTDATA_API_KEY` in your shell, or write it to `~/.config/protocol-info/.env` (preferred) or `<repo>/.env`. The startup banner shows which source was used. Without a key, RootData fetch and search channels are skipped. Paid Unavatar uses `--unavatar-key` or `UNAVATAR_API_KEY` from the same config locations.
 
 ### `SCHEMA_FAIL`
 

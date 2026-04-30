@@ -208,7 +208,7 @@ export const tests = [
 
       await run({
         manifestPath,
-        providers: [{ slug: 'pendle', provider: 'pendle', displayName: 'Pendle', type: 'fixed_rate' }],
+        providers: [{ slug: 'pendle', provider: 'pendle', displayName: 'Pendle' }],
         outputRoot: dir,
         runId: 'R-ok',
         parallelism: 1,
@@ -277,7 +277,7 @@ export const tests = [
 
       await run({
         manifestPath,
-        providers: [{ slug: 'pendle', provider: 'pendle', displayName: 'Pendle', type: 'fixed_rate' }],
+        providers: [{ slug: 'pendle', provider: 'pendle', displayName: 'Pendle' }],
         outputRoot: dir,
         runId: 'R-fail',
         parallelism: 1,
@@ -438,7 +438,7 @@ export const tests = [
       // pure parse function from cli.mjs (Task 9 step 4 exports it).
       const { parseArgv } = await import('../../framework/cli.mjs');
       const { providers, options } = parseArgv([
-        '--display-name', 'Pendle', '--type', 'fixed_rate', '--force-overwrite',
+        '--display-name', 'Pendle', '--force-overwrite',
       ]);
       assert.equal(providers.length, 1);
       assert.equal(options.forceOverwrite, true);
