@@ -34,6 +34,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { run, slugify } from './orchestrator.mjs';
+import { rootDataApiKeysFromEnv, hasRootDataApiKeys } from '../consumers/protocol-info/fetchers/rootdata.mjs';
 
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_DIR = dirname(FRAMEWORK_DIR);
@@ -90,6 +91,17 @@ function envOrigin(key) {
   return process.env[`PROTOCOL_INFO_ENV_ORIGIN_${key}`] || 'shell-env';
 }
 
+function rootDataOrigin() {
+  return envOrigin('ROOTDATA_API_KEYS')
+    || envOrigin('ROOTDATA_API_KEY')
+    || Object.keys(process.env)
+      .filter((key) => /^ROOTDATA_API_KEY_\d+$/i.test(key))
+      .sort()
+      .map((key) => envOrigin(key))
+      .find(Boolean)
+    || null;
+}
+
 function setEnvFromFlag(key, value, origin) {
   const trimmed = String(value || '').trim();
   if (!trimmed) return false;
@@ -99,8 +111,8 @@ function setEnvFromFlag(key, value, origin) {
 }
 
 // Lookup order for ROOTDATA_API_KEY (highest priority first):
-//   1. --rootdata-key CLI flag (handled in argv loop below)
-//   2. existing process.env.ROOTDATA_API_KEY
+//   1. --rootdata-key CLI flag (handled in argv loop below; may contain a list)
+//   2. existing process.env.ROOTDATA_API_KEYS / ROOTDATA_API_KEY
 //   3. ~/.config/protocol-info/.env  ← user-writable, survives plugin updates
 //   4. <SCRIPT_DIR>/.env             ← standalone repo only (read-only when
 //                                       installed as a Claude Code plugin)
@@ -108,7 +120,7 @@ const ROOTDATA_ENV_CANDIDATES = [
   join(homedir(), '.config', 'protocol-info', '.env'),
   join(SCRIPT_DIR, '.env'),
 ];
-let rootdataKeyOrigin = envOrigin('ROOTDATA_API_KEY');
+let rootdataKeyOrigin = rootDataOrigin();
 let openAIOrigins = {
   apiKey: envOrigin('OPENAI_API_KEY'),
   baseUrl: envOrigin('OPENAI_BASE_URL'),
@@ -128,13 +140,22 @@ export function loadRuntimeEnv(candidates = ROOTDATA_ENV_CANDIDATES) {
   runtimeEnvLoaded = true;
   for (const candidate of candidates) {
     const r = loadEnvFile(candidate);
-    if (!rootdataKeyOrigin && r.found && r.setKeys.includes('ROOTDATA_API_KEY')) {
+    if (!rootdataKeyOrigin && r.found && r.setKeys.some((key) => /^ROOTDATA_API_KEY(?:S|_\d+)?$/i.test(key))) {
       rootdataKeyOrigin = candidate;
     }
     if (!unavatarKeyOrigin && r.found && r.setKeys.includes('UNAVATAR_API_KEY')) {
       unavatarKeyOrigin = candidate;
     }
   }
+  // Backward compatibility for older fetcher dispatch env gates. The RootData
+  // fetcher itself reads the whole key pool from ROOTDATA_API_KEYS,
+  // ROOTDATA_API_KEY, and numbered ROOTDATA_API_KEY_N variables.
+  const rootKeys = rootDataApiKeysFromEnv(process.env);
+  if (!process.env.ROOTDATA_API_KEY && rootKeys.length > 0) {
+    process.env.ROOTDATA_API_KEY = rootKeys[0];
+    process.env.PROTOCOL_INFO_ENV_ORIGIN_ROOTDATA_API_KEY ??= rootdataKeyOrigin || 'shell-env';
+  }
+  rootdataKeyOrigin = rootDataOrigin();
   openAIOrigins = {
     apiKey: envOrigin('OPENAI_API_KEY'),
     baseUrl: envOrigin('OPENAI_BASE_URL'),
@@ -165,7 +186,7 @@ Per-provider flags (use --batch to separate multiple providers):
 
 Run-wide flags:
   --model <name>          override Claude model for R1+R2 (manifest default: claude-sonnet-4-6)
-  --rootdata-key <key>    ROOTDATA_API_KEY for this run; overrides env + .env files
+  --rootdata-key <key>    ROOTDATA_API_KEY(S) for this run; comma/newline lists are allowed
   --unavatar-key <key>    UNAVATAR_API_KEY for paid Unavatar avatar/logo rehosting
   --openai-api-key <key>  OPENAI_API_KEY for this run; overrides env + .env files
   --openai-base-url <url> OPENAI_BASE_URL for this run
@@ -182,7 +203,8 @@ Run-wide flags:
                           Optional env: I18N_PROVIDER=openai, R2_LLM_PROVIDER=openai,
                           R2_ROUTING=external_first|external_first_with_claude_fallback,
                           R2_ASSIST_PROVIDER=openai, R2_FALLBACK_PROVIDER=claude,
-                          ANALYZE_LLM_PROVIDER=openai, REFRESH_AUDITS_LLM_PROVIDER=openai
+                          ANALYZE_LLM_PROVIDER=openai, AUDIT_REPORTS_LLM_PROVIDER=openai,
+                          REFRESH_AUDITS_LLM_PROVIDER=openai
                           Optional pricing: OPENAI_INPUT_COST_PER_1M, OPENAI_OUTPUT_COST_PER_1M
   --dry-run               list providers and bail
   --force-overwrite       overwrite an out/<slug>/ that has uncommitted changes
@@ -567,14 +589,15 @@ if (isMain) {
     default:     i18nLabel = i18nArg;
   }
 
-  const ROOTDATA_ENABLED = !!process.env.ROOTDATA_API_KEY;
+  const ROOTDATA_ENABLED = hasRootDataApiKeys(process.env);
   const RUN_TS = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
   const outputRoot = defaultOutputRoot();
   const runSummaryDir = join(outputRoot, '.runs', RUN_TS);
 
+  const rootdataKeyCount = rootDataApiKeysFromEnv(process.env).length;
   const rootdataLabel = ROOTDATA_ENABLED
-    ? `enabled (Round 2) [key from ${rootdataKeyOrigin || 'shell-env'}]`
-    : 'disabled (single-round; no ROOTDATA_API_KEY found — pass --rootdata-key, export the env var, or write ~/.config/protocol-info/.env)';
+    ? `enabled (Round 2) [${rootdataKeyCount} key${rootdataKeyCount === 1 ? '' : 's'} from ${rootdataKeyOrigin || 'shell-env'}]`
+    : 'disabled (single-round; no ROOTDATA_API_KEY(S) found — pass --rootdata-key, export ROOTDATA_API_KEY(S), or write ~/.config/protocol-info/.env)';
   const unavatarLabel = process.env.UNAVATAR_API_KEY
     ? `configured [key from ${unavatarKeyOrigin || 'shell-env'}]`
     : 'not configured (avatar rehosting can still try anonymous Unavatar but may be rate-limited)';
@@ -583,6 +606,8 @@ if (isMain) {
     'R1_LLM_PROVIDER',
     'R2_LLM_PROVIDER',
     'ANALYZE_LLM_PROVIDER',
+    'AUDIT_REPORTS_LLM_PROVIDER',
+    'AUDIT_REPORT_LLM_PROVIDER',
     'REFRESH_LLM_PROVIDER',
     'REFRESH_AUDITS_LLM_PROVIDER',
   ].some((key) => String(process.env[key] || '').toLowerCase() === 'openai');

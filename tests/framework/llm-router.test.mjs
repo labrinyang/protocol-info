@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import {
   assertProviderAllowed,
   resolveLLMProvider,
+  resolveLLMTimeoutMs,
   resolveOpenAIPricing,
   resolveOpenAIModel,
   runStructuredLLM,
@@ -79,6 +80,27 @@ export const tests = [
           R2_OPENAI_OUTPUT_COST_PER_1M: '8',
         },
       }), { inputCostPer1M: 2, outputCostPer1M: 8 });
+    },
+  },
+  {
+    name: 'resolveLLMTimeoutMs uses provider and stage specific env',
+    fn: async () => {
+      assert.equal(resolveLLMTimeoutMs({
+        stage: 'r1',
+        provider: 'claude',
+        env: {
+          CLAUDE_TIMEOUT_MS: '3000',
+          R1_CLAUDE_TIMEOUT_MS: '1234',
+        },
+      }), 1234);
+      assert.equal(resolveLLMTimeoutMs({
+        stage: 'refresh:audits',
+        provider: 'openai',
+        env: {
+          REFRESH_OPENAI_TIMEOUT_MS: '5000',
+          REFRESH_AUDITS_OPENAI_TIMEOUT_MS: '2500',
+        },
+      }), 2500);
     },
   },
   {
@@ -180,7 +202,30 @@ export const tests = [
 
       assert.equal(args.model, 'claude-sonnet-4-6');
       assert.equal(args.allowedTools, 'WebFetch,WebSearch');
+      assert.equal(args.timeoutMs, undefined);
       assert.equal(envelope.num_turns, 2);
+    },
+  },
+  {
+    name: 'runStructuredLLM passes resolved Claude timeout and spawn hook',
+    fn: async () => {
+      let args = null;
+      const onSpawn = () => {};
+      const envelope = await runStructuredLLM({
+        stage: 'r1',
+        env: { R1_CLAUDE_TIMEOUT_MS: '9876' },
+        userPrompt: 'prompt',
+        schemaJson: { type: 'object' },
+        onSpawn,
+        runClaudeImpl: async (input) => {
+          args = input;
+          return { structured_output: { ok: true }, total_cost_usd: 0.01, num_turns: 2 };
+        },
+      });
+
+      assert.equal(args.timeoutMs, 9876);
+      assert.equal(args.onSpawn, onSpawn);
+      assert.deepEqual(envelope.structured_output, { ok: true });
     },
   },
 ];

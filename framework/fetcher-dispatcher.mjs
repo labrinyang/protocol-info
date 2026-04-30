@@ -12,12 +12,21 @@
 import { runWithLimit } from './parallel-runner.mjs';
 import { pathToFileURL } from 'node:url';
 
+function hasEnvValue(env, key) {
+  if (env?.[key]) return true;
+  if (key === 'ROOTDATA_API_KEY') {
+    if (env?.ROOTDATA_API_KEYS) return true;
+    return Object.keys(env || {}).some((k) => /^ROOTDATA_API_KEY_\d+$/i.test(k) && env[k]);
+  }
+  return false;
+}
+
 export async function dispatchFetchers({ fetchers, ctx, concurrency = 4 }) {
   const status = {};
 
   const tasks = fetchers.map(f => async () => {
     // env-gating
-    const missingEnv = (f.required_env || []).filter(k => !ctx.env[k]);
+    const missingEnv = (f.required_env || []).filter(k => !hasEnvValue(ctx.env, k));
     if (missingEnv.length > 0) {
       status[f.name] = `skipped: missing env ${missingEnv.join(',')}`;
       return null;

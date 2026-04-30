@@ -6,7 +6,7 @@
 //   - collect {slice, ok, error, cost, turns, session_id, envelope}
 // Then merge slices via merger.mjs and write record + per-subtask envelopes.
 
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename, rm } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadManifest, selectEvidence } from '../manifest-loader.mjs';
@@ -39,6 +39,7 @@ const gapsOut = arg('gaps-out');
 const handoffOut = arg('handoff-out');
 const claudeBin = process.env.CLAUDE_BIN || 'claude';
 const concurrency = parseInt(arg('concurrency', '4'), 10);
+const heartbeatMs = parseInt(arg('heartbeat-ms', process.env.R1_HEARTBEAT_MS || '60000'), 10);
 
 // Stage budget caps clamp manifest defaults down. R1 is parallel, so the stage
 // total is split across subtasks by their manifest default weights.
@@ -76,7 +77,140 @@ function render(t, vars) {
   return Object.entries(vars).reduce((s, [k, v]) => s.replaceAll(`{{${k}}}`, v), t);
 }
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function elapsedMsFrom(iso) {
+  const t = Date.parse(iso || '');
+  return Number.isFinite(t) ? Date.now() - t : null;
+}
+
+function formatElapsed(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return '-';
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes <= 0) return `${seconds}s`;
+  return `${minutes}m${seconds.toString().padStart(2, '0')}s`;
+}
+
+const runStartedAt = nowIso();
+const statusByName = new Map((manifest._abs.subtasks || []).map(st => [st.name, {
+  name: st.name,
+  state: 'queued',
+  ok: null,
+  cost_usd: null,
+  turns: null,
+  session_id: null,
+  pid: null,
+  started_at: null,
+  spawned_at: null,
+  finished_at: null,
+  elapsed_ms: null,
+  timeout_ms: null,
+  error: null,
+  error_kind: null,
+}]));
+let statusWriteQueue = Promise.resolve();
+const statusPath = join(debugDir, 'r1-status.json');
+
+function statusSnapshot(extra = {}) {
+  const subtasks = (manifest._abs.subtasks || []).map(st => ({ ...(statusByName.get(st.name) || { name: st.name, state: 'unknown' }) }));
+  const counts = {
+    total: subtasks.length,
+    queued: subtasks.filter(s => s.state === 'queued').length,
+    running: subtasks.filter(s => s.state === 'running').length,
+    ok: subtasks.filter(s => s.ok === true).length,
+    failed: subtasks.filter(s => s.ok === false).length,
+  };
+  return {
+    slug,
+    stage: 'r1',
+    started_at: runStartedAt,
+    updated_at: nowIso(),
+    elapsed_ms: elapsedMsFrom(runStartedAt),
+    concurrency,
+    heartbeat_ms: Number.isFinite(heartbeatMs) && heartbeatMs > 0 ? heartbeatMs : null,
+    counts,
+    subtasks,
+    failed_subtasks: subtasks
+      .filter(s => s.ok === false)
+      .map(s => ({ name: s.name, reason: s.error || s.error_kind || 'failed', error_kind: s.error_kind || null })),
+    ...extra,
+  };
+}
+
+async function writeJsonAtomic(path, value) {
+  const tmpPath = `${path}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  try {
+    await writeFile(tmpPath, JSON.stringify(value, null, 2));
+    await rename(tmpPath, path);
+  } catch (err) {
+    try { await rm(tmpPath, { force: true }); } catch { /* best effort */ }
+    throw err;
+  }
+}
+
+function queueStatusWrite(extra = {}) {
+  const snapshot = statusSnapshot(extra);
+  statusWriteQueue = statusWriteQueue
+    .catch(() => {})
+    .then(async () => {
+      try {
+        await writeJsonAtomic(statusPath, snapshot);
+      } catch (err) {
+        console.error(`[r1] failed to write r1-status.json: ${err.message}`);
+      }
+    });
+  return statusWriteQueue;
+}
+
+function updateSubtaskStatus(name, patch) {
+  const current = statusByName.get(name) || { name, state: 'unknown' };
+  statusByName.set(name, { ...current, ...patch });
+  void queueStatusWrite();
+}
+
+function logProgress() {
+  const snapshot = statusSnapshot();
+  const running = snapshot.subtasks
+    .filter(s => s.state === 'running')
+    .map(s => `${s.name}:${formatElapsed(elapsedMsFrom(s.started_at))}${s.pid ? ` pid=${s.pid}` : ''}`)
+    .join(', ') || '-';
+  console.error(`[r1] progress ok=${snapshot.counts.ok}/${snapshot.counts.total} failed=${snapshot.counts.failed} running=${running} queued=${snapshot.counts.queued} elapsed=${formatElapsed(snapshot.elapsed_ms)}`);
+  void queueStatusWrite();
+}
+
+function enrichFailedSubtasks(failedSubtasks) {
+  return (failedSubtasks || []).map(f => {
+    const status = statusByName.get(f.name) || {};
+    return {
+      ...f,
+      error_kind: status.error_kind || f.error_kind || null,
+      pid: status.pid ?? null,
+      elapsed_ms: status.elapsed_ms ?? null,
+      timeout_ms: status.timeout_ms ?? null,
+    };
+  });
+}
+
+await queueStatusWrite();
+const heartbeatTimer = Number.isFinite(heartbeatMs) && heartbeatMs > 0
+  ? setInterval(logProgress, heartbeatMs)
+  : null;
+if (heartbeatTimer && typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
+
 const tasks = manifest._abs.subtasks.map(st => async () => {
+  const startedAt = nowIso();
+  updateSubtaskStatus(st.name, {
+    state: 'running',
+    started_at: startedAt,
+    finished_at: null,
+    elapsed_ms: null,
+    error: null,
+    error_kind: null,
+  });
   try {
     const slice = JSON.parse(await readFile(st.schema_slice_abs, 'utf8'));
     const userTmpl = await readFile(st.prompt_abs, 'utf8');
@@ -101,6 +235,11 @@ const tasks = manifest._abs.subtasks.map(st => async () => {
     const r = await runSubtask({
       claudeBin, subtask: effSubtask, systemPrompt, userPrompt, schemaSlice: slice, model,
       findingsSchema, gapsSchema, llmProvider, stage: 'r1', manifest, budgetEnforced: budgetCap != null,
+      onSpawn: (info) => updateSubtaskStatus(st.name, {
+        pid: info.pid ?? null,
+        spawned_at: info.started_at || nowIso(),
+        timeout_ms: info.timeout_ms ?? null,
+      }),
     });
 
     if (r.envelope) {
@@ -112,10 +251,29 @@ const tasks = manifest._abs.subtasks.map(st => async () => {
       }
     }
 
+    const finishedAt = nowIso();
+    updateSubtaskStatus(st.name, {
+      state: r.ok ? 'ok' : 'failed',
+      ok: !!r.ok,
+      cost_usd: r.cost_usd ?? 0,
+      turns: r.turns ?? 0,
+      session_id: r.session_id ?? null,
+      finished_at: finishedAt,
+      elapsed_ms: elapsedMsFrom(startedAt),
+      error: r.error || null,
+      error_kind: r.error_kind || null,
+      pid: r.pid ?? statusByName.get(st.name)?.pid ?? null,
+      timeout_ms: r.timeout_ms ?? statusByName.get(st.name)?.timeout_ms ?? null,
+    });
+    if (r.ok) {
+      console.error(`[r1:${st.name}] done (${formatElapsed(elapsedMsFrom(startedAt))}, cost=$${r.cost_usd ?? 0}, turns=${r.turns ?? 0})`);
+    } else {
+      console.error(`[r1:${st.name}] failed (${formatElapsed(elapsedMsFrom(startedAt))}, kind=${r.error_kind || 'unknown'}): ${String(r.error || 'unknown').slice(0, 300)}`);
+    }
     return { name: st.name, ...r };
   } catch (err) {
     console.error(`[r1:${st.name}] task setup failed: ${err.message}`);
-    return {
+    const failure = {
       name: st.name,
       ok: false,
       error: `task setup: ${err.message}`,
@@ -125,10 +283,41 @@ const tasks = manifest._abs.subtasks.map(st => async () => {
       session_id: null,
       envelope: null,
     };
+    updateSubtaskStatus(st.name, {
+      state: 'failed',
+      ok: false,
+      finished_at: nowIso(),
+      elapsed_ms: elapsedMsFrom(startedAt),
+      error: failure.error,
+      error_kind: failure.error_kind,
+    });
+    return failure;
   }
 });
 
-const results = await runWithLimit(concurrency, tasks);
+let results;
+try {
+  results = await runWithLimit(concurrency, tasks);
+} catch (err) {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  const status = statusSnapshot({
+    finished_at: nowIso(),
+    elapsed_ms: elapsedMsFrom(runStartedAt),
+    fatal_error: {
+      message: err?.message || String(err),
+      error_kind: err?.kind || 'r1_unhandled',
+    },
+    failed_subtasks: enrichFailedSubtasks(statusSnapshot().failed_subtasks),
+  });
+  try {
+    await statusWriteQueue.catch(() => {});
+    await writeJsonAtomic(statusPath, status);
+  } catch (writeErr) {
+    console.error(`[r1] failed to write r1-status.json: ${writeErr.message}`);
+  }
+  throw err;
+}
+if (heartbeatTimer) clearInterval(heartbeatTimer);
 const merge = mergeSlices(results, { stage: 'r1' });
 
 await writeFile(recordOut, JSON.stringify(merge.record, null, 2));
@@ -141,12 +330,29 @@ if (merge.failed_subtasks.length > 0) {
   console.error(`[r1] failed: ${merge.failed_subtasks.map(f => `${f.name} (${f.reason})`).join(', ')}`);
 }
 
+const finalFailedSubtasks = enrichFailedSubtasks(merge.failed_subtasks);
 const status = {
-  subtasks: results.map(r => ({ name: r.name, ok: r.ok, cost_usd: r.cost_usd, turns: r.turns, session_id: r.session_id, error: r.error || null })),
-  failed_subtasks: merge.failed_subtasks,
+  ...statusSnapshot({
+    finished_at: nowIso(),
+    elapsed_ms: elapsedMsFrom(runStartedAt),
+    failed_subtasks: finalFailedSubtasks,
+  }),
+  subtasks: results.map(r => ({
+    ...(statusByName.get(r.name) || {}),
+    name: r.name,
+    ok: r.ok,
+    state: r.ok ? 'ok' : 'failed',
+    cost_usd: r.cost_usd,
+    turns: r.turns,
+    session_id: r.session_id,
+    error: r.error || null,
+    error_kind: r.error_kind || null,
+  })),
+  failed_subtasks: finalFailedSubtasks,
 };
 try {
-  await writeFile(join(debugDir, 'r1-status.json'), JSON.stringify(status, null, 2));
+  await statusWriteQueue.catch(() => {});
+  await writeJsonAtomic(statusPath, status);
 } catch (err) {
   console.error(`[r1] failed to write r1-status.json: ${err.message}`);
   // Status file is telemetry; don't fail the run if it can't be written.

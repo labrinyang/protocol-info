@@ -81,6 +81,12 @@ function buildUnionSchema(outputKey, payloadSchema, findingsSchema, gapsSchema, 
   };
 }
 
+function numericTimeout(value) {
+  if (value == null || value === '') return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined;
+}
+
 export async function runSubtask({
   claudeBin = 'claude',
   subtask,
@@ -100,6 +106,8 @@ export async function runSubtask({
   manifest = null,
   env = process.env,
   runLLM = runStructuredLLM,
+  timeoutMs = undefined,
+  onSpawn = null,
 }) {
   const useBeta = findingsSchema && gapsSchema;
   const schemaJson = useBeta
@@ -107,6 +115,7 @@ export async function runSubtask({
     : schemaSlice;
 
   let envelope;
+  const llmTimeoutMs = numericTimeout(subtask.timeout_ms ?? subtask.timeoutMs ?? timeoutMs);
   try {
     envelope = await runLLM({
       stage,
@@ -123,6 +132,8 @@ export async function runSubtask({
       model,
       budgetLedger,
       budgetEnforced,
+      timeoutMs: llmTimeoutMs,
+      onSpawn,
     });
   } catch (err) {
     const provider = resolveLLMProvider({ stage, provider: llmProvider, env });
@@ -130,6 +141,9 @@ export async function runSubtask({
     return {
       ok: false, error: `${label} invocation failed: ${err.message}`,
       error_kind: err.kind ?? null,
+      pid: err.pid ?? null,
+      elapsed_ms: err.elapsed_ms ?? null,
+      timeout_ms: err.timeout_ms ?? llmTimeoutMs ?? null,
       cost_usd: 0, turns: 0, envelope: null, session_id: null,
     };
   }

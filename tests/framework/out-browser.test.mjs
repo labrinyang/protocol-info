@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildOutBrowser, collectOutIndex } from '../../framework/out-browser.mjs';
+import { buildOutBrowser, collectOutIndex, startOutBrowserServer } from '../../framework/out-browser.mjs';
 
 function embeddedData(html) {
   const raw = html.match(/<script id="out-data" type="application\/json">([\s\S]*?)<\/script>/)?.[1];
@@ -74,6 +74,10 @@ export const tests = [
         assert.match(html, /\\u003c\/script>/);
         const script = html.match(/<script>\n([\s\S]*)<\/script>\n<\/body>/)?.[1];
         assert.ok(script, 'expected browser script');
+        assert.ok(script.includes('(\\s*:)?'), 'expected generated JSON key whitespace regex escape');
+        assert.ok(script.includes('\\b(?:true|false)\\b'), 'expected generated JSON boolean word-boundary regex escape');
+        assert.ok(script.includes('-?\\d+'), 'expected generated JSON number regex escape');
+        assert.equal(script.includes('\b'), false, 'generated browser script should not contain backspace escapes');
         new Function(script);
       } finally {
         await rm(dir, { recursive: true, force: true });
@@ -160,6 +164,32 @@ export const tests = [
     },
   },
   {
+    name: 'buildOutBrowser keeps unknown counts unknown for malformed records',
+    fn: async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'pi-html-bad-counts-'));
+      try {
+        const slugDir = join(dir, 'bad');
+        await mkdir(slugDir, { recursive: true });
+        await writeFile(join(slugDir, 'record.json'), '{bad json');
+        await writeFile(
+          join(slugDir, 'summary.tsv'),
+          'slug\tstatus\tmembers\tfunding\taudits\tschema\tsource\tapi_status\ti18n\nbad\tSCHEMA_FAIL\t0\t0\t0\tfail\tr1\tdisabled\t-\n',
+        );
+
+        await buildOutBrowser(dir);
+        const html = await readFile(join(dir, 'index.html'), 'utf8');
+        const data = embeddedData(html);
+        const bad = data.protocols.find((p) => p.slug === 'bad');
+        assert.deepEqual(
+          bad.view.metrics.slice(0, 3).map((item) => item.value),
+          ['-', '-', '-'],
+        );
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
     name: 'buildOutBrowser renders v2.1 workflow and logo asset panels',
     fn: async () => {
       const { ensureRepo, commit } = await import('../../framework/version-store.mjs');
@@ -179,6 +209,7 @@ export const tests = [
           providerLogoUrl: 'https://uni.onekey-asset.com/static/logo/protocol-logo/pendle.png',
           displayName: 'Pendle',
           type: 'fixed_rate',
+          fundingRounds: [],
           members: [
             {
               memberName: 'Alice',
@@ -204,6 +235,11 @@ export const tests = [
         assert.match(html, /Workflow commands/);
         assert.match(html, /command-row/);
         assert.match(html, /asset-sections/);
+        assert.match(html, /json-chip/);
+        assert.match(html, /json-key/);
+        assert.match(html, /diff-line\.add/);
+        assert.match(html, /Copy minified JSON/);
+        assert.match(html, /Copy diff/);
         assert.match(html, /data-detail-mode/);
         assert.match(html, /Artifacts/);
         assert.match(html, /Changes/);
@@ -216,6 +252,12 @@ export const tests = [
         assert.equal(pendle.view.defaultArtifact, 'record.json');
         assert.equal(pendle.view.initials, 'P');
         assert.equal(pendle.view.modeCounts.assets, 3);
+        assert.deepEqual(
+          pendle.view.metrics.slice(0, 3).map((item) => item.value),
+          ['1', '0', '1'],
+        );
+        assert.equal(pendle.view.facts.find((item) => item.label === 'Audits').value, '1');
+        assert.equal(pendle.artifacts.find((item) => item.name === 'record.json').jsonMeta.shape, 'object(8)');
         assert.ok(pendle.view.searchText.includes('fixed_rate'));
         assert.ok(pendle.view.workflowCommands.some((item) => item.group === 'inspect'));
         assert.ok(pendle.view.workflowCommands.some((item) => item.group === 'version' && item.risk === 'destructive'));
@@ -225,6 +267,56 @@ export const tests = [
         assert.ok(script, 'expected browser script');
         new Function(script);
       } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: 'live out browser server reads changed record.json without rebuilding index.html',
+    fn: async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'pi-live-browser-'));
+      let server = null;
+      try {
+        const slugDir = join(dir, 'pendle');
+        await mkdir(slugDir, { recursive: true });
+        await writeFile(join(slugDir, 'record.json'), JSON.stringify({
+          slug: 'pendle',
+          displayName: 'Pendle',
+          members: [],
+          fundingRounds: [],
+          audits: { items: [] },
+        }));
+
+        server = await startOutBrowserServer({
+          outputRoot: dir,
+          host: '127.0.0.1',
+          port: 0,
+          logger: { log: () => {} },
+        });
+        const { port } = server.address();
+        const base = `http://127.0.0.1:${port}`;
+
+        const html = await (await fetch(`${base}/`)).text();
+        assert.match(html, /LIVE_DATA_URL = "\/api\/out-data"/);
+
+        const before = await (await fetch(`${base}/api/out-data`)).json();
+        const beforePendle = before.protocols.find((p) => p.slug === 'pendle');
+        assert.equal(beforePendle.view.metrics.find((item) => item.key === 'members').value, '0');
+
+        await writeFile(join(slugDir, 'record.json'), JSON.stringify({
+          slug: 'pendle',
+          displayName: 'Pendle',
+          members: [{ memberName: 'Alice' }],
+          fundingRounds: [],
+          audits: { items: [] },
+        }));
+
+        const after = await (await fetch(`${base}/api/out-data`)).json();
+        const afterPendle = after.protocols.find((p) => p.slug === 'pendle');
+        assert.notEqual(after.revision, before.revision);
+        assert.equal(afterPendle.view.metrics.find((item) => item.key === 'members').value, '1');
+      } finally {
+        if (server) await new Promise((resolve) => server.close(resolve));
         await rm(dir, { recursive: true, force: true });
       }
     },

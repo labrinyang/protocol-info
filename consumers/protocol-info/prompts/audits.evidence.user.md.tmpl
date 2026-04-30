@@ -24,7 +24,9 @@ The runner provides:
 
 - `existing_record`: the current full record.
 - `audit_reports.reports[]`: deterministic text extracted from audit
-  `reportUrl` PDF/HTML pages already present in the record.
+  `reportUrl` PDF/HTML pages already present in the record. When present,
+  `llm_reading.output` is an external evidence-only reading over the fetched
+  report text.
 - `audit_reports.failures[]`: report URLs that could not be fetched or parsed.
 
 ```json
@@ -35,9 +37,9 @@ The runner provides:
 
 - One entry per distinct audit report, newest first.
 - Prefer the existing audit item when there is no stronger report excerpt.
-- Use `audit_reports.reports[].detected_dates`, `scope_hints`, `title_hint`,
-  and `text_excerpt` to correct weak `date`, `scope`, `auditor`, or
-  `reportUrl` values.
+- Use `audit_reports.reports[].llm_reading.output`, `detected_dates`,
+  `scope_hints`, `title_hint`, and `text_excerpt` to correct weak `date`,
+  `scope`, `auditor`, or `reportUrl` values.
 - `auditorLogoUrl`: keep an existing value when present only if it is already in
   the record; otherwise return `null`. Do not invent one. The logo-assets
   normalizer resolves missing audit-firm logos from local cache and exact

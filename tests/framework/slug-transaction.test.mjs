@@ -63,7 +63,24 @@ export const tests = [
     },
   },
   {
-    name: 'commitAndRebuild commits one logical slug change and calls rebuild',
+    name: 'commitAndRebuild commits one logical slug change without rebuilding static browser by default',
+    fn: async () => {
+      const out = await seedOut();
+      await writeFile(join(out, 'pendle', 'record.json'), '{"v":2}\n');
+      const result = await commitAndRebuild(
+        out,
+        { slug: 'pendle', message: 'set(pendle) v', runId: 'R1' },
+      );
+      assert.match(result.sha, /^[0-9a-f]{7,40}$/);
+      assert.equal(result.browserPath, null);
+      assert.equal(existsSync(join(out, 'index.html')), false);
+      const hist = await log(out, { slug: 'pendle' });
+      assert.equal(hist[0].message, 'set(pendle) v');
+      assert.equal(hist[0].runId, 'R1');
+    },
+  },
+  {
+    name: 'commitAndRebuild still supports an injected rebuild hook',
     fn: async () => {
       const out = await seedOut();
       let rebuilt = false;

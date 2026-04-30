@@ -52,7 +52,13 @@ load_env_file_missing "$SCRIPT_DIR/.env"
 unset -f load_env_file_missing
 
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
-command -v "$CLAUDE_BIN" >/dev/null || { echo "claude CLI not found ($CLAUDE_BIN)" >&2; exit 127; }
 command -v node          >/dev/null || { echo "node required" >&2; exit 127; }
+
+if [[ "${1:-}" == "browse" ]]; then
+  shift
+  exec node "$SCRIPT_DIR/framework/out-browser.mjs" "$@"
+fi
+
+command -v "$CLAUDE_BIN" >/dev/null || { echo "claude CLI not found ($CLAUDE_BIN)" >&2; exit 127; }
 
 exec node "$SCRIPT_DIR/framework/cli.mjs" "$@"

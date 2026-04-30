@@ -17,6 +17,16 @@ const UNAVATAR_ENV_KEYS = [
   'UNAVATAR_API_KEY',
   'PROTOCOL_INFO_ENV_ORIGIN_UNAVATAR_API_KEY',
 ];
+const ROOTDATA_ENV_KEYS = [
+  'ROOTDATA_API_KEY',
+  'ROOTDATA_API_KEYS',
+  'ROOTDATA_API_KEY_1',
+  'ROOTDATA_API_KEY_2',
+  'PROTOCOL_INFO_ENV_ORIGIN_ROOTDATA_API_KEY',
+  'PROTOCOL_INFO_ENV_ORIGIN_ROOTDATA_API_KEYS',
+  'PROTOCOL_INFO_ENV_ORIGIN_ROOTDATA_API_KEY_1',
+  'PROTOCOL_INFO_ENV_ORIGIN_ROOTDATA_API_KEY_2',
+];
 
 async function withEnvRestored(keys, fn) {
   const snapshot = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
@@ -47,7 +57,7 @@ export const tests = [
         'OPENAI_API_KEY=secret',
         'OPENAI_BASE_URL=https://llm.example/v1',
         'OPENAI_MODEL=gpt-test',
-        'ROOTDATA_API_KEY=root-secret',
+        'ROOTDATA_API_KEYS=root-secret-a,root-secret-b',
         'UNAVATAR_API_KEY=unavatar-secret',
         '',
       ].join('\n'));
@@ -56,14 +66,14 @@ export const tests = [
       delete env.OPENAI_API_KEY;
       delete env.OPENAI_BASE_URL;
       delete env.OPENAI_MODEL;
-      delete env.ROOTDATA_API_KEY;
+      for (const key of ROOTDATA_ENV_KEYS) delete env[key];
       delete env.UNAVATAR_API_KEY;
       const cliUrl = pathToFileURL(join(process.cwd(), 'framework', 'cli.mjs')).href;
       const stdout = await new Promise((resolve, reject) => {
         const child = spawn(process.execPath, [
           '--input-type=module',
           '-e',
-          `await import(${JSON.stringify(cliUrl)}); console.log([process.env.I18N_PROVIDER || '', process.env.OPENAI_API_KEY || '', process.env.OPENAI_BASE_URL || '', process.env.OPENAI_MODEL || '', process.env.ROOTDATA_API_KEY || '', process.env.UNAVATAR_API_KEY || ''].join('|'));`,
+          `await import(${JSON.stringify(cliUrl)}); console.log([process.env.I18N_PROVIDER || '', process.env.OPENAI_API_KEY || '', process.env.OPENAI_BASE_URL || '', process.env.OPENAI_MODEL || '', process.env.ROOTDATA_API_KEY || '', process.env.ROOTDATA_API_KEYS || '', process.env.UNAVATAR_API_KEY || ''].join('|'));`,
         ], { env });
         let out = '';
         let err = '';
@@ -74,7 +84,7 @@ export const tests = [
           else reject(new Error(err || `node exited ${code}`));
         });
       });
-      assert.equal(stdout, '|||||');
+      assert.equal(stdout, '||||||');
     },
   },
   {
@@ -88,7 +98,8 @@ export const tests = [
       const dir = await mkdtemp(join(tmpdir(), 'pi-cli-env-load-'));
       const envFile = join(dir, '.env');
       await writeFile(envFile, [
-        'ROOTDATA_API_KEY=root-secret',
+        'ROOTDATA_API_KEY_1=root-secret-a',
+        'ROOTDATA_API_KEY_2=root-secret-b',
         'OPENAI_API_KEY=openai-secret',
         'OPENAI_BASE_URL=https://llm.example/v1',
         'OPENAI_MODEL=gpt-test',
@@ -100,7 +111,7 @@ export const tests = [
       const cliUrl = pathToFileURL(join(process.cwd(), 'framework', 'cli.mjs')).href;
       const stdout = await new Promise((resolve, reject) => {
         const env = { ...process.env };
-        for (const key of ['ROOTDATA_API_KEY', ...OPENAI_ENV_KEYS, ...UNAVATAR_ENV_KEYS]) delete env[key];
+        for (const key of [...ROOTDATA_ENV_KEYS, ...OPENAI_ENV_KEYS, ...UNAVATAR_ENV_KEYS]) delete env[key];
         const child = spawn(process.execPath, [
           '--input-type=module',
           '-e',
@@ -110,6 +121,8 @@ export const tests = [
             `const parsed = parseArgv(['--display-name','Pendle']);`,
             `console.log(JSON.stringify({`,
             `root: parsed.options.rootdataKeyOrigin,`,
+            `rootKey: process.env.ROOTDATA_API_KEY,`,
+            `rootKeys: process.env.ROOTDATA_API_KEYS || '',`,
             `api: parsed.options.openAIOrigins.apiKey,`,
             `base: parsed.options.openAIOrigins.baseUrl,`,
             `model: parsed.options.openAIOrigins.model,`,
@@ -131,6 +144,8 @@ export const tests = [
       });
       const parsed = JSON.parse(stdout);
       assert.equal(parsed.root, envFile);
+      assert.equal(parsed.rootKey, 'root-secret-a');
+      assert.equal(parsed.rootKeys, '');
       assert.equal(parsed.api, envFile);
       assert.equal(parsed.base, envFile);
       assert.equal(parsed.model, envFile);
@@ -149,7 +164,7 @@ export const tests = [
       const cliUrl = pathToFileURL(join(process.cwd(), 'framework', 'cli.mjs')).href;
       const stdout = await new Promise((resolve, reject) => {
         const env = { ...process.env };
-        delete env.ROOTDATA_API_KEY;
+        for (const key of ROOTDATA_ENV_KEYS) delete env[key];
         delete env.OPENAI_API_KEY;
         env.PROTOCOL_INFO_ENV_ORIGIN_ROOTDATA_API_KEY = '/tmp/stale-rootdata.env';
         env.PROTOCOL_INFO_ENV_ORIGIN_OPENAI_API_KEY = '/tmp/stale-openai.env';
@@ -175,6 +190,35 @@ export const tests = [
         });
       });
       assert.deepEqual(JSON.parse(stdout), { root: null, api: null });
+    },
+  },
+  {
+    name: 'startup banner treats audit-report LLM provider as OpenAI-compatible route',
+    fn: async () => {
+      const { mkdtemp } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { spawn } = await import('node:child_process');
+      const home = await mkdtemp(join(tmpdir(), 'pi-cli-home-'));
+      const stdout = await new Promise((resolve, reject) => {
+        const env = { ...process.env, HOME: home, AUDIT_REPORTS_LLM_PROVIDER: 'openai' };
+        for (const key of [...ROOTDATA_ENV_KEYS, ...OPENAI_ENV_KEYS, ...UNAVATAR_ENV_KEYS]) delete env[key];
+        const child = spawn(process.execPath, [
+          'framework/cli.mjs',
+          '--dry-run',
+          '--display-name',
+          'Pendle',
+        ], { cwd: process.cwd(), env });
+        let out = '';
+        let err = '';
+        child.stdout.on('data', (chunk) => { out += chunk.toString(); });
+        child.stderr.on('data', (chunk) => { err += chunk.toString(); });
+        child.on('close', (code) => {
+          if (code === 0) resolve(out);
+          else reject(new Error(err || `node exited ${code}`));
+        });
+      });
+      assert.match(stdout, /External LLM:\s+requested but missing OPENAI_API_KEY/);
     },
   },
   {
@@ -241,7 +285,7 @@ export const tests = [
   },
   {
     name: 'dispatchWorkflowCommand parses workflow flags before and after the command',
-    fn: async () => await withEnvRestored(['ROOTDATA_API_KEY', 'PROTOCOL_INFO_ENV_ORIGIN_ROOTDATA_API_KEY', ...OPENAI_ENV_KEYS, ...UNAVATAR_ENV_KEYS], async () => {
+    fn: async () => await withEnvRestored([...ROOTDATA_ENV_KEYS, ...OPENAI_ENV_KEYS, ...UNAVATAR_ENV_KEYS], async () => {
       const calls = [];
       const commandMap = {
         set: async () => ({

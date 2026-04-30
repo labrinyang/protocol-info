@@ -12,7 +12,7 @@
 //        [--rootdata-id 8583] --output /path/to/rootdata-packet.json
 //
 // CLI exit codes: 0=success, 1=fatal (API error or no project found),
-//                 3=invalid args, 4=missing ROOTDATA_API_KEY env var.
+//                 3=invalid args, 4=missing ROOTDATA_API_KEY(S) env var.
 
 import { writeFileSync } from 'node:fs';
 
@@ -25,17 +25,17 @@ const httpFetch = globalThis.fetch;
 // ── Public fetcher interface (FETCHER_INTERFACE.md) ────────────────────
 
 // `hints` is accepted but currently unused; reserved for future guided-search use.
-export default async function fetch({ slug, displayName, hints, rootdataId, env, logger }) {
-  const apiKey = env?.ROOTDATA_API_KEY;
-  if (!apiKey) {
+export default async function fetch({ slug, displayName, hints, rootdataId, env, logger, fetchImpl, random }) {
+  const apiKeys = rootDataApiKeysFromEnv(env);
+  if (apiKeys.length === 0) {
     return {
       name: 'rootdata', ok: false, data: null,
-      error: 'ROOTDATA_API_KEY not set',
+      error: 'ROOTDATA_API_KEY(S) not set',
       cost_usd: 0, fetched_at: new Date().toISOString(),
     };
   }
   try {
-    const data = await collectRootDataPacket({ slug, displayName, hints, rootdataId, apiKey, logger });
+    const data = await collectRootDataPacket({ slug, displayName, hints, rootdataId, apiKeys, logger, fetchImpl, random });
     return { name: 'rootdata', ok: true, data, cost_usd: 0, fetched_at: new Date().toISOString() };
   } catch (err) {
     logger?.warn?.(`rootdata fetch failed: ${err.message}`);
@@ -43,14 +43,14 @@ export default async function fetch({ slug, displayName, hints, rootdataId, env,
   }
 }
 
-export async function search({ query, type = 'project', limit = 5, env, logger }) {
-  const apiKey = env?.ROOTDATA_API_KEY;
-  if (!apiKey) {
-    return { channel: 'rootdata', query, type, ok: false, error: 'ROOTDATA_API_KEY not set', results: [], fetched_at: new Date().toISOString() };
+export async function search({ query, type = 'project', limit = 5, env, logger, fetchImpl, random }) {
+  const apiKeys = rootDataApiKeysFromEnv(env);
+  if (apiKeys.length === 0) {
+    return { channel: 'rootdata', query, type, ok: false, error: 'ROOTDATA_API_KEY(S) not set', results: [], fetched_at: new Date().toISOString() };
   }
   const rootType = type === 'person' ? 3 : 1;
   try {
-    const results = await apiPost('/open/ser_inv', { query, type: rootType }, apiKey);
+    const results = await apiPost('/open/ser_inv', { query, type: rootType }, apiKeys, { logger, fetchImpl, random });
     return {
       channel: 'rootdata',
       query,
@@ -63,6 +63,27 @@ export async function search({ query, type = 'project', limit = 5, env, logger }
     logger?.warn?.(`rootdata search failed: ${err.message}`);
     return { channel: 'rootdata', query, type, ok: false, error: err.message, results: [], fetched_at: new Date().toISOString() };
   }
+}
+
+export function rootDataApiKeysFromEnv(env = process.env) {
+  const values = [];
+  const add = (value) => {
+    if (typeof value !== 'string') return;
+    for (const part of value.split(/[\s,;]+/)) {
+      const trimmed = part.trim();
+      if (trimmed) values.push(trimmed);
+    }
+  };
+  add(env?.ROOTDATA_API_KEYS);
+  add(env?.ROOTDATA_API_KEY);
+  for (const key of Object.keys(env || {}).sort()) {
+    if (/^ROOTDATA_API_KEY_\d+$/i.test(key)) add(env[key]);
+  }
+  return [...new Set(values)];
+}
+
+export function hasRootDataApiKeys(env = process.env) {
+  return rootDataApiKeysFromEnv(env).length > 0;
 }
 
 // ── CLI parsing ───────────────────────────────────────────────────────
@@ -89,8 +110,19 @@ function parseArgs(argv) {
 
 // ── API helpers ───────────────────────────────────────────────────────
 
-async function apiPost(endpoint, body, apiKey) {
-  const res = await httpFetch(`${API_BASE}${endpoint}`, {
+function rotateKeys(apiKeys, random = Math.random) {
+  const keys = Array.isArray(apiKeys) ? apiKeys.filter(Boolean) : [apiKeys].filter(Boolean);
+  if (keys.length <= 1) return keys;
+  const start = Math.max(0, Math.min(keys.length - 1, Math.floor(random() * keys.length)));
+  return keys.slice(start).concat(keys.slice(0, start));
+}
+
+function keyLabel(index, total) {
+  return total <= 1 ? 'key' : `key ${index + 1}/${total}`;
+}
+
+async function apiPostOnce(endpoint, body, apiKey, fetchImpl = httpFetch) {
+  const res = await fetchImpl(`${API_BASE}${endpoint}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -102,25 +134,46 @@ async function apiPost(endpoint, body, apiKey) {
   });
   if (!res.ok) {
     const errBody = (await res.text()).slice(0, 500);
-    throw new Error(`RootData ${endpoint} HTTP ${res.status}: ${errBody}`);
+    const err = new Error(`RootData ${endpoint} HTTP ${res.status}: ${errBody}`);
+    err.status = res.status;
+    throw err;
   }
   const json = await res.json();
   if (json.result !== 200 && json.code !== 200) {
-    throw new Error(`RootData ${endpoint} result ${json.result ?? json.code}: ${json.message ?? JSON.stringify(json)}`);
+    const err = new Error(`RootData ${endpoint} result ${json.result ?? json.code}: ${json.message ?? JSON.stringify(json)}`);
+    err.result = json.result ?? json.code;
+    throw err;
   }
   return json.data;
 }
 
-async function searchProject(query, apiKey) {
-  return apiPost('/open/ser_inv', { query, type: 1 }, apiKey);
+async function apiPost(endpoint, body, apiKeys, { logger, fetchImpl = httpFetch, random = Math.random } = {}) {
+  const keys = rotateKeys(Array.isArray(apiKeys) ? apiKeys : [apiKeys], random);
+  if (keys.length === 0) throw new Error('ROOTDATA_API_KEY(S) not set');
+  let lastErr = null;
+  for (let i = 0; i < keys.length; i += 1) {
+    try {
+      return await apiPostOnce(endpoint, body, keys[i], fetchImpl);
+    } catch (err) {
+      lastErr = err;
+      if (i < keys.length - 1) {
+        logger?.warn?.(`RootData ${endpoint} failed with ${keyLabel(i, keys.length)}; trying fallback key: ${err.message}`);
+      }
+    }
+  }
+  throw lastErr;
 }
 
-async function searchPeople(query, apiKey) {
-  return apiPost('/open/ser_inv', { query, type: 3 }, apiKey);
+async function searchProject(query, apiKeys, opts) {
+  return apiPost('/open/ser_inv', { query, type: 1 }, apiKeys, opts);
 }
 
-async function getItem(projectId, apiKey) {
-  return apiPost('/open/get_item', { project_id: projectId, include_investors: true }, apiKey);
+async function searchPeople(query, apiKeys, opts) {
+  return apiPost('/open/ser_inv', { query, type: 3 }, apiKeys, opts);
+}
+
+async function getItem(projectId, apiKeys, opts) {
+  return apiPost('/open/get_item', { project_id: projectId, include_investors: true }, apiKeys, opts);
 }
 
 export function extractProviderLogoUrl(item) {
@@ -307,14 +360,15 @@ function separateInvestors(investors) {
 
 // ── Core packet collector ─────────────────────────────────────────────
 
-async function collectRootDataPacket({ slug, displayName, hints, rootdataId, apiKey, logger }) {
+async function collectRootDataPacket({ slug, displayName, hints, rootdataId, apiKeys, logger, fetchImpl, random }) {
   let projectId = rootdataId;
   let projectSearchHit = null;
+  const apiOpts = { logger, fetchImpl, random };
 
   // Step 1: Resolve project ID if not provided
   if (!projectId) {
     logger?.info?.(`[rootdata] Searching for project "${displayName}"...`);
-    const results = await searchProject(displayName, apiKey);
+    const results = await searchProject(displayName, apiKeys, apiOpts);
     if (!Array.isArray(results) || results.length === 0) {
       throw new Error(`No project found for "${displayName}"`);
     }
@@ -331,7 +385,7 @@ async function collectRootDataPacket({ slug, displayName, hints, rootdataId, api
 
   // Step 2: Get project detail
   logger?.info?.(`[rootdata] Fetching project detail (ID ${projectId})...`);
-  const item = await getItem(projectId, apiKey);
+  const item = await getItem(projectId, apiKeys, apiOpts);
   if (!item) {
     throw new Error(`get_item returned empty for ID ${projectId}`);
   }
@@ -345,7 +399,7 @@ async function collectRootDataPacket({ slug, displayName, hints, rootdataId, api
   logger?.info?.(`[rootdata] Searching for team members...`);
   let people = [];
   try {
-    people = await searchPeople(displayName, apiKey);
+    people = await searchPeople(displayName, apiKeys, apiOpts);
   } catch (e) {
     logger?.info?.(`[rootdata] People search failed: ${e.message}`);
   }
@@ -400,9 +454,9 @@ async function collectRootDataPacket({ slug, displayName, hints, rootdataId, api
 // ── CLI entry (legacy, used by run.sh) ────────────────────────────────
 
 async function main() {
-  const apiKey = process.env.ROOTDATA_API_KEY;
-  if (!apiKey) {
-    process.stderr.write('ROOTDATA_API_KEY env var is required\n');
+  const apiKeys = rootDataApiKeysFromEnv(process.env);
+  if (apiKeys.length === 0) {
+    process.stderr.write('ROOTDATA_API_KEY or ROOTDATA_API_KEYS env var is required\n');
     process.exit(4);
   }
 
@@ -419,7 +473,7 @@ async function main() {
     displayName,
     hints: '',
     rootdataId,
-    apiKey,
+    apiKeys,
     logger,
   });
 

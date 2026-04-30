@@ -171,6 +171,46 @@ echo '{"session_id":"s","total_cost_usd":0.01,"num_turns":1,"structured_output":
     },
   },
   {
+    name: 'times out and does not retry hung invocations',
+    fn: async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'claude-timeout-'));
+      const claudePath = join(dir, 'claude');
+      const script = `#!/bin/bash
+cat > /dev/null
+sleep 5
+echo '{"session_id":"late","total_cost_usd":0,"num_turns":1,"structured_output":{"ok":true}}'
+`;
+      await writeFile(claudePath, script);
+      await chmod(claudePath, 0o755);
+      try {
+        const started = Date.now();
+        let spawnCount = 0;
+        await assert.rejects(() => runClaude({
+          claudeBin: claudePath,
+          userPrompt: 'x',
+          schemaJson: {},
+          maxTurns: 1,
+          maxBudgetUsd: 0.01,
+          retryOnTransient: true,
+          retryDelayMs: 10,
+          timeoutMs: 250,
+          killGraceMs: 10,
+          onSpawn: () => { spawnCount++; },
+        }), (err) => {
+          assert.equal(err.kind, 'timeout');
+          assert.equal(err.timeout_ms, 250);
+          assert.ok(err.elapsed_ms >= 200, `elapsed_ms too small: ${err.elapsed_ms}`);
+          assert.ok(err.pid > 0, `expected pid, got ${err.pid}`);
+          return true;
+        });
+        assert.ok(Date.now() - started < 1000, 'timeout test took too long');
+        assert.equal(spawnCount, 1);
+      } finally {
+        await rm(dir, { recursive: true });
+      }
+    },
+  },
+  {
     name: 'does not retry a transient failure more than once',
     fn: async () => {
       const dir = await mkdtemp(join(tmpdir(), 'claude-one-retry-'));

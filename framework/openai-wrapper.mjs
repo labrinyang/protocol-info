@@ -112,7 +112,9 @@ async function requestChatCompletion({
 }) {
   const endpoint = `${trimSlash(baseUrl)}/chat/completions`;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? setTimeout(() => controller.abort(), timeoutMs)
+    : null;
   try {
     const response = await fetchImpl(endpoint, {
       method: 'POST',
@@ -148,7 +150,7 @@ async function requestChatCompletion({
     }
     return body;
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 }
 

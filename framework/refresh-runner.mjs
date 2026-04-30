@@ -52,7 +52,7 @@ export async function runRefreshSubtask({
   const gapsSchema = JSON.parse(await readFile(join(FRAMEWORK_DIR, 'schemas/gaps.schema.json'), 'utf8'));
   let rootdata = await readJsonDefault(join(outputRoot, slug, '_debug', 'rootdata.json'), {});
   if (subtaskName === 'audits') {
-    const auditReports = await collectAuditReports({ record: existingRecord });
+    const auditReports = await collectAuditReports({ record: existingRecord, env });
     rootdata = mergeAuditReportEvidence(rootdata, auditReports);
   }
   const evidence = {

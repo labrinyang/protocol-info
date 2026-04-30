@@ -42,8 +42,8 @@ values.
 
 RootData key lookup order:
 
-1. `--rootdata-key <key>` CLI flag (one-shot; never written to disk)
-2. `ROOTDATA_API_KEY` exported in the calling shell
+1. `--rootdata-key <key>` CLI flag (one-shot; never written to disk; comma/newline lists are allowed)
+2. `ROOTDATA_API_KEYS` or `ROOTDATA_API_KEY` exported in the calling shell
 3. `~/.config/protocol-info/.env` (recommended for plugin users — survives plugin updates)
 4. `<repo>/.env` (standalone CLI only; ignored when installed via the plugin cache)
 
@@ -55,13 +55,24 @@ echo "ROOTDATA_API_KEY=sk-..." > ~/.config/protocol-info/.env
 chmod 600 ~/.config/protocol-info/.env
 ```
 
+For concurrent batches, put multiple keys in the same config. RootData calls
+start from a random key and fall back across the pool when a key is rate-limited
+or fails:
+
+```bash
+ROOTDATA_API_KEYS=sk-a,sk-b,sk-c
+# or:
+ROOTDATA_API_KEY_1=sk-a
+ROOTDATA_API_KEY_2=sk-b
+```
+
 Or use it once without writing a file:
 
 ```bash
-/protocol-info:protocol-info --rootdata-key sk-... --display-name "Pendle"
+/protocol-info:protocol-info --rootdata-key sk-a,sk-b --display-name "Pendle"
 ```
 
-The startup banner reports which source the key came from (`shell-env`, `--rootdata-key`, or the resolved `.env` path). Without `ROOTDATA_API_KEY`, the pipeline still works and simply skips RootData-backed evidence.
+The startup banner reports key count and source (`shell-env`, `--rootdata-key`, or the resolved `.env` path). Without RootData keys, the pipeline still works and simply skips RootData-backed evidence.
 
 Paid Unavatar key for member/auditor avatar rehosting:
 
@@ -112,14 +123,29 @@ evidence-only R2 and fails closed when the deterministic gate rejects the
 result. `--r2-routing external_first_with_claude_fallback` or
 `R2_ROUTING=external_first_with_claude_fallback` runs the same external pass
 first, then falls back to Claude web reconcile when the gate rejects the result.
-`REFRESH_AUDITS_LLM_PROVIDER=openai` is also allowed because audit report text
-is extracted deterministically before the model call and the refresh uses an
-evidence-only audits prompt. R1 and other refresh subtasks stay on Claude by
-policy unless the manifest explicitly opts them in.
+`AUDIT_REPORTS_LLM_PROVIDER=openai` enables an external structured reading pass
+over fetched audit report text before R2; `REFRESH_AUDITS_LLM_PROVIDER=openai`
+is also allowed because audit report text is extracted deterministically before
+the model call and the refresh uses an evidence-only audits prompt. R1 and
+other refresh subtasks stay on Claude by policy unless the manifest explicitly
+opts them in.
 OpenAI-compatible gateway calls report `cost_usd: null` until pricing env vars
 are configured; with pricing, external routes can participate in `--max-budget`
 accounting. The startup banner reports OpenAI-compatible key/base/model/pricing
 sources without printing the API key.
+
+Long-running Claude invocations have a wall-clock watchdog so one stalled web
+research subtask cannot block the batch queue indefinitely. Defaults:
+
+```bash
+# 30 minutes by default; set to 0 only when deliberately disabling the watchdog.
+CLAUDE_TIMEOUT_MS=1800000
+# Stage/provider-specific overrides are supported.
+R1_CLAUDE_TIMEOUT_MS=1800000
+R2_CLAUDE_TIMEOUT_MS=2400000
+# R1 writes out/<slug>/_debug/r1/r1-status.json and emits progress heartbeats.
+R1_HEARTBEAT_MS=60000
+```
 
 After installation, you can call the slash command directly:
 
@@ -222,7 +248,7 @@ Workflow commands on an existing `out/<slug>/`:
 Write commands normalize deterministic fields, validate the full record,
 invalidate stale i18n artifacts when source fields change, run post-processing
 so `record.import.json` stays aligned, create one scoped local git commit in
-`out/`, and refresh `out/index.html`. `analyze` without `--apply` is
+`out/`. The live browser reads the updated `out/` tree directly. `analyze` without `--apply` is
 proposal-only and writes nothing. Workflow commands can use one-shot
 `--openai-*` config flags; `analyze` and `refresh` also accept
 `--llm-provider openai`. External refresh is policy-allowed for `audits`; other
@@ -298,28 +324,38 @@ trailer. Batch scratch files are written under:
 out/.runs/<run-id>/
 ```
 
-Every completed run also refreshes:
+Review output with the live out browser:
 
-```text
-out/index.html
+```bash
+./run.sh browse
+# or:
+node framework/out-browser.mjs --out ./out --port 8765
 ```
 
-`out/index.html` is a self-contained local review console for the output tree. Open it directly in a browser to filter protocols, inspect artifacts, review per-protocol changes, check logo asset coverage, copy workflow commands, and copy one merged import JSON for the visible records. Its detail pane has four modes:
+The browser server reads the current `out/` tree on every API request and the
+page polls it automatically, so edits to `out/<slug>/record.json` show up
+without regenerating HTML. It lets you filter protocols, inspect artifacts,
+review per-protocol changes, check logo asset coverage, copy workflow commands,
+and copy one merged import JSON for the visible records. Record counts are
+computed from the current `record.json` so they stay accurate even when a
+per-slug `summary.tsv` is absent. JSON artifacts show shape/key chips, syntax
+highlighting, raw copy, minified copy, and direct file links. Diffs are shown as
+colored per-line commit diffs with copy support. Its detail pane has four
+modes:
 
-- `Artifacts` — preview/copy `record.json`, `record.import.json`, `record.full.json`, findings, gaps, changes, and meta files.
-- `Changes` — view the slug-scoped local git history plus the latest diff stats and unified diff.
+- `Artifacts` — preview/copy `record.json`, `record.import.json`, `record.full.json`, findings, gaps, changes, and meta files, with JSON-oriented inspection controls.
+- `Changes` — view the slug-scoped local git history plus latest diff stats and a colored unified diff.
 - `Assets` — inspect provider, member, and audit logo assets, including whether the local file exists under the uploadable logo folders.
 - `Commands` — copy common `get`, `set`, `analyze`, `i18n`, `refresh`, `history`, `diff`, and `restore` commands for the selected protocol.
 
-It embeds only review artifacts; raw Claude/debug logs stay under `_debug/`.
+It serves only review artifacts; raw Claude/debug logs stay under `_debug/`.
 
-![out/index.html — protocol review console with artifacts, changes, assets, commands, and run filters](docs/images/out-browser.png)
+![Live out browser — protocol review console with artifacts, changes, assets, commands, and run filters](docs/images/out-browser.png)
 
 Typical files:
 
 | File | Purpose |
 | --- | --- |
-| `../index.html` | Static local browser for reviewing protocol artifacts, history, commit diffs, and copying key outputs. |
 | `record.json` | Source-language `EarnProtocolInfo` record that passed schema validation. Review/audit file, not the dashboard import envelope. |
 | `record.full.json` | Inline i18n version, present only when translations were generated. |
 | `record.import.json` | Dashboard import envelope: `{ version, exportedAt, data: [...] }`. Use this for import. `sources` is stripped. |
@@ -406,7 +442,7 @@ R2 merges R1 slices and evidence with an audit-first policy:
 
 - High-confidence R1 fields are not overwritten by uncited R2 changes.
 - R2 can add missing fields when it has cited evidence.
-- Audit `reportUrl` PDF/HTML pages discovered by R1 are downloaded and text-extracted before R2; the resulting `audit_reports` evidence helps verify audit dates, scopes, auditors, and report URLs.
+- Audit `reportUrl` PDF/HTML pages discovered by R1 are downloaded and text-extracted before R2. GitHub blob links are tried as raw report URLs first. When `AUDIT_REPORTS_LLM_PROVIDER=openai` is configured, the fetched report text is also sent through an external structured reading pass; the resulting `audit_reports` evidence helps verify audit dates, scopes, auditors, and report URLs.
 - Claude R2 uses the web reconcile prompt and can perform fresh WebFetch/WebSearch. OpenAI-compatible R2 uses an evidence-only prompt. With `external_first`, the external result must pass schema validation, merge-guard checks, and high-risk change checks before it is accepted; otherwise R2 fails closed. With `external_first_with_claude_fallback`, Claude R2 reruns from the original R1 record plus any enriched search evidence when the external result is rejected.
 - Search requests are limited and routed through approved fetcher search channels.
 - Every accepted change is recorded in `changes.json`.
@@ -527,7 +563,7 @@ Important constraints:
 
 Recommended review flow:
 
-1. Open `out/index.html` or `out/.runs/<run-id>/summary.tsv`.
+1. Run `./run.sh browse` and open the printed local URL, or inspect `out/.runs/<run-id>/summary.tsv`.
 2. For each `OK` row, review `out/<slug>/record.json`.
 3. In the `Assets` panel, confirm provider, member, and auditor logos exist locally before uploading the logo folders.
 4. Check `findings.json` for source coverage.
@@ -557,7 +593,7 @@ CLAUDE_BIN=/path/to/claude ./run.sh --display-name "Pendle"
 
 ### RootData is disabled
 
-Pass `--rootdata-key sk-...` for a one-shot run, export `ROOTDATA_API_KEY` in your shell, or write it to `~/.config/protocol-info/.env` (preferred) or `<repo>/.env`. The startup banner shows which source was used. Without a key, RootData fetch and search channels are skipped. Paid Unavatar uses `--unavatar-key` or `UNAVATAR_API_KEY` from the same config locations.
+Pass `--rootdata-key sk-a,sk-b` for a one-shot run, export `ROOTDATA_API_KEYS` / `ROOTDATA_API_KEY` in your shell, or write it to `~/.config/protocol-info/.env` (preferred) or `<repo>/.env`. The startup banner shows key count and source. Without a key, RootData fetch and search channels are skipped. Paid Unavatar uses `--unavatar-key` or `UNAVATAR_API_KEY` from the same config locations.
 
 ### `SCHEMA_FAIL`
 

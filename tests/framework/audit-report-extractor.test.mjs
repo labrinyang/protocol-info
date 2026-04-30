@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert';
 import {
   auditReportUrlsFromRecord,
+  candidateReportUrls,
   collectAuditReportEvidence,
   detectDateHints,
   detectScopeHints,
@@ -48,6 +49,16 @@ export const tests = [
     },
   },
   {
+    name: 'candidateReportUrls prefers raw GitHub report URLs before blob pages',
+    fn: async () => {
+      assert.deepEqual(candidateReportUrls('https://github.com/org/repo/blob/main/reports/audit.pdf'), [
+        'https://github.com/org/repo/raw/main/reports/audit.pdf',
+        'https://raw.githubusercontent.com/org/repo/main/reports/audit.pdf',
+        'https://github.com/org/repo/blob/main/reports/audit.pdf',
+      ]);
+    },
+  },
+  {
     name: 'collectAuditReportEvidence extracts PDF text and hints without real pdftotext',
     fn: async () => {
       const evidence = await collectAuditReportEvidence({
@@ -74,6 +85,132 @@ This report reviews the protocol smart contracts.
       assert.ok(evidence.reports[0].scope_hints.some((line) => line.includes('Core protocol contracts')));
       assert.match(evidence.reports[0].text_excerpt, /Security Assessment/);
       assert.equal(evidence.reports[0].extraction, 'pdf');
+    },
+  },
+  {
+    name: 'collectAuditReportEvidence reads fetched audit text with external OpenAI-compatible LLM when enabled',
+    fn: async () => {
+      let prompt = '';
+      const evidence = await collectAuditReportEvidence({
+        record: {
+          audits: {
+            items: [
+              { auditor: 'Zokyo', date: null, scope: null, reportUrl: 'https://github.com/org/repo/blob/main/almanak.pdf' },
+            ],
+          },
+        },
+        env: {
+          AUDIT_REPORTS_LLM_PROVIDER: 'openai',
+          OPENAI_API_KEY: 'test-key',
+          OPENAI_MODEL: 'gpt-test',
+          OPENAI_BASE_URL: 'https://llm.example/v1',
+        },
+        fetchImpl: async (url) => {
+          assert.match(url, /\/raw\/main\/almanak\.pdf$/);
+          return response({ contentType: 'application/pdf', body: 'pdf-bytes' });
+        },
+        extractPdfText: async (_bytes, opts) => {
+          assert.equal(opts.maxPages, 25);
+          return 'Zokyo Audit\\nDate: 2025-05-06\\nScope: Almanak protocol smart contracts.';
+        },
+        runLLM: async ({ userPrompt, model, baseUrl, apiKey }) => {
+          prompt = userPrompt;
+          assert.equal(model, 'gpt-test');
+          assert.equal(baseUrl, 'https://llm.example/v1');
+          assert.equal(apiKey, 'test-key');
+          return {
+            model,
+            total_cost_usd: null,
+            usage: { prompt_tokens: 10, completion_tokens: 5 },
+            structured_output: {
+              reportTitle: 'Zokyo Audit',
+              auditor: 'Zokyo',
+              reportDate: '2025-05-06',
+              scope: 'Almanak protocol smart contracts',
+              executiveSummary: 'Security review of Almanak smart contracts.',
+              inScope: ['Almanak protocol smart contracts'],
+              findingsSummary: [],
+              evidenceQuotes: ['Scope: Almanak protocol smart contracts.'],
+              confidence: 0.92,
+            },
+          };
+        },
+      });
+
+      assert.match(prompt, /Fetched report text/);
+      assert.match(prompt, /Almanak protocol smart contracts/);
+      assert.equal(evidence.reports.length, 1);
+      assert.equal(evidence.reports[0].fetched_url, 'https://github.com/org/repo/raw/main/almanak.pdf');
+      assert.equal(evidence.reports[0].llm_reading.output.reportDate, '2025-05-06');
+      assert.deepEqual(evidence.llm, { provider: 'openai', attempted: 1, ok: 1, failed: 0 });
+    },
+  },
+  {
+    name: 'collectAuditReportEvidence keeps report evidence when external LLM reading fails',
+    fn: async () => {
+      const evidence = await collectAuditReportEvidence({
+        record: {
+          audits: { items: [{ auditor: 'Certora', reportUrl: 'https://example.com/report.html' }] },
+        },
+        env: {
+          AUDIT_REPORTS_LLM_PROVIDER: 'openai',
+          OPENAI_API_KEY: 'test-key',
+          OPENAI_MODEL: 'gpt-test',
+        },
+        fetchImpl: async () => response({
+          contentType: 'text/html',
+          body: '<html><body>Certora Audit Scope: Vault contracts. 2024-06</body></html>',
+        }),
+        runLLM: async () => {
+          throw new Error('gateway down');
+        },
+      });
+      assert.equal(evidence.reports.length, 1);
+      assert.match(evidence.reports[0].llm_error, /gateway down/);
+      assert.deepEqual(evidence.llm, { provider: 'openai', attempted: 1, ok: 0, failed: 1 });
+    },
+  },
+  {
+    name: 'collectAuditReportEvidence lets external LLM read beyond deterministic excerpt',
+    fn: async () => {
+      let prompt = '';
+      const lateText = 'late findings table: critical issue summary';
+      const evidence = await collectAuditReportEvidence({
+        record: {
+          audits: { items: [{ auditor: 'Long Report', reportUrl: 'https://example.com/report.txt' }] },
+        },
+        env: {
+          AUDIT_REPORTS_LLM_PROVIDER: 'openai',
+          OPENAI_API_KEY: 'test-key',
+          OPENAI_MODEL: 'gpt-test',
+        },
+        fetchImpl: async () => response({
+          contentType: 'text/plain',
+          body: `short intro ${'x'.repeat(80)} ${lateText}`,
+        }),
+        maxTextChars: 20,
+        maxLLMTextChars: 160,
+        runLLM: async ({ userPrompt }) => {
+          prompt = userPrompt;
+          return {
+            model: 'gpt-test',
+            structured_output: {
+              reportTitle: null,
+              auditor: 'Long Report',
+              reportDate: null,
+              scope: null,
+              executiveSummary: null,
+              inScope: [],
+              findingsSummary: ['critical issue summary'],
+              evidenceQuotes: [lateText],
+              confidence: 0.8,
+            },
+          };
+        },
+      });
+      assert.doesNotMatch(evidence.reports[0].text_excerpt, /late findings table/);
+      assert.match(prompt, /late findings table/);
+      assert.equal(evidence.reports[0].llm_reading.output.findingsSummary[0], 'critical issue summary');
     },
   },
   {

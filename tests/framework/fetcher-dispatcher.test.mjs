@@ -66,6 +66,30 @@ export const tests = [
     },
   },
   {
+    name: 'ROOTDATA_API_KEYS satisfies legacy ROOTDATA_API_KEY fetcher gate',
+    fn: async () => {
+      await withFakeFetcher(
+        `export default async (ctx) => ({ name: 'rootdata', ok: true, data: {keys: ctx.env.ROOTDATA_API_KEYS}, cost_usd: 0, fetched_at: 'now' });`,
+        async (rdPath) => {
+          const packet = await dispatchFetchers({
+            fetchers: [
+              { name: 'rootdata', module_abs: rdPath, optional: true, required_env: ['ROOTDATA_API_KEY'] },
+            ],
+            ctx: {
+              slug: 's',
+              displayName: 'S',
+              hints: '',
+              env: { ROOTDATA_API_KEYS: 'a,b' },
+              logger: { info: () => {}, warn: () => {} },
+            },
+          });
+          assert.equal(packet.fetcher_status.rootdata, 'ok');
+          assert.deepEqual(packet.rootdata, { keys: 'a,b' });
+        },
+      );
+    },
+  },
+  {
     name: 'continues when an optional fetcher fails',
     fn: async () => {
       await withFakeFetcher(

@@ -14,7 +14,7 @@ Run the protocol-info crawler pipeline with the user's arguments. The pipeline i
 4. **Normalize** — deterministic post-R2 fixes, including RootData member avatars, RootData-backed audit logos, rehosted provider/member/audit logos, and `oneLiner` placeholder cleanup
 5. **Validate** — zero-dep JSON Schema validation
 6. **i18n** (optional) — Claude Haiku by default, or `I18N_PROVIDER=openai` for OpenAI-compatible API translation
-7. **Post/export + history** — writes dashboard import artifacts, scoped local git commits, and `out/index.html`
+7. **Post/export + history** — writes dashboard import artifacts and scoped local git commits; review uses the live out browser
 
 The same runner also supports workflow subcommands on an existing
 `out/<slug>/`: `get`, `set`, `analyze`, `i18n`, `refresh`, `history`, `diff`,
@@ -42,7 +42,7 @@ protocol history stable across plugin updates.
 The notes below describe full crawl output. Workflow subcommands are shorter:
 read-only commands print their direct result, and write commands validate,
 normalize deterministic fields, invalidate stale i18n, post-process, commit
-inside `out/`, and refresh `out/index.html`.
+inside `out/`; the live out browser reads the updated JSON directly.
 
 Claude Code captures Bash stdout/stderr as plain text command output, not rich markdown. The runner therefore prints only low-frequency key lines:
 
@@ -51,22 +51,27 @@ Claude Code captures Bash stdout/stderr as plain text command output, not rich m
 - R0/R1/R2/i18n/post stage start or completion
 - one heartbeat per long-running R1/R2/i18n stage, at most once per minute
 - final `=== Summary ===` table
-- an `Out browser:` path to `out/index.html`
+- an `Out browser:` command for starting the live browser
 
-Do not ask the script to stream raw Claude/debug logs. They are written under `out/<slug>/_debug/`. The generated `out/index.html` is a static local page for reviewing protocol artifacts, filtering by recent runs, viewing git history, comparing the latest commit with the previous commit, and copying key artifacts.
+Do not ask the script to stream raw Claude/debug logs. They are written under `out/<slug>/_debug/`. The live out browser reviews protocol artifacts, filters recent runs, shows git history and latest diffs, and copies key artifacts. It reads the current `out/` tree directly, so `out/<slug>/record.json` changes appear without regenerating HTML.
+R1 also writes live subtask telemetry to `out/<slug>/_debug/r1/r1-status.json`
+with queued/running/ok/failed state, pid, elapsed time, timeout, and error kind.
+Claude invocations have a default wall-clock watchdog (`CLAUDE_TIMEOUT_MS`,
+30 minutes; `R1_CLAUDE_TIMEOUT_MS` overrides R1), so a stalled subtask fails as
+`error_kind=timeout` and the R1 partial path can continue.
 
 ## After the run finishes
 
-Keep the reply tight. The reviewer's main tool is `out/index.html` — surface it first and let them open it. Per-record JSON paths are inside the HTML browser already, so do not enumerate them in the reply.
+Keep the reply tight. The reviewer's main tool is the live out browser — surface the printed command first. Per-record JSON paths are inside the browser already, so do not enumerate them in the reply.
 
 Required reply shape for full crawl runs (in this order, nothing else unless something failed):
 
 1. **One-line outcome.** Pull the OK / FAIL / PARTIAL counts from the `=== Summary ===` block. Example: `Done — 2 OK, 0 fail. i18n: zh_CN, ja_JP, en_US.` Skip the i18n clause when `--i18n none` or unset.
-2. **Out browser link.** Take the `Out browser:` path printed at the end of stdout and surface it as the primary call to action. Format:
+2. **Out browser command.** Take the `Out browser:` command printed at the end of stdout and surface it as the primary call to action. Format:
 
-   > **Open the run browser**: `<absolute path to out/index.html>` — Cmd-click to open in your browser (macOS), or copy the path.
+   > **Open the run browser**: run `<printed Out browser command>`, then open the printed local URL.
 
-   Use the absolute path verbatim from stdout (do not abbreviate to `out/index.html`); Claude Code makes absolute paths clickable.
+   Use the command verbatim from stdout; it includes the resolved `--out` path.
 3. **Failures only when present.** If any row shows `CRAWL_FAIL`, `PARSE_FAIL`, or `SCHEMA_FAIL`, list those slugs after the link with the failure stage from the summary — stderr already dumped the details, do not re-investigate unless the user asks. If `i18n` is partial (`3/19`), name the locales that failed (read `out/<slug>/_debug/i18n/failures.log` only if the user asks).
 
 For workflow subcommands, summarize the command result directly. For
@@ -112,7 +117,7 @@ The runner's startup banner reports which source supplied the key.
 
 To enable Round 2 via plugin without writing a file:
 ```
-/protocol-info:protocol-info --rootdata-key sk-... --display-name "Pendle"
+/protocol-info:protocol-info --rootdata-key sk-a,sk-b --display-name "Pendle"
 ```
 
 Or persist the key once:
@@ -121,6 +126,11 @@ mkdir -p ~/.config/protocol-info
 echo "ROOTDATA_API_KEY=sk-..." > ~/.config/protocol-info/.env
 chmod 600 ~/.config/protocol-info/.env
 ```
+
+For concurrent batches, `ROOTDATA_API_KEYS=sk-a,sk-b,sk-c` or numbered
+`ROOTDATA_API_KEY_1` / `ROOTDATA_API_KEY_2` entries are supported. RootData
+requests start from a random key and fall back across the pool on rate-limit or
+API failure.
 
 `UNAVATAR_API_KEY` is optional but recommended for stable paid avatar/logo
 rehosting. It follows the same lookup order as RootData, or can be passed once
@@ -136,6 +146,7 @@ External LLM provider knobs:
 - `I18N_PROVIDER=openai` routes i18n to an OpenAI-compatible Chat Completions API.
 - `R2_LLM_PROVIDER=openai` routes R2 synthesis to that API.
 - `ANALYZE_LLM_PROVIDER=openai` routes workflow `analyze` to that API.
+- `AUDIT_REPORTS_LLM_PROVIDER=openai` asks the external LLM to structurally read fetched audit report text before R2.
 - `REFRESH_<SUBTASK>_LLM_PROVIDER=openai`, for example `REFRESH_AUDITS_LLM_PROVIDER=openai`, routes one refresh subtask.
 - `R2_ROUTING=external_first` or `--r2-routing external_first` tries OpenAI-compatible evidence-only R2 and fails closed when the deterministic gate rejects it.
 - `R2_ROUTING=external_first_with_claude_fallback` or `--r2-routing external_first_with_claude_fallback` tries OpenAI-compatible evidence-only R2 first and falls back to Claude web R2 when the deterministic gate rejects it.
@@ -151,4 +162,4 @@ Example:
 /protocol-info:protocol-info --openai-api-key sk-... --openai-base-url https://llm.example.com/v1 --openai-model gpt-5.5 --i18n all --display-name "Pendle"
 ```
 
-All OpenAI-compatible routes read `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL`. Configure `OPENAI_INPUT_COST_PER_1M` and `OPENAI_OUTPUT_COST_PER_1M`, or pass the matching one-shot pricing flags, to make those calls produce numeric `cost_usd` and participate in `--max-budget`; without pricing they report `cost_usd: null`. Stage policy allows external LLM by default for i18n, R2, analyze, and refresh audits, but blocks R1 and other refresh subtasks unless the manifest explicitly opts them in. Direct OpenAI-compatible R2 and external audit refresh use evidence-only prompts; Claude R2 and Claude refresh keep the web-research prompts. The startup banner reports key/base/model/pricing sources without printing the API key.
+All OpenAI-compatible routes read `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL`. Configure `OPENAI_INPUT_COST_PER_1M` and `OPENAI_OUTPUT_COST_PER_1M`, or pass the matching one-shot pricing flags, to make those calls produce numeric `cost_usd` and participate in `--max-budget`; without pricing they report `cost_usd: null`. Stage policy allows external LLM by default for i18n, R2, analyze, audit-report reading, and refresh audits, but blocks R1 and other refresh subtasks unless the manifest explicitly opts them in. Direct OpenAI-compatible R2 and external audit refresh use evidence-only prompts; Claude R2 and Claude refresh keep the web-research prompts. The startup banner reports key/base/model/pricing sources without printing the API key.

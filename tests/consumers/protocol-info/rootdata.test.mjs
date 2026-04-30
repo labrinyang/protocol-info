@@ -1,5 +1,19 @@
 import { strict as assert } from 'node:assert';
-import fetch, { extractProviderLogoUrl, search } from '../../../consumers/protocol-info/fetchers/rootdata.mjs';
+import fetch, {
+  extractProviderLogoUrl,
+  rootDataApiKeysFromEnv,
+  search,
+} from '../../../consumers/protocol-info/fetchers/rootdata.mjs';
+
+function rootdataResponse({ ok = true, status = 200, body }) {
+  const raw = JSON.stringify(body);
+  return {
+    ok,
+    status,
+    text: async () => raw,
+    json: async () => body,
+  };
+}
 
 export const tests = [
   {
@@ -39,6 +53,47 @@ export const tests = [
       assert.equal(result.channel, 'rootdata');
       assert.equal(result.ok, false);
       assert.deepEqual(result.results, []);
+    },
+  },
+  {
+    name: 'rootDataApiKeysFromEnv accepts plural, comma-separated, and numbered keys',
+    fn: async () => {
+      assert.deepEqual(rootDataApiKeysFromEnv({
+        ROOTDATA_API_KEYS: 'a, b\nc',
+        ROOTDATA_API_KEY: 'b',
+        ROOTDATA_API_KEY_2: 'd;e',
+        ROOTDATA_API_KEY_1: 'a',
+      }), ['a', 'b', 'c', 'd', 'e']);
+    },
+  },
+  {
+    name: 'search randomizes key start and falls back across RootData key pool',
+    fn: async () => {
+      const calls = [];
+      const result = await search({
+        query: 'Pendle',
+        type: 'project',
+        env: { ROOTDATA_API_KEYS: 'bad,good' },
+        random: () => 0,
+        fetchImpl: async (_url, opts) => {
+          const key = opts.headers.apikey;
+          calls.push(key);
+          if (key === 'bad') {
+            return rootdataResponse({
+              ok: false,
+              status: 429,
+              body: { result: 429, message: 'rate limited' },
+            });
+          }
+          return rootdataResponse({
+            body: { result: 200, data: [{ name: 'Pendle', id: 1 }] },
+          });
+        },
+        logger: { warn: () => {} },
+      });
+      assert.deepEqual(calls, ['bad', 'good']);
+      assert.equal(result.ok, true);
+      assert.deepEqual(result.results, [{ name: 'Pendle', id: 1 }]);
     },
   },
   {

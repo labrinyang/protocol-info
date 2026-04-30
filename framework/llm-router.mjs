@@ -49,6 +49,16 @@ function normalizeStage(stage) {
   return String(stage || 'llm').trim().toLowerCase();
 }
 
+function numericEnv(env, keys) {
+  for (const key of keys) {
+    const raw = env?.[key];
+    if (raw == null || raw === '') continue;
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+  }
+  return undefined;
+}
+
 function manifestProviderConfig(manifest, provider) {
   return manifest?.llm?.providers?.[provider] || null;
 }
@@ -137,6 +147,28 @@ export function resolveOpenAIPricing({ stage, env = process.env, manifest = null
     || manifestPricing;
 }
 
+export function resolveLLMTimeoutMs({ stage, provider = 'claude', timeoutMs = undefined, env = process.env } = {}) {
+  if (timeoutMs != null) {
+    const n = Number(timeoutMs);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined;
+  }
+  const normalized = normalizeStage(stage);
+  const parent = normalized.split(/[^a-z0-9]+/).filter(Boolean)[0];
+  const providerPrefix = String(provider || 'llm').toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+  return numericEnv(env, [
+    envKey(normalized, `${providerPrefix}_TIMEOUT_MS`),
+    envKey(normalized, 'LLM_TIMEOUT_MS'),
+    envKey(normalized, 'TIMEOUT_MS'),
+    ...(parent && parent !== normalized ? [
+      envKey(parent, `${providerPrefix}_TIMEOUT_MS`),
+      envKey(parent, 'LLM_TIMEOUT_MS'),
+      envKey(parent, 'TIMEOUT_MS'),
+    ] : []),
+    `${providerPrefix}_TIMEOUT_MS`,
+    'LLM_TIMEOUT_MS',
+  ]);
+}
+
 export async function runStructuredLLM({
   stage = 'llm',
   provider = null,
@@ -154,11 +186,14 @@ export async function runStructuredLLM({
   resumeSession = null,
   budgetLedger = null,
   budgetEnforced = false,
+  timeoutMs = undefined,
+  onSpawn = null,
   runClaudeImpl = runClaude,
   runOpenAIImpl = runOpenAIChatCompletion,
 }) {
   const selected = resolveLLMProvider({ stage, provider, env });
   assertProviderAllowed({ stage, provider: selected, manifest });
+  const resolvedTimeoutMs = resolveLLMTimeoutMs({ stage, provider: selected, timeoutMs, env });
   if (selected === 'claude') {
     return runClaudeImpl({
       claudeBin,
@@ -172,6 +207,9 @@ export async function runStructuredLLM({
       resumeSession,
       model,
       budgetLedger,
+      timeoutMs: resolvedTimeoutMs,
+      env,
+      onSpawn,
     });
   }
   if (selected === 'openai') {
@@ -193,6 +231,7 @@ export async function runStructuredLLM({
       pricing,
       maxBudgetUsd: budgetEnforced ? maxBudgetUsd : null,
       budgetLedger,
+      timeoutMs: resolvedTimeoutMs,
     });
   }
   throw Object.assign(new Error(`unsupported LLM provider "${selected}" for ${stage}`), {

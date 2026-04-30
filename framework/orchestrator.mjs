@@ -25,7 +25,6 @@ import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadManifest } from './manifest-loader.mjs';
 import { runWithLimit } from './parallel-runner.mjs';
-import { buildOutBrowser } from './out-browser.mjs';
 import { ensureRepo, commit, isClean, resetSlugToHead } from './version-store.mjs';
 import { invalidateI18nArtifacts } from './i18n-cache.mjs';
 import { cleanupCreatedLogoAssets } from './logo-assets.mjs';
@@ -881,12 +880,7 @@ export async function run({
   // ── Commit phase ─────────────────────────────────────────────────────────
   await commitOkSlugs(outputRoot, okSlugs, runId);
 
-  let outBrowserFile = null;
-  try {
-    outBrowserFile = await buildOutBrowser(outputRoot);
-  } catch (err) {
-    process.stderr.write(`out browser: failed to refresh index.html: ${err.message}\n`);
-  }
+  const outBrowserCommand = `${join(SCRIPT_DIR, 'run.sh')} browse --out ${outputRoot}`;
 
   // ── Print summary table (plain TSV → padded by computing column widths) ──
   console.log('');
@@ -896,7 +890,7 @@ export async function run({
   console.log(`Review source: ${outputRoot}/<slug>/record.json`);
   console.log(`Import JSON:   ${outputRoot}/<slug>/record.import.json`);
   console.log(`Batch summary: ${summaryFile}`);
-  if (outBrowserFile) console.log(`Out browser: ${outBrowserFile}`);
+  console.log(`Out browser:   ${outBrowserCommand}`);
 
   if (workerFailures.length > 0) {
     throw new Error(`${workerFailures.length} provider worker(s) crashed; see ${join(runMetaDir, '.worker-logs')}`);

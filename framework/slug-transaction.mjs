@@ -1,5 +1,4 @@
 import { ensureRepo, isClean, resetSlugToHead, commit } from './version-store.mjs';
-import { buildOutBrowser } from './out-browser.mjs';
 import { cleanupCreatedLogoAssets } from './logo-assets.mjs';
 
 export async function preflightWritableSlug(outputRoot, slug, { forceOverwrite = false } = {}) {
@@ -31,10 +30,10 @@ export async function rollbackSlugAndCleanup(outputRoot, slug, createdLogoAssetP
 export async function commitAndRebuild(
   outputRoot,
   { slug, message, runId, paths = null, extraPaths = [] },
-  { rebuild = buildOutBrowser } = {},
+  { rebuild = null } = {},
 ) {
   const commitPaths = [...new Set(paths || [`${slug}/`, ...extraPaths])];
   const sha = await commit(outputRoot, { paths: commitPaths, message, runId });
-  const browserPath = await rebuild(outputRoot);
+  const browserPath = typeof rebuild === 'function' ? await rebuild(outputRoot) : null;
   return { sha, browserPath };
 }

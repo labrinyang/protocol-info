@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.4.0] — 2026-04-30
+
+### Added
+- `./run.sh browse` is now the primary out browser. It reads the current
+  `out/` tree on demand, auto-refreshes when `out/<slug>/record.json` changes,
+  computes visible record counts from current JSON, renders JSON artifacts with
+  shape/key chips and syntax highlighting, supports minified JSON copy, and
+  shows colored copyable diffs.
+- RootData supports key pools via `ROOTDATA_API_KEYS`, comma/newline-separated
+  `ROOTDATA_API_KEY`, or numbered `ROOTDATA_API_KEY_N` variables. Requests
+  start from a random key and fall back across the pool on API failure.
+- Audit report extraction now tries raw GitHub report URLs before GitHub blob
+  pages and can run an external OpenAI-compatible structured reading pass over
+  fetched report text with `AUDIT_REPORTS_LLM_PROVIDER=openai`.
+- Claude invocations now have a configurable wall-clock watchdog
+  (`CLAUDE_TIMEOUT_MS`, with stage overrides such as `R1_CLAUDE_TIMEOUT_MS`).
+  R1 writes live subtask status to `_debug/r1/r1-status.json` and emits
+  heartbeat progress lines with running task names, pid, and elapsed time.
+
 ## [2.3.0] — 2026-04-30
 
 ### Changed

@@ -141,6 +141,34 @@ export const tests = [
     },
   },
   {
+    name: 'propagates timeout metadata from structured LLM failures',
+    fn: async () => {
+      let call = null;
+      const result = await runSubtask({
+        subtask: { name: 'team', max_turns: 5, max_budget_usd: 0.5, timeout_ms: 123 },
+        systemPrompt: 'sys',
+        userPrompt: 'usr',
+        schemaSlice: { type: 'object' },
+        runLLM: async (args) => {
+          call = args;
+          throw Object.assign(new Error('hung invocation'), {
+            kind: 'timeout',
+            pid: 4242,
+            elapsed_ms: 125,
+            timeout_ms: 123,
+          });
+        },
+      });
+
+      assert.equal(call.timeoutMs, 123);
+      assert.equal(result.ok, false);
+      assert.equal(result.error_kind, 'timeout');
+      assert.equal(result.pid, 4242);
+      assert.equal(result.elapsed_ms, 125);
+      assert.equal(result.timeout_ms, 123);
+    },
+  },
+  {
     name: 'returns ok:false when β-mode envelope is missing findings',
     fn: async () => {
       const env = JSON.stringify({

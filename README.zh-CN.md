@@ -40,8 +40,8 @@ shell 里已经导出的变量优先；`.env` 只补齐缺失变量。
 
 RootData key 解析顺序：
 
-1. `--rootdata-key <key>` CLI 参数（一次性，不写入磁盘）
-2. 调用 shell 中导出的 `ROOTDATA_API_KEY`
+1. `--rootdata-key <key>` CLI 参数（一次性，不写入磁盘；可传逗号/换行分隔的多个 key）
+2. 调用 shell 中导出的 `ROOTDATA_API_KEYS` 或 `ROOTDATA_API_KEY`
 3. `~/.config/protocol-info/.env`（推荐：插件用户使用，更新插件时不会被覆盖）
 4. `<repo>/.env`（仅独立 CLI；安装为插件时该路径在只读缓存里，会被忽略）
 
@@ -53,13 +53,23 @@ echo "ROOTDATA_API_KEY=sk-..." > ~/.config/protocol-info/.env
 chmod 600 ~/.config/protocol-info/.env
 ```
 
+并发批量跑时可以配置多个 key。每次 RootData API 调用会从随机 key 开始，
+遇到限流或失败会自动 fallback 到池里的其他 key：
+
+```bash
+ROOTDATA_API_KEYS=sk-a,sk-b,sk-c
+# 或：
+ROOTDATA_API_KEY_1=sk-a
+ROOTDATA_API_KEY_2=sk-b
+```
+
 或者临时使用一次：
 
 ```bash
-/protocol-info:protocol-info --rootdata-key sk-... --display-name "Pendle"
+/protocol-info:protocol-info --rootdata-key sk-a,sk-b --display-name "Pendle"
 ```
 
-启动横幅会标明 key 的来源（`shell-env`、`--rootdata-key`，或解析到的 `.env` 路径）。不配置 `ROOTDATA_API_KEY` 时，管线仍然可用，只会跳过 RootData 证据。
+启动横幅会标明 key 数量和来源（`shell-env`、`--rootdata-key`，或解析到的 `.env` 路径）。不配置 RootData key 时，管线仍然可用，只会跳过 RootData 证据。
 
 付费 Unavatar key 用于成员 / 审计机构头像下载和 rehost：
 
@@ -100,8 +110,20 @@ OpenAI-compatible 配置使用和 RootData 一样的优先级：
 ```
 
 `i18n` 是最适合外部 LLM 的阶段。R2 和字段级 analyze 也可以通过
-`R2_LLM_PROVIDER=openai` 或 `ANALYZE_LLM_PROVIDER=openai` 显式启用；它们只使用现有 evidence 和已批准 search channel，不具备 Claude WebFetch/WebSearch。R2 直接使用 `R2_LLM_PROVIDER=openai` 时会切到 evidence-only reconcile prompt。`--r2-routing external_first` 或 `R2_ROUTING=external_first` 会先跑外部 evidence-only R2，并在 deterministic gate 拒绝时 fail closed；`--r2-routing external_first_with_claude_fallback` 或 `R2_ROUTING=external_first_with_claude_fallback` 会在 gate 拒绝时回退到 Claude web reconcile。`REFRESH_AUDITS_LLM_PROVIDER=openai` 也允许，因为 audit report 文本会先被确定性抽取，并使用 evidence-only audit refresh prompt。R1 和其他 refresh subtask 默认由策略锁定为 Claude，除非 manifest 明确放开。OpenAI-compatible 网关在未配置价格时记录 `cost_usd: null`；配置价格后可参与 `--max-budget` 核算。
+`R2_LLM_PROVIDER=openai` 或 `ANALYZE_LLM_PROVIDER=openai` 显式启用；它们只使用现有 evidence 和已批准 search channel，不具备 Claude WebFetch/WebSearch。R2 直接使用 `R2_LLM_PROVIDER=openai` 时会切到 evidence-only reconcile prompt。`--r2-routing external_first` 或 `R2_ROUTING=external_first` 会先跑外部 evidence-only R2，并在 deterministic gate 拒绝时 fail closed；`--r2-routing external_first_with_claude_fallback` 或 `R2_ROUTING=external_first_with_claude_fallback` 会在 gate 拒绝时回退到 Claude web reconcile。`AUDIT_REPORTS_LLM_PROVIDER=openai` 会在 R2 前对已 fetch 的 audit report 文本做外部结构化阅读；`REFRESH_AUDITS_LLM_PROVIDER=openai` 也允许，因为 audit report 文本会先被确定性抽取，并使用 evidence-only audit refresh prompt。R1 和其他 refresh subtask 默认由策略锁定为 Claude，除非 manifest 明确放开。OpenAI-compatible 网关在未配置价格时记录 `cost_usd: null`；配置价格后可参与 `--max-budget` 核算。
 启动横幅会报告 OpenAI-compatible key/base/model/pricing 的来源，但不会打印 API key。
+
+长时间运行的 Claude 调用内置 wall-clock watchdog，避免某个 web research 子任务停住后长期阻塞批量队列。默认值：
+
+```bash
+# 默认 30 分钟；只有明确需要禁用 watchdog 时才设为 0。
+CLAUDE_TIMEOUT_MS=1800000
+# 支持按 stage/provider 覆盖。
+R1_CLAUDE_TIMEOUT_MS=1800000
+R2_CLAUDE_TIMEOUT_MS=2400000
+# R1 会写 out/<slug>/_debug/r1/r1-status.json，并按该间隔输出进度心跳。
+R1_HEARTBEAT_MS=60000
+```
 
 安装后可以直接调用 slash command：
 
@@ -204,7 +226,7 @@ R2_LLM_PROVIDER=openai ./run.sh --display-name "Pendle"
 写入类命令都会先运行 deterministic normalizer，再校验完整记录；源字段变化时
 会清理 stale i18n 产物，随后运行 post-processing 以保持
 `record.import.json` 同步，在 `out/` 的本地 git 仓库里生成一个 scoped commit，
-并刷新 `out/index.html`。不带 `--apply` 的 `analyze` 只输出提案，不写文件。
+实时浏览器会直接读取更新后的 `out/` 树。不带 `--apply` 的 `analyze` 只输出提案，不写文件。
 工作流命令可以使用一次性 `--openai-*` 配置参数；`analyze` 和 `refresh`
 也接受 `--llm-provider openai`。外部 refresh 默认只允许 `audits`；其他
 refresh subtask 继续使用 Claude，除非 manifest 显式放开。
@@ -275,28 +297,31 @@ out/<slug>/
 out/.runs/<run-id>/
 ```
 
-每次完整运行结束后还会刷新：
+用实时 out browser 审核输出：
 
-```text
-out/index.html
+```bash
+./run.sh browse
+# 或：
+node framework/out-browser.mjs --out ./out --port 8765
 ```
 
-`out/index.html` 是一个自包含的本地审核工作台。可以直接用浏览器打开，用来筛选协议、查看产物、检查协议级改动、确认 logo 资产覆盖、复制工作流命令，或为当前可见记录复制一份合并后的 import JSON。详情区有四个模式：
+实时 server 每次 API 请求都会读取当前 `out/` 树，页面会自动轮询；
+`out/<slug>/record.json` 更新后，浏览器里的数据会自动刷新，不需要重建 HTML。
+它可以筛选协议、查看产物、检查协议级改动、确认 logo 资产覆盖、复制工作流命令，或为当前可见记录复制一份合并后的 import JSON。列表和详情里的成员/融资/审计数量直接从当前 `record.json` 计算，即使单个 slug 缺少 `summary.tsv` 也不会显示成空。JSON 产物支持 shape/key chip、语法高亮、raw copy、minified copy 和直接打开文件；diff 会按行着色并支持复制。详情区有四个模式：
 
-- `Artifacts`：预览/复制 `record.json`、`record.import.json`、`record.full.json`、findings、gaps、changes、meta 等文件。
-- `Changes`：查看该 slug 的本地 git history、最新 diff 统计和 unified diff。
+- `Artifacts`：预览/复制 `record.json`、`record.import.json`、`record.full.json`、findings、gaps、changes、meta 等文件，并提供 JSON 检查控件。
+- `Changes`：查看该 slug 的本地 git history、最新 diff 统计和彩色 unified diff。
 - `Assets`：检查 provider、member、audit logo 资产，以及本地上传目录中是否已有对应文件。
 - `Commands`：复制当前协议常用的 `get`、`set`、`analyze`、`i18n`、`refresh`、`history`、`diff`、`restore` 命令。
 
-它只嵌入审核用的关键产物；Claude/debug 原始日志仍保留在 `_debug/`。
+它只提供审核用的关键产物；Claude/debug 原始日志仍保留在 `_debug/`。
 
-![out/index.html 本地审核工作台：Artifacts、Changes、Assets、Commands 和 run filter](docs/images/out-browser.png)
+![实时 out browser 本地审核工作台：Artifacts、Changes、Assets、Commands 和 run filter](docs/images/out-browser.png)
 
 常见文件：
 
 | 文件 | 用途 |
 | --- | --- |
-| `../index.html` | 静态本地管理页，用于查看协议产物、历史和 commit diff，并复制关键输出。 |
 | `record.json` | 通过 schema 校验的源语言 `EarnProtocolInfo` 记录。用于审核/schema audit，不是 dashboard 导入信封。 |
 | `record.full.json` | 内联 i18n 版本，仅在生成翻译时存在。 |
 | `record.import.json` | Dashboard 导入信封：`{ version, exportedAt, data: [...] }`。导入时使用这个文件，已移除 `sources`。 |
@@ -383,7 +408,7 @@ R2 使用 audit-first 策略合并 R1 slice 和证据：
 
 - R1 高置信字段不会被无来源的 R2 改动覆盖。
 - R2 可以在有来源证据时补充缺失字段。
-- R1 发现的 audit `reportUrl` PDF/HTML 页面会在 R2 前下载并抽取文本；生成的 `audit_reports` evidence 用于校验审计日期、范围、审计机构和报告链接。
+- R1 发现的 audit `reportUrl` PDF/HTML 页面会在 R2 前下载并抽取文本；GitHub blob 链接会优先尝试 raw report URL。配置 `AUDIT_REPORTS_LLM_PROVIDER=openai` 后，已 fetch 的报告文本还会走外部结构化阅读；生成的 `audit_reports` evidence 用于校验审计日期、范围、审计机构和报告链接。
 - Claude R2 使用 web reconcile prompt，可以做 fresh WebFetch/WebSearch。OpenAI-compatible R2 使用 evidence-only prompt。启用 `external_first` 时，外部结果必须通过 schema、merge guard 和高风险改动检查才会被接受；否则 R2 fail closed。启用 `external_first_with_claude_fallback` 时，外部结果被拒绝后 Claude R2 会基于原始 R1 record 和已补充的 search evidence 重新运行。
 - 搜索请求受限，并通过允许的 fetcher search channel 执行。
 - 每个接受的改动都会写入 `changes.json`。
@@ -504,7 +529,7 @@ Consumer normalizer 会做决定性后处理：
 
 推荐审核流程：
 
-1. 打开 `out/index.html` 或 `out/.runs/<run-id>/summary.tsv`。
+1. 运行 `./run.sh browse` 并打开打印出来的本地 URL，或检查 `out/.runs/<run-id>/summary.tsv`。
 2. 对每个 `OK` row，检查 `out/<slug>/record.json`。
 3. 在 `Assets` 面板确认 provider、member、auditor logo 都有本地文件，再上传 logo 文件夹。
 4. 查看 `findings.json`，确认来源覆盖。
@@ -534,7 +559,7 @@ CLAUDE_BIN=/path/to/claude ./run.sh --display-name "Pendle"
 
 ### RootData disabled
 
-本次运行可加 `--rootdata-key sk-...`，或在 shell 中 `export ROOTDATA_API_KEY=...`，或写到 `~/.config/protocol-info/.env`（推荐）/ `<repo>/.env`。启动横幅会显示 key 来源。不配置时，RootData fetch 和 search channel 会被跳过。付费 Unavatar 使用 `--unavatar-key` 或同样配置位置中的 `UNAVATAR_API_KEY`。
+本次运行可加 `--rootdata-key sk-a,sk-b`，或在 shell 中 `export ROOTDATA_API_KEYS=...` / `ROOTDATA_API_KEY=...`，或写到 `~/.config/protocol-info/.env`（推荐）/ `<repo>/.env`。启动横幅会显示 key 数量和来源。不配置时，RootData fetch 和 search channel 会被跳过。付费 Unavatar 使用 `--unavatar-key` 或同样配置位置中的 `UNAVATAR_API_KEY`。
 
 ### `SCHEMA_FAIL`
 

@@ -1,8 +1,11 @@
-// Static out/ browser generator.
+// Live out/ browser and optional static snapshot generator.
 //
-// Writes a self-contained out/index.html so reviewers can inspect and copy
-// key artifacts without walking the protocol-first directory tree.
+// The default CLI mode starts a local server that reads the current out/ tree
+// on demand. `--static` writes a self-contained out/index.html snapshot for
+// debugging/export only.
 
+import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -81,6 +84,7 @@ async function artifact(outputRoot, dir, def) {
     sizeLabel: sizeLabel(text.size),
     tooLarge: text.tooLarge,
     content: text.content,
+    jsonMeta: def.kind === 'json' && !text.tooLarge ? parseJsonMeta(text.content) : null,
   };
 }
 
@@ -115,6 +119,44 @@ function parseJsonArtifact(artifacts, name) {
   if (!artifact || artifact.tooLarge || !artifact.content) return null;
   try {
     return JSON.parse(artifact.content);
+  } catch {
+    return null;
+  }
+}
+
+function jsonValueKind(value) {
+  if (Array.isArray(value)) return `array(${value.length})`;
+  if (value === null) return 'null';
+  if (typeof value === 'object') return `object(${Object.keys(value).length})`;
+  return typeof value;
+}
+
+function jsonMeta(value) {
+  if (Array.isArray(value)) {
+    return {
+      shape: `array(${value.length})`,
+      keys: value.length > 0 && value[0] && typeof value[0] === 'object' && !Array.isArray(value[0])
+        ? Object.keys(value[0]).slice(0, 8)
+        : [],
+    };
+  }
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value).slice(0, 10).map(([key, child]) => ({
+      key,
+      kind: jsonValueKind(child),
+    }));
+    return {
+      shape: `object(${Object.keys(value).length})`,
+      keys: entries,
+      dataLength: Array.isArray(value.data) ? value.data.length : null,
+    };
+  }
+  return { shape: jsonValueKind(value), keys: [] };
+}
+
+function parseJsonMeta(content) {
+  try {
+    return jsonMeta(JSON.parse(content));
   } catch {
     return null;
   }
@@ -192,6 +234,11 @@ async function summarizeRecord(outputRoot, record = {}) {
       member: logoAssets.filter((a) => a.kind === 'member').length,
       audit: logoAssets.filter((a) => a.kind === 'audit').length,
     },
+    counts: {
+      members: Array.isArray(record.members) ? record.members.length : null,
+      funding: Array.isArray(record.fundingRounds) ? record.fundingRounds.length : null,
+      audits: Array.isArray(record.audits?.items) ? record.audits.items.length : null,
+    },
   };
 }
 
@@ -249,19 +296,28 @@ function statusKind(status) {
 
 function protocolView({ protocol, row, artifacts, recordView, history, defaultDiff }) {
   const logoCounts = recordView.logoCounts || {};
+  const recordCounts = recordView.counts || {};
+  const metricValue = (rowValue, recordValue) => {
+    if (recordValue != null && recordValue !== '') return String(recordValue);
+    if (statusKind(row.status) === 'fail') return '-';
+    return rowValue || '-';
+  };
+  const membersValue = metricValue(row.members, recordCounts.members);
+  const fundingValue = metricValue(row.funding, recordCounts.funding);
+  const auditsValue = metricValue(row.audits, recordCounts.audits);
   const metrics = [
-    { key: 'members', label: 'Members', value: row.members || '-' },
-    { key: 'funding', label: 'Funding', value: row.funding || '-' },
-    { key: 'audits', label: 'Audits', value: row.audits || '-' },
+    { key: 'members', label: 'Members', value: membersValue },
+    { key: 'funding', label: 'Funding', value: fundingValue },
+    { key: 'audits', label: 'Audits', value: auditsValue },
     { key: 'logos', label: 'Logos', value: String(logoCounts.total || 0) },
     { key: 'i18n', label: 'i18n', value: row.i18n || '-' },
   ];
   const facts = [
     { label: 'Provider', value: recordView.provider || '-' },
     { label: 'Type', value: recordView.type || '-' },
-    { label: 'Members', value: row.members || '-' },
-    { label: 'Funding', value: row.funding || '-' },
-    { label: 'Audits', value: row.audits || '-' },
+    { label: 'Members', value: membersValue },
+    { label: 'Funding', value: fundingValue },
+    { label: 'Audits', value: auditsValue },
     { label: 'Logos', value: `${logoCounts.local || 0}/${logoCounts.total || 0}` },
   ];
   const commands = buildWorkflowCommands({ slug: protocol.slug, history });
@@ -378,7 +434,7 @@ async function readRunsLog(outDir) {
 // Hydrate the protocols list from `collectOutIndex` with per-protocol
 // artifacts, summary row, and meta status, in the protocols-first shape
 // consumed by renderHtml.
-async function hydrateView(outputRoot) {
+export async function hydrateView(outputRoot) {
   outputRoot = resolve(outputRoot);
   await mkdir(outputRoot, { recursive: true });
   const idx = await collectOutIndex(outputRoot);
@@ -415,7 +471,7 @@ async function hydrateView(outputRoot) {
   const logoAssetCount = hydrated.reduce((sum, p) => sum + (p.recordView?.logoCounts?.total || 0), 0);
   const statuses = [...new Set(hydrated.map((p) => p.view?.status).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b));
-  return {
+  const view = {
     generatedAt: new Date().toISOString(),
     outputRoot,
     protocols: hydrated,
@@ -431,6 +487,17 @@ async function hydrateView(outputRoot) {
       logoAssets: logoAssetCount,
     },
   };
+  view.revision = createHash('sha256')
+    .update(JSON.stringify({
+      outputRoot: view.outputRoot,
+      protocols: view.protocols,
+      runsLog: view.runsLog,
+      facets: view.facets,
+      totals: view.totals,
+    }))
+    .digest('hex')
+    .slice(0, 16);
+  return view;
 }
 
 function scriptJson(data) {
@@ -449,12 +516,13 @@ export async function buildOutBrowser(outputRoot = DEFAULT_OUT_ROOT, opts = {}) 
   return outputFile;
 }
 
-function renderHtml(data) {
+export function renderHtml(data, opts = {}) {
   const okCount = data.totals.ok;
   const issueCount = data.totals.issues;
   const statusValues = data.facets?.statuses || [];
   const statusOptions = '<option value="all">All statuses</option>' +
     statusValues.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(status)}</option>`).join('');
+  const liveDataUrl = opts.liveDataUrl || '';
   // Server-rendered per-protocol diff sections. JS hydrates a richer view,
   // but these stay in the static HTML so the diff text is visible in the
   // raw bytes (search/grep/test-friendly) and as a no-JS fallback. Use
@@ -1039,6 +1107,26 @@ code, pre { font-family: var(--mono); }
 }
 .action.primary { background: var(--accent); color: var(--surface); border-color: var(--accent); }
 .action:disabled { color: var(--muted); cursor: not-allowed; opacity: .65; }
+.json-meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 0 0 8px;
+}
+.json-chip {
+  max-width: 100%;
+  min-height: 24px;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .history {
   padding: 2px 0 10px;
 }
@@ -1063,18 +1151,6 @@ code, pre { font-family: var(--mono); }
   background: rgba(251,252,251,.78);
   overflow-wrap: anywhere;
 }
-.diff pre {
-  margin: 0;
-  max-height: 300px;
-  overflow: auto;
-  padding: 10px;
-  border: 1px solid var(--code-line);
-  border-radius: 7px;
-  background: var(--code);
-  color: #f2f3e9;
-  font-size: 11px;
-  line-height: 1.45;
-}
 .changes-pane .history ul {
   max-height: 150px;
   overflow: auto;
@@ -1084,7 +1160,7 @@ code, pre { font-family: var(--mono); }
   display: flex;
   flex-direction: column;
 }
-.changes-pane .diff pre {
+.changes-pane .diff-code {
   flex: 1;
   max-height: none;
 }
@@ -1144,6 +1220,52 @@ code, pre { font-family: var(--mono); }
   font-size: 12px;
   line-height: 1.55;
   white-space: pre;
+}
+.json-key { color: #d6c16f; }
+.json-string { color: #9bc59d; }
+.json-number { color: #9bbfe0; }
+.json-bool, .json-null { color: #d99278; }
+.diff-tools {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  margin: 8px 0;
+}
+.diff-code {
+  margin: 0;
+  max-height: 300px;
+  overflow: auto;
+  border: 1px solid var(--code-line);
+  border-radius: 7px;
+  background: var(--code);
+  color: #f2f3e9;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.diff-line {
+  display: block;
+  min-width: max-content;
+  padding: 0 10px;
+  white-space: pre;
+}
+.diff-line.file { color: #9bbfe0; background: #202820; }
+.diff-line.hunk { color: #d6c16f; background: #24271e; }
+.diff-line.add { color: #d5f1d8; background: rgba(35,107,69,.32); }
+.diff-line.del { color: #f4c7c0; background: rgba(157,70,62,.28); }
+.diff-line.meta { color: #9aa497; }
+.static-diffs .diff pre {
+  margin: 0;
+  max-height: 300px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--code-line);
+  border-radius: 7px;
+  background: var(--code);
+  color: #f2f3e9;
+  font-size: 11px;
+  line-height: 1.45;
 }
 .empty {
   padding: 18px;
@@ -1239,21 +1361,21 @@ code, pre { font-family: var(--mono); }
       <strong class="view-name">out</strong>
     </div>
     <div class="rootline">
-      <span class="generated">Generated <code>${data.generatedAt}</code></span>
-      <span class="pill"><code>${escapeHtml(data.outputRoot)}</code></span>
+      <span class="generated">Generated <code id="generated-at">${data.generatedAt}</code></span>
+      <span class="pill"><code id="root-path">${escapeHtml(data.outputRoot)}</code></span>
     </div>
     <div class="statbar">
-      <div class="stat"><span>Runs</span><strong>${data.totals.runs}</strong></div>
-      <div class="stat"><span>Records</span><strong>${data.totals.protocols}</strong></div>
-      <div class="stat"><span>OK</span><strong>${okCount}</strong></div>
-      <div class="stat"><span>Logos</span><strong>${data.totals.logoAssets}</strong></div>
-      <div class="stat"><span>Issues</span><strong>${issueCount}</strong></div>
+      <div class="stat"><span>Runs</span><strong id="stat-runs">${data.totals.runs}</strong></div>
+      <div class="stat"><span>Records</span><strong id="stat-records">${data.totals.protocols}</strong></div>
+      <div class="stat"><span>OK</span><strong id="stat-ok">${okCount}</strong></div>
+      <div class="stat"><span>Logos</span><strong id="stat-logos">${data.totals.logoAssets}</strong></div>
+      <div class="stat"><span>Issues</span><strong id="stat-issues">${issueCount}</strong></div>
     </div>
     <button class="action" id="copy-root">Copy root</button>
   </header>
   <main class="layout">
     <aside class="rail">
-      <div class="panel-head"><p class="section-title">Protocols</p><span class="count">${data.totals.protocols}</span></div>
+      <div class="panel-head"><p class="section-title">Protocols</p><span class="count" id="protocol-count">${data.totals.protocols}</span></div>
       <ul class="protocols-list" id="protocols-nav"></ul>
       <details class="runs-filter">
         <summary>Filter by recent run</summary>
@@ -1284,7 +1406,8 @@ code, pre { font-family: var(--mono); }
 <div class="toast" id="toast"></div>
 <script id="out-data" type="application/json">${scriptJson(data)}</script>
 <script>
-const DATA = JSON.parse(document.getElementById('out-data').textContent);
+let DATA = JSON.parse(document.getElementById('out-data').textContent);
+const LIVE_DATA_URL = ${JSON.stringify(liveDataUrl)};
 const state = {
   slug: DATA.protocols[0]?.slug || '',
   artifact: DATA.protocols[0]?.view?.defaultArtifact || 'record.import.json',
@@ -1295,6 +1418,35 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
+
+function statusOptionsHtml() {
+  return '<option value="all">All statuses</option>' + (DATA.facets?.statuses || []).map((status) =>
+    '<option value="' + esc(status) + '">' + esc(status) + '</option>'
+  ).join('');
+}
+
+function renderChrome() {
+  const totals = DATA.totals || {};
+  const setText = (id, value) => {
+    const node = $(id);
+    if (node) node.textContent = String(value ?? '');
+  };
+  setText('generated-at', DATA.generatedAt || '');
+  setText('root-path', DATA.outputRoot || '');
+  setText('stat-runs', totals.runs || 0);
+  setText('stat-records', totals.protocols || 0);
+  setText('stat-ok', totals.ok || 0);
+  setText('stat-logos', totals.logoAssets || 0);
+  setText('stat-issues', totals.issues || 0);
+  setText('protocol-count', totals.protocols || 0);
+  const status = $('status');
+  if (status) {
+    const previous = state.status;
+    status.innerHTML = statusOptionsHtml();
+    state.status = previous === 'all' || (DATA.facets?.statuses || []).includes(previous) ? previous : 'all';
+    status.value = state.status;
+  }
+}
 
 function visibleProtocols() {
   const q = state.query.trim().toLowerCase();
@@ -1552,6 +1704,43 @@ function renderModeTabs(protocol) {
   }).join('') + '</div>';
 }
 
+function renderJsonMeta(artifact) {
+  const meta = artifact?.jsonMeta;
+  if (!meta) return '';
+  const chips = [];
+  chips.push('shape ' + meta.shape);
+  if (Number.isFinite(meta.dataLength)) chips.push('data ' + meta.dataLength);
+  const keys = Array.isArray(meta.keys)
+    ? meta.keys.map((item) => typeof item === 'string' ? item : item.key + ':' + item.kind)
+    : [];
+  for (const key of keys.slice(0, 8)) chips.push(key);
+  return '<div class="json-meta">' + chips.map((chip) => '<span class="json-chip">' + esc(chip) + '</span>').join('') + '</div>';
+}
+
+function highlightJson(content) {
+  const source = String(content || '');
+  const token = /("(?:\\\\u[a-fA-F0-9]{4}|\\\\[^u]|[^\\\\"])*"(\\s*:)?|\\b(?:true|false)\\b|\\bnull\\b|-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)/g;
+  let out = '';
+  let last = 0;
+  for (const match of source.matchAll(token)) {
+    out += esc(source.slice(last, match.index));
+    const raw = match[0];
+    let cls = 'json-number';
+    if (raw === 'true' || raw === 'false') cls = 'json-bool';
+    else if (raw === 'null') cls = 'json-null';
+    else if (raw.startsWith('"')) cls = raw.trimEnd().endsWith(':') ? 'json-key' : 'json-string';
+    out += '<span class="' + cls + '">' + esc(raw) + '</span>';
+    last = match.index + raw.length;
+  }
+  out += esc(source.slice(last));
+  return out;
+}
+
+function renderArtifactPreview(artifact, content) {
+  if (artifact?.kind === 'json' && !artifact.tooLarge) return highlightJson(content);
+  return esc(content);
+}
+
 function renderArtifactPane(protocol, artifact) {
   const tabs = protocol.artifacts.map((a) => {
     const active = a.name === state.artifact ? ' active' : '';
@@ -1560,21 +1749,36 @@ function renderArtifactPane(protocol, artifact) {
   }).join('');
   const content = artifact
     ? artifact.tooLarge
-      ? 'File is too large to embed in this static page. Use Copy path or Open.'
+      ? 'File is too large to embed in this review page. Use Copy path or Open.'
       : artifact.content
     : 'No artifacts found for this record.';
+  const canMinify = artifact?.kind === 'json' && !artifact.tooLarge;
   return '<div class="artifact-pane">' +
     '<div class="tabs">' + tabs + '</div>' +
+    renderJsonMeta(artifact) +
     '<div class="actions">' +
       '<button class="action primary" id="copy-content" ' + (!artifact || artifact.tooLarge ? 'disabled' : '') + '>Copy content</button>' +
+      '<button class="action" id="copy-minified-json" ' + (!canMinify ? 'disabled' : '') + '>Copy minified JSON</button>' +
       '<button class="action" id="copy-path" ' + (!artifact ? 'disabled' : '') + '>Copy path</button>' +
       (artifact ? '<a class="action" href="' + esc(artifact.href) + '" target="_blank" rel="noreferrer">Open file</a>' : '') +
     '</div>' +
     '<div class="preview-wrap">' +
       '<div class="preview-top"><span>' + esc(artifact?.name || 'no file') + '</span><span>' + esc(artifact?.sizeLabel || '') + '</span></div>' +
-      '<pre class="preview"><code>' + esc(content) + '</code></pre>' +
+      '<pre class="preview"><code>' + renderArtifactPreview(artifact, content) + '</code></pre>' +
     '</div>' +
   '</div>';
+}
+
+function highlightDiff(diffText) {
+  return String(diffText || '').split('\\n').map((line) => {
+    let cls = 'ctx';
+    if (line.startsWith('diff --git ')) cls = 'file';
+    else if (line.startsWith('@@')) cls = 'hunk';
+    else if (line.startsWith('+') && !line.startsWith('+++')) cls = 'add';
+    else if (line.startsWith('-') && !line.startsWith('---')) cls = 'del';
+    else if (line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')) cls = 'meta';
+    return '<span class="diff-line ' + cls + '">' + esc(line || ' ') + '</span>';
+  }).join('');
 }
 
 function renderChangesPane(protocol) {
@@ -1595,7 +1799,9 @@ function renderChangesPane(protocol) {
         ).join('') +
         '</ul></section>';
   const diffHtml = protocol.defaultDiff
-    ? '<section class="diff"><h3>Diff vs previous</h3>' + statsHtml + '<pre>' + esc(protocol.defaultDiff) + '</pre></section>'
+    ? '<section class="diff"><h3>Diff vs previous</h3>' + statsHtml +
+      '<div class="diff-tools"><button class="action" id="copy-diff">Copy diff</button></div>' +
+      '<div class="diff-code">' + highlightDiff(protocol.defaultDiff) + '</div></section>'
     : '<section class="diff"><h3>Diff vs previous</h3><div class="empty">No previous commit to compare.</div></section>';
   return '<div class="scroll-body changes-pane">' + historyHtml + diffHtml + '</div>';
 }
@@ -1658,9 +1864,23 @@ function renderDetail() {
   if (copyContent && artifact && !artifact.tooLarge) {
     copyContent.addEventListener('click', () => copyText(artifact.content, artifact.name));
   }
+  const copyMinifiedJson = $('copy-minified-json');
+  if (copyMinifiedJson && artifact?.kind === 'json' && !artifact.tooLarge) {
+    copyMinifiedJson.addEventListener('click', () => {
+      try {
+        copyText(JSON.stringify(JSON.parse(artifact.content)), artifact.name + ' minified');
+      } catch {
+        toast('Invalid JSON');
+      }
+    });
+  }
   const copyPath = $('copy-path');
   if (copyPath && artifact) {
     copyPath.addEventListener('click', () => copyText(artifact.path, artifact.name + ' path'));
+  }
+  const copyDiff = $('copy-diff');
+  if (copyDiff && protocol.defaultDiff) {
+    copyDiff.addEventListener('click', () => copyText(protocol.defaultDiff, protocol.slug + ' diff'));
   }
   node.querySelectorAll('[data-copy-command]').forEach((button) => {
     button.addEventListener('click', () => copyText(button.dataset.copyCommand, 'command'));
@@ -1668,10 +1888,33 @@ function renderDetail() {
 }
 
 function render() {
+  renderChrome();
   renderProtocolsNav();
   renderRunsFilter();
   renderProtocols();
   renderDetail();
+}
+
+async function refreshLiveData() {
+  if (!LIVE_DATA_URL) return;
+  try {
+    const res = await fetch(LIVE_DATA_URL, { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const next = await res.json();
+    if (!next || next.revision === DATA.revision) return;
+    const previousSlug = state.slug;
+    DATA = next;
+    if (!DATA.protocols.some((p) => p.slug === previousSlug)) {
+      state.slug = DATA.protocols[0]?.slug || '';
+      state.artifact = DATA.protocols[0]?.view?.defaultArtifact || 'record.import.json';
+      state.mode = 'artifact';
+    }
+    render();
+    toast('Updated from out/');
+  } catch (err) {
+    // Keep the current snapshot visible; transient server/file reads should not
+    // blank the review UI.
+  }
 }
 
 function copyVisibleImports() {
@@ -1765,6 +2008,7 @@ $('copy-root').addEventListener('click', () => copyText(DATA.outputRoot, 'output
 $('copy-imports').addEventListener('click', copyVisibleImports);
 $('copy-summary').addEventListener('click', copyRunSummary);
 render();
+if (LIVE_DATA_URL) setInterval(refreshLiveData, 1500);
 </script>
 </body>
 </html>`;
@@ -1796,9 +2040,111 @@ function arg(name, def = null) {
   return i === -1 ? def : process.argv[i + 1];
 }
 
+function hasFlag(name) {
+  return process.argv.includes(`--${name}`);
+}
+
+function contentTypeFor(path) {
+  if (path.endsWith('.html')) return 'text/html; charset=utf-8';
+  if (path.endsWith('.json')) return 'application/json; charset=utf-8';
+  if (path.endsWith('.tsv') || path.endsWith('.txt') || path.endsWith('.log')) return 'text/plain; charset=utf-8';
+  if (path.endsWith('.png')) return 'image/png';
+  if (path.endsWith('.jpg') || path.endsWith('.jpeg')) return 'image/jpeg';
+  if (path.endsWith('.webp')) return 'image/webp';
+  if (path.endsWith('.svg')) return 'image/svg+xml';
+  return 'application/octet-stream';
+}
+
+function resolveStaticPath(root, pathname) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return null;
+  }
+  const target = resolve(root, `.${decoded}`);
+  if (target !== root && !target.startsWith(root + sep)) return null;
+  return target;
+}
+
+export async function startOutBrowserServer({
+  outputRoot = DEFAULT_OUT_ROOT,
+  host = '127.0.0.1',
+  port = 8765,
+  logger = console,
+} = {}) {
+  const root = resolve(outputRoot);
+  await mkdir(root, { recursive: true });
+  const send = (res, status, body, type = 'text/plain; charset=utf-8') => {
+    res.writeHead(status, {
+      'Content-Type': type,
+      'Cache-Control': 'no-store',
+    });
+    res.end(body);
+  };
+  const server = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        send(res, 405, 'Method not allowed');
+        return;
+      }
+      if (url.pathname === '/' || url.pathname === '/index.html') {
+        const data = await hydrateView(root);
+        send(res, 200, renderHtml(data, { liveDataUrl: '/api/out-data' }), 'text/html; charset=utf-8');
+        return;
+      }
+      if (url.pathname === '/api/out-data') {
+        const data = await hydrateView(root);
+        send(res, 200, JSON.stringify(data), 'application/json; charset=utf-8');
+        return;
+      }
+      const target = resolveStaticPath(root, url.pathname);
+      if (!target) {
+        send(res, 403, 'Forbidden');
+        return;
+      }
+      const s = await stat(target);
+      if (!s.isFile()) {
+        send(res, 404, 'Not found');
+        return;
+      }
+      const body = req.method === 'HEAD' ? '' : await readFile(target);
+      res.writeHead(200, {
+        'Content-Type': contentTypeFor(target),
+        'Content-Length': s.size,
+        'Cache-Control': 'no-store',
+      });
+      res.end(body);
+    } catch (err) {
+      send(res, err?.code === 'ENOENT' ? 404 : 500, err?.code === 'ENOENT' ? 'Not found' : `Server error: ${err.message}`);
+    }
+  });
+  await new Promise((resolveListen, rejectListen) => {
+    server.once('error', rejectListen);
+    server.listen(Number(port), host, () => {
+      server.off('error', rejectListen);
+      resolveListen();
+    });
+  });
+  const address = server.address();
+  const url = `http://${address.address}:${address.port}/`;
+  logger?.log?.(`Out browser live server: ${url}`);
+  logger?.log?.(`Out root: ${root}`);
+  return server;
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const outputRoot = arg('out', DEFAULT_OUT_ROOT);
-  const outputFile = arg('output', join(outputRoot, 'index.html'));
-  const file = await buildOutBrowser(outputRoot, { outputFile });
-  process.stdout.write(`${file}\n`);
+  if (!hasFlag('static')) {
+    await startOutBrowserServer({
+      outputRoot,
+      host: arg('host', '127.0.0.1'),
+      port: Number(arg('port', '8765')),
+    });
+  } else {
+    const outputFile = arg('output', join(outputRoot, 'index.html'));
+    const file = await buildOutBrowser(outputRoot, { outputFile });
+    process.stdout.write(`${file}\n`);
+  }
 }

@@ -29,11 +29,14 @@ try {
   process.exit(1);
 }
 
-const auditReports = await collectAuditReportEvidence({ record });
+const auditReports = await collectAuditReportEvidence({ record, env: process.env });
 const nextEvidence = mergeAuditReportEvidence(evidence, auditReports);
 await writeFile(evidenceOut, JSON.stringify(nextEvidence, null, 2));
 
 const reportCount = auditReports.reports?.length || 0;
 const failureCount = auditReports.failures?.length || 0;
-console.error(`[audit-reports] extracted=${reportCount} failed=${failureCount}`);
+const llmSuffix = auditReports.llm
+  ? ` llm=${auditReports.llm.provider}:${auditReports.llm.ok}/${auditReports.llm.attempted}`
+  : '';
+console.error(`[audit-reports] extracted=${reportCount} failed=${failureCount}${llmSuffix}`);
 process.exit(0);
