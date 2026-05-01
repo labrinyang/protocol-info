@@ -6,6 +6,40 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.4.1] — 2026-05-01
+
+### Added
+- `pdf-text <slug> <audit-index>` workflow command to print extracted audit
+  report text from `_debug/rootdata.json` for targeted audit repair.
+
+### Changed
+- Claude subprocess watchdog default is now 15 minutes, with shorter examples
+  for R1/R2 stage overrides.
+- Audit schema `audits.items` cap increased from 30 to 100 entries.
+- Batch crawls now commit each successful slug after R2, normalization, and
+  post-processing, so killing a later batch no longer strands completed records
+  as untracked files.
+
+### Fixed
+- Preflight dirty-slug checks no longer trigger rollback cleanup, avoiding data
+  loss before a write actually starts.
+- Member avatar normalization now preserves existing/manual avatar URLs before
+  RootData and Unavatar fallbacks.
+- Member avatar downloads now continue through the Unavatar source chain when a
+  prior source fails to fetch.
+- Normalization removes stale gaps when the current record already has a
+  concrete value for that entity field.
+- No-i18n recrawls clear stale translation artifacts before post-processing and
+  do not recommit stale `record.full.json` / `record.import.json` translations.
+- `pdf-text` now fails on report URL mismatch instead of printing unrelated
+  extracted report text.
+- The out browser marks missing translated full artifacts as stale instead of
+  silently showing an empty preferred artifact.
+- Placeholder member one-liners now catch short role-only values such as
+  `team member` and `Founder`.
+- Schema length validation errors now include the JSON path, current length,
+  value preview, and truncation guidance.
+
 ## [2.4.0] — 2026-04-30
 
 ### Added

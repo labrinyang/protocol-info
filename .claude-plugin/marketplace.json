@@ -11,7 +11,7 @@
     {
       "name": "protocol-info",
       "source": "./",
-      "version": "2.4.0",
+      "version": "2.4.1",
       "description": "Crawl and maintain DeFi EarnProtocolInfo records with schema validation, i18n exports, logo asset rehosting, and local git history",
       "author": {
         "name": "labrinyang",

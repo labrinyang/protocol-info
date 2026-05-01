@@ -25,6 +25,7 @@ Use these when the user refers to an existing protocol record, an existing slug,
 | "搜索并修改/应用到某个 key" | `analyze <slug> <jsonpath> --query "<question>" --apply` |
 | "补翻/重翻已有记录" | `i18n <slug> --locales <locale-list|all>` |
 | "刷新项目基础信息/团队/融资/审计" | `refresh <slug> <metadata|team|funding|audits>` |
+| "查看某个 audit PDF 抽取文本" | `pdf-text <slug> <audit-index>` |
 | "看历史/版本记录" | `history <slug>` |
 | "看两个版本差异" | `diff <slug> [from] [to]` |
 | "恢复到某个版本" | `restore <slug> <sha>` |

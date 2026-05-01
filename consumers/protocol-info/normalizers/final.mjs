@@ -61,6 +61,11 @@ function isPlaceholderOneLiner(value) {
     'none',
     'unknown',
     'unverified',
+    'team member',
+    'founder',
+    'co founder',
+    'co-founder',
+    'core contributor',
     'not available',
     'not provided',
     'no information',
@@ -70,6 +75,7 @@ function isPlaceholderOneLiner(value) {
   if (/[占位]|暂未|暂无|待(?:补充|完善|添加|更新)|未(?:提供|找到|公开|披露)/.test(text)) return true;
   if (/\bplaceholder\b/i.test(text)) return true;
   if (/\bunverified\b/i.test(text)) return true;
+  if (text.length < 20 && /^(?:team member|founder|co[-\s]?founder|ceo|cto|coo|developer|engineer|contributor)$/i.test(compact)) return true;
   if (/^(?:no|not enough)\s+(?:verifiable|public|available)?\s*(?:information|info|data|sources?)/i.test(compact)) return true;
   if (/^to be (?:added|filled|provided|updated)/i.test(compact)) return true;
   if (/^add .* later$/i.test(compact)) return true;

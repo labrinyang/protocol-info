@@ -104,9 +104,9 @@ export function validate(value, node, path = '$') {
 
   if (typeof value === 'string') {
     if (node.minLength != null && value.length < node.minLength)
-      errs.push(`${path}: string shorter than minLength ${node.minLength}`);
+      errs.push(`${path}: string length ${value.length} shorter than minLength ${node.minLength}${previewSuffix(value)}`);
     if (node.maxLength != null && value.length > node.maxLength)
-      errs.push(`${path}: string longer than maxLength ${node.maxLength}`);
+      errs.push(`${path}: string length ${value.length} longer than maxLength ${node.maxLength}${previewSuffix(value)}; shorten this field`);
     if (node.pattern && !new RegExp(node.pattern).test(value))
       errs.push(`${path}: does not match pattern ${node.pattern}`);
     if (node.format === 'uri' && !isUri(value))
@@ -149,6 +149,15 @@ export function validate(value, node, path = '$') {
   }
 
   return errs;
+}
+
+function previewSuffix(value) {
+  const compact = String(value)
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!compact) return '';
+  const preview = compact.length > 80 ? `${compact.slice(0, 77)}...` : compact;
+  return ` (value: ${JSON.stringify(preview)})`;
 }
 
 function matchType(value, t) {

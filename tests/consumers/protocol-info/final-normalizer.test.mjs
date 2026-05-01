@@ -49,6 +49,18 @@ export const tests = [
     },
   },
   {
+    name: 'short role-only oneLiners are treated as placeholders',
+    fn: () => {
+      for (const oneLiner of ['team member', 'Founder', 'CTO']) {
+        const out = normalize({
+          record: baseRecord(oneLiner),
+          now: new Date('2026-04-29T00:00:00Z'),
+        });
+        assert.equal(out.record.members[0].oneLiner, null, oneLiner);
+      }
+    },
+  },
+  {
     name: 'audit scan date is still normalized after oneLiner cleanup',
     fn: () => {
       const out = normalize({

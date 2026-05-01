@@ -130,6 +130,53 @@ export const tests = [
     },
   },
   {
+    name: 'member Unavatar fallback tries LinkedIn after X source fails',
+    fn: async () => {
+      const outputRoot = await tempOut();
+      const { fetchImage, calls } = conditionalImageFetch(async (url) => {
+        if (url.includes('/x/')) {
+          return {
+            ok: false,
+            status: 404,
+            headers: { get: () => null },
+            arrayBuffer: async () => Buffer.from(''),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (name) => name.toLowerCase() === 'content-type' ? 'image/png' : null },
+          arrayBuffer: async () => Buffer.from('linkedin-image'),
+        };
+      });
+      const record = baseRecord({
+        members: [
+          {
+            memberName: 'Srikumar Misra',
+            avatarUrl: 'https://unavatar.io/x/srikumar?fallback=false',
+            memberLink: {
+              xLink: 'https://x.com/srikumar',
+              linkedinLink: 'https://www.linkedin.com/in/srikumar-misra/',
+            },
+          },
+        ],
+      });
+
+      const out = await normalize({
+        record,
+        evidence: {},
+        outputRoot,
+        fetchImage,
+        env: { UNAVATAR_API_KEY: 'paid-key' },
+      });
+      assert.equal(out.record.members[0].avatarUrl, `${LOGO_CDN_BASE}/protocol-member-logo/pendle-srikumar-misra.png`);
+      assert.equal(calls.length, 2);
+      assert.equal(calls[0].url, 'https://unavatar.io/x/srikumar?fallback=false');
+      assert.equal(calls[1].url, 'https://unavatar.io/linkedin/user:srikumar-misra?fallback=false');
+      assert.equal(await readFile(join(outputRoot, 'protocol-member-logo', 'pendle-srikumar-misra.png'), 'utf8'), 'linkedin-image');
+    },
+  },
+  {
     name: 'member avatar source URL is downloaded into protocol-member-logo',
     fn: async () => {
       const outputRoot = await tempOut();
@@ -171,6 +218,33 @@ export const tests = [
 
       const out = await normalize({ record, evidence: {}, outputRoot, fetchImage });
       assert.equal(out.record.audits.items[0].auditorLogoUrl, `${LOGO_CDN_BASE}/audit-logo/openzeppelin.png`);
+      assert.equal(calls.length, 0);
+    },
+  },
+  {
+    name: 'audit logo cache uses canonical auditor aliases',
+    fn: async () => {
+      const outputRoot = await tempOut();
+      await mkdir(join(outputRoot, 'audit-logo'), { recursive: true });
+      await writeFile(join(outputRoot, 'audit-logo', 'ackee-blockchain.png'), 'cached');
+      await mkdir(join(outputRoot, 'aave'), { recursive: true });
+      await writeFile(join(outputRoot, 'aave', 'record.json'), JSON.stringify({
+        audits: {
+          items: [
+            {
+              auditor: 'Ackee Blockchain',
+              auditorLogoUrl: `${LOGO_CDN_BASE}/audit-logo/ackee-blockchain.png`,
+            },
+          ],
+        },
+      }));
+      const { fetchImage, calls } = fakeImageFetch();
+      const record = baseRecord({
+        audits: { items: [{ auditor: 'Ackee', auditorLogoUrl: null }] },
+      });
+
+      const out = await normalize({ record, evidence: {}, outputRoot, fetchImage });
+      assert.equal(out.record.audits.items[0].auditorLogoUrl, `${LOGO_CDN_BASE}/audit-logo/ackee-blockchain.png`);
       assert.equal(calls.length, 0);
     },
   },

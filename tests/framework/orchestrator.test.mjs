@@ -150,7 +150,7 @@ export const tests = [
   {
     name: 'run() commits post/i18n artifacts and leaves successful slug clean',
     fn: async () => {
-      const { mkdtemp, mkdir, readFile, writeFile } = await import('node:fs/promises');
+      const { mkdtemp, mkdir, readFile, readdir, writeFile } = await import('node:fs/promises');
       const { tmpdir } = await import('node:os');
       const { join } = await import('node:path');
       const { spawn } = await import('node:child_process');
@@ -195,11 +195,22 @@ export const tests = [
         if (name === 'post') {
           const slugDir = arg(args, 'slug-dir');
           const record = JSON.parse(await readFile(join(slugDir, 'record.json'), 'utf8'));
+          const translations = {};
+          try {
+            for (const f of await readdir(join(slugDir, '_debug', 'i18n'))) {
+              if (!f.endsWith('.json') || f.endsWith('.envelope.json')) continue;
+              translations[f.replace(/\.json$/, '')] = JSON.parse(await readFile(join(slugDir, '_debug', 'i18n', f), 'utf8'));
+            }
+          } catch {
+            // No i18n sidecars: real post.mjs only emits source import JSON.
+          }
           await writeFile(join(slugDir, 'record.import.json'), JSON.stringify({ data: [{ slug: 'pendle', locale: 'en' }] }));
-          await writeFile(join(slugDir, 'record.full.json'), JSON.stringify({ ...record, i18n: { zh_CN: { description: 'AMM zh' } } }));
-          const meta = JSON.parse(await readFile(join(slugDir, 'meta.json'), 'utf8'));
-          meta.i18n = { locales_ok: ['zh_CN'], locales_failed: [] };
-          await writeFile(join(slugDir, 'meta.json'), JSON.stringify(meta, null, 2));
+          if (Object.keys(translations).length > 0) {
+            await writeFile(join(slugDir, 'record.full.json'), JSON.stringify({ ...record, i18n: translations }));
+            const meta = JSON.parse(await readFile(join(slugDir, 'meta.json'), 'utf8'));
+            meta.i18n = { locales_ok: Object.keys(translations), locales_failed: [] };
+            await writeFile(join(slugDir, 'meta.json'), JSON.stringify(meta, null, 2));
+          }
           return { code: 0, stdout: '', stderr: '' };
         }
         throw new Error(`unexpected cli ${name}`);
@@ -228,8 +239,116 @@ export const tests = [
       assert.match(await show('pendle/meta.json'), /locales_ok/);
       assert.equal(await isClean(dir, { slug: 'pendle' }), true);
       const hist = await log(dir, { slug: 'pendle' });
-      assert.equal(hist.length, 1);
+      assert.equal(hist.length, 2);
+      assert.equal(hist[0].message, 'i18n(pendle): post updates');
+      assert.equal(hist[1].message, 'crawl(pendle): R1+R2 ok');
+    },
+  },
+  {
+    name: 'run() clears stale i18n artifacts before no-i18n recrawl post commit',
+    fn: async () => {
+      const { mkdtemp, mkdir, readFile, readdir, writeFile } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { spawn } = await import('node:child_process');
+      const { ensureRepo, commit, isClean, log } = await import('../../framework/version-store.mjs');
+      const dir = await mkdtemp(join(tmpdir(), 'pi-run-stale-i18n-'));
+      const slugDir = join(dir, 'pendle');
+      const manifestPath = join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json');
+      await ensureRepo(dir);
+      await mkdir(slugDir, { recursive: true });
+      await writeFile(join(slugDir, 'record.json'), JSON.stringify({ name: 'Pendle', description: 'old' }));
+      await writeFile(join(slugDir, 'record.import.json'), JSON.stringify({ data: [{ slug: 'pendle', description: 'old zh' }] }));
+      await writeFile(join(slugDir, 'record.full.json'), JSON.stringify({ name: 'Pendle', i18n: { zh_CN: { description: 'old zh' } } }));
+      await writeFile(join(slugDir, 'meta.json'), JSON.stringify({ status: 'OK', i18n: { locales_ok: ['zh_CN'] } }, null, 2));
+      await commit(dir, { paths: ['pendle/'], message: 'seed translated artifacts', runId: 'seed' });
+      await mkdir(join(slugDir, '_debug', 'i18n'), { recursive: true });
+      await writeFile(join(slugDir, '_debug', 'i18n', 'zh_CN.json'), JSON.stringify({ description: 'stale zh' }));
+
+      const arg = (args, name) => {
+        const i = args.indexOf(`--${name}`);
+        return i === -1 ? null : args[i + 1];
+      };
+      const copyJson = async (from, to) => {
+        await writeFile(to, await readFile(from, 'utf8'));
+      };
+      const fakeCallCli = async (name, args) => {
+        if (name === 'fetch') {
+          await writeFile(arg(args, 'output'), JSON.stringify({ fetcher_status: { rootdata: 'skipped_missing_env', defillama: 'ok' } }));
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        if (name === 'r1') {
+          await writeFile(arg(args, 'record-out'), JSON.stringify({ name: 'Pendle', description: 'new', members: [], fundingRounds: [], audits: { items: [] } }));
+          await writeFile(arg(args, 'findings-out'), '[]');
+          await writeFile(arg(args, 'gaps-out'), '[]');
+          await writeFile(arg(args, 'handoff-out'), '[]');
+          await writeFile(join(arg(args, 'debug-dir'), 'r1-status.json'), JSON.stringify({ subtasks: [], failed_subtasks: [] }));
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        if (name === 'evidence-diff') return { code: 0, stdout: '', stderr: '' };
+        if (name === 'audit-reports') return { code: 0, stdout: '', stderr: '[audit-reports] extracted=0 failed=0\n' };
+        if (name === 'r2') return { code: 1, stdout: '', stderr: 'skip r2 in test' };
+        if (name === 'normalize') {
+          await copyJson(arg(args, 'record-in'), arg(args, 'record-out'));
+          await copyJson(arg(args, 'changes-in'), arg(args, 'changes-out'));
+          await copyJson(arg(args, 'gaps-in'), arg(args, 'gaps-out'));
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        if (name === 'post') {
+          const postSlugDir = arg(args, 'slug-dir');
+          const record = JSON.parse(await readFile(join(postSlugDir, 'record.json'), 'utf8'));
+          const translations = {};
+          try {
+            for (const f of await readdir(join(postSlugDir, '_debug', 'i18n'))) {
+              if (!f.endsWith('.json') || f.endsWith('.envelope.json')) continue;
+              translations[f.replace(/\.json$/, '')] = JSON.parse(await readFile(join(postSlugDir, '_debug', 'i18n', f), 'utf8'));
+            }
+          } catch {
+            // No i18n sidecars: real post.mjs only emits source import JSON.
+          }
+          await writeFile(join(postSlugDir, 'record.import.json'), JSON.stringify({ data: [{ slug: 'pendle', description: record.description }] }));
+          if (Object.keys(translations).length > 0) {
+            await writeFile(join(postSlugDir, 'record.full.json'), JSON.stringify({ ...record, i18n: translations }));
+            const meta = JSON.parse(await readFile(join(postSlugDir, 'meta.json'), 'utf8'));
+            meta.i18n = { locales_ok: Object.keys(translations), locales_failed: [] };
+            await writeFile(join(postSlugDir, 'meta.json'), JSON.stringify(meta, null, 2));
+          }
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        throw new Error(`unexpected cli ${name}`);
+      };
+      const fakeValidator = async () => ({ code: 0, stdout: 'OK\n', stderr: '' });
+
+      await run({
+        manifestPath,
+        providers: [{ slug: 'pendle', provider: 'pendle', displayName: 'Pendle' }],
+        outputRoot: dir,
+        runId: 'R-no-i18n',
+        parallelism: 1,
+        options: { i18nArg: 'none', callCli: fakeCallCli, callValidator: fakeValidator },
+      });
+
+      const show = async (path) => new Promise((resolve, reject) => {
+        let stdout = '';
+        let stderr = '';
+        const p = spawn('git', ['show', `HEAD:${path}`], { cwd: dir });
+        p.stdout.on('data', (b) => { stdout += b.toString(); });
+        p.stderr.on('data', (b) => { stderr += b.toString(); });
+        p.on('close', (code) => code === 0 ? resolve(stdout) : reject(new Error(stderr)));
+      });
+      assert.match(await show('pendle/record.import.json'), /"description":"new"/);
+      assert.doesNotMatch(await show('pendle/meta.json'), /locales_ok/);
+      let fullMissing = false;
+      try {
+        await show('pendle/record.full.json');
+      } catch {
+        fullMissing = true;
+      }
+      assert.equal(fullMissing, true, 'stale record.full.json must be removed from HEAD');
+      assert.equal(await isClean(dir, { slug: 'pendle' }), true);
+      const hist = await log(dir, { slug: 'pendle' });
       assert.equal(hist[0].message, 'crawl(pendle): R1+R2 ok');
+      assert.equal(hist.length, 2);
     },
   },
   {
@@ -389,6 +508,40 @@ export const tests = [
       await commit(dir, { paths: ['pendle/'], message: 'a', runId: 'A' });
       await writeFile(join(dir, 'pendle', 'record.json'), '{"v":2}');
       await guardClobber(dir, 'pendle', { forceOverwrite: true }); // no throw
+    },
+  },
+  {
+    name: 'run() preflight failure does not roll back dirty slug files',
+    fn: async () => {
+      const { mkdtemp, mkdir, readFile, writeFile } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { ensureRepo, commit, isClean } = await import('../../framework/version-store.mjs');
+      const dir = await mkdtemp(join(tmpdir(), 'pi-run-preflight-'));
+      await ensureRepo(dir);
+      await mkdir(join(dir, 'pendle'), { recursive: true });
+      await writeFile(join(dir, 'pendle', 'record.json'), '{"v":1}\n');
+      await commit(dir, { paths: ['pendle/'], message: 'seed', runId: 'seed' });
+      await writeFile(join(dir, 'pendle', 'record.json'), '{"v":2,"manual":true}\n');
+
+      await assert.rejects(
+        () => run({
+          manifestPath: join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json'),
+          providers: [{ slug: 'pendle', provider: 'pendle', displayName: 'Pendle' }],
+          outputRoot: dir,
+          runId: 'R-preflight',
+          parallelism: 1,
+          options: {
+            i18nArg: 'none',
+            callCli: async () => {
+              throw new Error('pipeline should not start');
+            },
+          },
+        }),
+        /provider worker\(s\) crashed/,
+      );
+      assert.equal(await readFile(join(dir, 'pendle', 'record.json'), 'utf8'), '{"v":2,"manual":true}\n');
+      assert.equal(await isClean(dir, { slug: 'pendle' }), false);
     },
   },
   {

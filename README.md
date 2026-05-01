@@ -12,7 +12,7 @@ By default, generated artifacts are written to `out/` under the current working
 directory where the command is invoked. Plugin updates do not move the output
 root because it is not tied to the plugin cache path.
 
-Current release: `2.4.0`.
+Current release: `2.4.1`.
 
 ## 2.4 Highlights
 
@@ -170,11 +170,11 @@ Long-running Claude invocations have a wall-clock watchdog so one stalled web
 research subtask cannot block the batch queue indefinitely. Defaults:
 
 ```bash
-# 30 minutes by default; set to 0 only when deliberately disabling the watchdog.
-CLAUDE_TIMEOUT_MS=1800000
+# 15 minutes by default; set to 0 only when deliberately disabling the watchdog.
+CLAUDE_TIMEOUT_MS=900000
 # Stage/provider-specific overrides are supported.
-R1_CLAUDE_TIMEOUT_MS=1800000
-R2_CLAUDE_TIMEOUT_MS=2400000
+R1_CLAUDE_TIMEOUT_MS=900000
+R2_CLAUDE_TIMEOUT_MS=1200000
 # R1 writes out/<slug>/_debug/r1/r1-status.json and emits progress heartbeats.
 R1_HEARTBEAT_MS=60000
 ```
@@ -659,7 +659,7 @@ tail -f out/<slug>/_debug/r1.stderr.log
 ```
 
 `r1-status.json` shows each subtask's `state`, `pid`, `elapsed_ms`,
-`timeout_ms`, and `error_kind`. Claude calls default to a 30-minute wall-clock
+`timeout_ms`, and `error_kind`. Claude calls default to a 15-minute wall-clock
 watchdog; tune it with `CLAUDE_TIMEOUT_MS` or `R1_CLAUDE_TIMEOUT_MS`. Set the
 value to `0` only when deliberately disabling the watchdog.
 

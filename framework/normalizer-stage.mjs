@@ -37,9 +37,10 @@ export async function runNormalizers({
     for (const g of (out?.gaps ?? [])) {
       gaps.push({ ...g, stage: 'normalize', normalizer: n.name });
     }
+    gaps = removeGapsResolvedInRecord(gaps, cur);
   }
 
-  return { record: cur, changes, gaps };
+  return { record: cur, changes, gaps: removeGapsResolvedInRecord(gaps, cur) };
 }
 
 function removeResolvedGaps(gaps, changes, record) {
@@ -59,6 +60,82 @@ function gapResolved(field, resolvedFields, record) {
   if (concrete.length === 0) return false;
   if (!concrete.some((entry) => resolvedFields.has(entry.field))) return false;
   return concrete.every((entry) => isResolvedValue(entry.value));
+}
+
+function removeGapsResolvedInRecord(gaps, record) {
+  return gaps.filter((gap) => !gapResolvedInRecord(gap, record));
+}
+
+function gapResolvedInRecord(gap, record) {
+  const field = gap?.field;
+  if (typeof field !== 'string' || !field || field.startsWith('<')) return false;
+
+  if (gap?.entity_key) {
+    const byEntity = resolvedByEntityKey(gap, record);
+    if (byEntity !== null) return byEntity;
+  }
+
+  const concrete = concretePathValues(record, field);
+  if (concrete.length === 0) return false;
+  const wildcard = /\[(?:\*|)\]/.test(field);
+  return wildcard
+    ? concrete.every((entry) => isResolvedValue(entry.value))
+    : concrete.some((entry) => isResolvedValue(entry.value));
+}
+
+function normalizeEntityName(value) {
+  return String(value || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function leafProperty(field) {
+  const last = String(field || '').split('.').pop() || '';
+  return last.replace(/\[(?:\*|\d*)\]$/, '');
+}
+
+function resolvedByEntityKey(gap, record) {
+  const entityKey = String(gap.entity_key || '');
+  const prop = leafProperty(gap.field);
+  if (!prop) return null;
+
+  if (entityKey.startsWith('member:')) {
+    const wanted = entityKey.slice('member:'.length);
+    const wantedName = normalizeEntityName(wanted);
+    const member = (record?.members || []).find((item) =>
+      `member:${item?.memberName || ''}` === entityKey ||
+      normalizeEntityName(item?.memberName) === wantedName
+    );
+    if (!member || !(prop in member)) return null;
+    return isResolvedValue(member[prop]);
+  }
+
+  if (entityKey.startsWith('auditor:')) {
+    const wanted = entityKey.slice('auditor:'.length);
+    const wantedName = normalizeEntityName(wanted);
+    const item = (record?.audits?.items || []).find((audit) =>
+      `auditor:${audit?.auditor || ''}` === entityKey ||
+      normalizeEntityName(audit?.auditor) === wantedName
+    );
+    if (!item || !(prop in item)) return null;
+    return isResolvedValue(item[prop]);
+  }
+
+  if (entityKey.startsWith('funding:')) {
+    const [, round, date] = entityKey.split(':');
+    const item = (record?.fundingRounds || []).find((funding) =>
+      String(funding?.round || '') === String(round || '') &&
+      String(funding?.date || '') === String(date || '')
+    );
+    if (!item || !(prop in item)) return null;
+    return isResolvedValue(item[prop]);
+  }
+
+  return null;
 }
 
 function concretePathValues(root, pattern) {

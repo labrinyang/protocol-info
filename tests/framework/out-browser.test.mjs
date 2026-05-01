@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildOutBrowser, collectOutIndex, startOutBrowserServer } from '../../framework/out-browser.mjs';
+import { buildOutBrowser, collectOutIndex, hydrateView, startOutBrowserServer } from '../../framework/out-browser.mjs';
 
 function embeddedData(html) {
   const raw = html.match(/<script id="out-data" type="application\/json">([\s\S]*?)<\/script>/)?.[1];
@@ -79,6 +79,28 @@ export const tests = [
         assert.ok(script.includes('-?\\d+'), 'expected generated JSON number regex escape');
         assert.equal(script.includes('\b'), false, 'generated browser script should not contain backspace escapes');
         new Function(script);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: 'hydrateView marks i18n stale when summary says translated but full artifact is missing',
+    fn: async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'pi-stale-i18n-'));
+      try {
+        const slugDir = join(dir, 'pendle');
+        await mkdir(slugDir, { recursive: true });
+        await writeFile(join(slugDir, 'record.json'), '{"slug":"pendle","members":[],"fundingRounds":[],"audits":{"items":[]}}');
+        await writeFile(
+          join(slugDir, 'summary.tsv'),
+          'slug\tstatus\tmembers\tfunding\taudits\tschema\tsource\tapi_status\ti18n\npendle\tOK\t0\t0\t0\tpass\tr1\tok\t1/1\n',
+        );
+
+        const view = await hydrateView(dir);
+        const pendle = view.protocols.find((p) => p.slug === 'pendle');
+        assert.equal(pendle.row.i18n, 'STALE');
+        assert.equal(pendle.view.metrics.find((item) => item.key === 'i18n').value, 'STALE');
       } finally {
         await rm(dir, { recursive: true, force: true });
       }

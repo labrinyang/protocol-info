@@ -11,7 +11,7 @@
 默认情况下，生成产物会写入调用命令时当前目录下的 `out/`。输出根目录不绑定
 plugin cache，因此更新插件不会改变历史输出所在位置。
 
-当前版本：`2.4.0`。
+当前版本：`2.4.1`。
 
 ## 2.4 重点更新
 
@@ -146,11 +146,11 @@ OpenAI-compatible 配置使用和 RootData 一样的优先级：
 长时间运行的 Claude 调用内置 wall-clock watchdog，避免某个 web research 子任务停住后长期阻塞批量队列。默认值：
 
 ```bash
-# 默认 30 分钟；只有明确需要禁用 watchdog 时才设为 0。
-CLAUDE_TIMEOUT_MS=1800000
+# 默认 15 分钟；只有明确需要禁用 watchdog 时才设为 0。
+CLAUDE_TIMEOUT_MS=900000
 # 支持按 stage/provider 覆盖。
-R1_CLAUDE_TIMEOUT_MS=1800000
-R2_CLAUDE_TIMEOUT_MS=2400000
+R1_CLAUDE_TIMEOUT_MS=900000
+R2_CLAUDE_TIMEOUT_MS=1200000
 # R1 会写 out/<slug>/_debug/r1/r1-status.json，并按该间隔输出进度心跳。
 R1_HEARTBEAT_MS=60000
 ```
@@ -623,7 +623,7 @@ tail -f out/<slug>/_debug/r1.stderr.log
 ```
 
 `r1-status.json` 会显示每个 subtask 的 `state`、`pid`、`elapsed_ms`、
-`timeout_ms` 和 `error_kind`。Claude 调用默认 30 分钟 wall-clock watchdog；
+`timeout_ms` 和 `error_kind`。Claude 调用默认 15 分钟 wall-clock watchdog；
 可以用 `CLAUDE_TIMEOUT_MS` 或 `R1_CLAUDE_TIMEOUT_MS` 调整。只有明确要禁用
 watchdog 时才把值设为 `0`。
 

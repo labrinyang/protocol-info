@@ -445,11 +445,15 @@ export async function hydrateView(outputRoot) {
     const row = await readProtocolRow(p.dir, p.slug);
     const metaStatus = await readMetaStatus(p.dir);
     const record = parseJsonArtifact(artifacts, 'record.json') || {};
+    const normalizedRow = normalizeRow(row, { slug: p.slug, status: metaStatus || 'unknown' });
+    if (normalizedRow.i18n !== '-' && !artifacts.some((a) => a.name === 'record.full.json')) {
+      normalizedRow.i18n = 'STALE';
+    }
     const protocol = {
       slug: p.slug,
       dir: p.dir,
       relDir: relPath(outputRoot, p.dir),
-      row: normalizeRow(row, { slug: p.slug, status: metaStatus || 'unknown' }),
+      row: normalizedRow,
       artifacts,
       recordView: await summarizeRecord(outputRoot, record),
       history: p.history || [],

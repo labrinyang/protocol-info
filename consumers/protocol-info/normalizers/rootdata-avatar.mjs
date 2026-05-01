@@ -153,39 +153,48 @@ function withFallbackFalse(url) {
   return parsed.toString();
 }
 
-export function unavatarSourceForMember(member) {
+function shouldPreserveExistingAvatarSource(url) {
+  return !!url && !rejectReason(url);
+}
+
+export function unavatarSourcesForMember(member) {
+  const sources = [];
   const links = member?.memberLink || {};
   const xHandle = xHandleFromValue(links.xLink);
   if (xHandle) {
-    return {
+    sources.push({
       url: withFallbackFalse(`${UNAVATAR_BASE}/x/${encodeURIComponent(xHandle)}`),
       source: 'unavatar:x',
       reason: 'unavatar_x_avatar_fallback',
       tried: ['members[].memberLink.xLink', `https://unavatar.io/x/${xHandle}`],
-    };
+    });
   }
 
   const linkedinUser = linkedinUserFromUrl(links.linkedinLink);
   if (linkedinUser) {
-    return {
+    sources.push({
       url: withFallbackFalse(`${UNAVATAR_BASE}/linkedin/user:${encodeURIComponent(linkedinUser)}`),
       source: 'unavatar:linkedin',
       reason: 'unavatar_linkedin_avatar_fallback',
       tried: ['members[].memberLink.linkedinLink', `https://unavatar.io/linkedin/user:${linkedinUser}`],
-    };
+    });
   }
 
   const nameHandle = handleLikeMemberName(member?.memberName);
   if (nameHandle) {
-    return {
+    sources.push({
       url: withFallbackFalse(`${UNAVATAR_BASE}/${encodeURIComponent(nameHandle)}`),
       source: 'unavatar:handle',
       reason: 'unavatar_handle_avatar_fallback',
       tried: ['members[].memberName', `https://unavatar.io/${nameHandle}`],
-    };
+    });
   }
 
-  return null;
+  return sources;
+}
+
+export function unavatarSourceForMember(member) {
+  return unavatarSourcesForMember(member)[0] || null;
 }
 
 function rootDataUrlFromCandidate(candidate) {
@@ -290,6 +299,9 @@ export default async function normalize({
     const entityKey = `member:${member.memberName || ''}`;
 
     if (ownMemberCdnUrl(before)) {
+      continue;
+    }
+    if (shouldPreserveExistingAvatarSource(before)) {
       continue;
     }
 

@@ -13,7 +13,7 @@
       "properties": {
         "items": {
           "type": "array",
-          "maxItems": 30,
+          "maxItems": 100,
           "items": {
             "type": "object",
             "additionalProperties": false,

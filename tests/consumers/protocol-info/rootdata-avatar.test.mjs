@@ -81,7 +81,7 @@ export const tests = [
     },
   },
   {
-    name: 'RootData source overwrites existing Unavatar source before rehost',
+    name: 'existing Unavatar source is preserved before RootData candidates',
     fn: async () => {
       const record = baseRecord([
         { memberName: 'Alice Liu', avatarUrl: 'https://unavatar.io/x/aliceliu?fallback=false' },
@@ -90,9 +90,24 @@ export const tests = [
         { name: 'Alice Liu', avatar_url: 'https://cdn.rootdata.com/alice.png' },
       ]);
       const out = await normalize({ record, evidence });
-      assert.equal(out.record.members[0].avatarUrl, 'https://cdn.rootdata.com/alice.png');
-      assert.equal(out.changes[0].before, 'https://unavatar.io/x/aliceliu?fallback=false');
-      assert.equal(out.changes[0].after, 'https://cdn.rootdata.com/alice.png');
+      assert.equal(out.record.members[0].avatarUrl, 'https://unavatar.io/x/aliceliu?fallback=false');
+      assert.equal(out.changes.length, 0);
+      assert.equal(out.gaps.length, 0);
+    },
+  },
+  {
+    name: 'manual non-Unavatar avatar source is preserved before RootData candidates',
+    fn: async () => {
+      const record = baseRecord([
+        { memberName: 'Alice Liu', avatarUrl: 'https://manual.example/alice.png' },
+      ]);
+      const evidence = evidenceWith([
+        { name: 'Alice Liu', avatar_url: 'https://cdn.rootdata.com/alice.png' },
+      ]);
+      const out = await normalize({ record, evidence });
+      assert.equal(out.record.members[0].avatarUrl, 'https://manual.example/alice.png');
+      assert.equal(out.changes.length, 0);
+      assert.equal(out.gaps.length, 0);
     },
   },
   {

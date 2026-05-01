@@ -87,6 +87,30 @@ export const tests = [
     },
   },
   {
+    name: 'set preflight failure does not roll back dirty slug files',
+    fn: async () => {
+      const out = await seedOut();
+      await writeFile(join(out, 'pendle', 'record.json'), '{"description":"manual dirty"}\n');
+      const cmd = (await import('../../../framework/commands/set.mjs')).default;
+      const code = await cmd(['pendle', 'description', '"new"'], {
+        outputRoot: out,
+        manifestPath: 'manifest.json',
+        validate: async () => {
+          throw new Error('validate should not run');
+        },
+        runPostProcessing: async () => {
+          throw new Error('post should not run');
+        },
+        commitAndRebuild: commitOnly,
+        normalizeEnvelope: normalizeNoop,
+        stderr: { write: () => {} },
+      });
+      assert.equal(code, 1);
+      assert.equal(await readFile(join(out, 'pendle', 'record.json'), 'utf8'), '{"description":"manual dirty"}\n');
+      assert.equal(await isClean(out, { slug: 'pendle' }), false);
+    },
+  },
+  {
     name: 'set post-processing failure rolls back written canonical files',
     fn: async () => {
       const out = await seedOut();

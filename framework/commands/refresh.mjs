@@ -80,6 +80,7 @@ export default async function refreshCmd(args, ctx = {}) {
     return 1;
   }
 
+  let rollbackOnError = false;
   try {
     await preflightWritableSlug(outputRoot, slug, { forceOverwrite: !!ctx.forceOverwrite });
     const prior = await loadRecordEnvelope(outputRoot, { slug });
@@ -115,6 +116,7 @@ export default async function refreshCmd(args, ctx = {}) {
     }
 
     await writeRecordEnvelope(outputRoot, { slug, envelope: normalized });
+    rollbackOnError = true;
     await invalidateI18nArtifacts(join(outputRoot, slug), { manifestPath });
     const postCode = await runPostProcessing({ slugDir: join(outputRoot, slug), manifestPath });
     if (postCode !== 0) {
@@ -132,7 +134,11 @@ export default async function refreshCmd(args, ctx = {}) {
     return 0;
   } catch (err) {
     try {
-      await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
+      if (rollbackOnError) {
+        await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
+      } else {
+        await writeCtx.cleanupCreatedAssets();
+      }
     } catch {
       // Preserve original error.
     }

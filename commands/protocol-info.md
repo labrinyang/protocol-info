@@ -43,6 +43,8 @@ The notes below describe full crawl output. Workflow subcommands are shorter:
 read-only commands print their direct result, and write commands validate,
 normalize deterministic fields, invalidate stale i18n, post-process, commit
 inside `out/`; the live out browser reads the updated JSON directly.
+Use `pdf-text <slug> <audit-index>` to inspect audit report text already
+extracted into `_debug/rootdata.json`; the index matches `audits.items[index]`.
 
 Claude Code captures Bash stdout/stderr as plain text command output, not rich markdown. The runner therefore prints only low-frequency key lines:
 
@@ -57,7 +59,7 @@ Do not ask the script to stream raw Claude/debug logs. They are written under `o
 R1 also writes live subtask telemetry to `out/<slug>/_debug/r1/r1-status.json`
 with queued/running/ok/failed state, pid, elapsed time, timeout, and error kind.
 Claude invocations have a default wall-clock watchdog (`CLAUDE_TIMEOUT_MS`,
-30 minutes; `R1_CLAUDE_TIMEOUT_MS` overrides R1), so a stalled subtask fails as
+15 minutes; `R1_CLAUDE_TIMEOUT_MS` overrides R1), so a stalled subtask fails as
 `error_kind=timeout` and the R1 partial path can continue.
 
 ## After the run finishes

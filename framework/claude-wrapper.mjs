@@ -4,7 +4,7 @@
 
 import { spawn } from 'node:child_process';
 
-const DEFAULT_CLAUDE_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_CLAUDE_TIMEOUT_MS = 15 * 60 * 1000;
 const DEFAULT_KILL_GRACE_MS = 5 * 1000;
 
 const TRANSIENT_PATTERNS = [

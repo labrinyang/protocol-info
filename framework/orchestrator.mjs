@@ -35,6 +35,7 @@ const SCRIPT_DIR = dirname(FRAMEWORK_DIR);
 // Low-frequency plain-text heartbeat for Claude Code / terminal runs. Avoid
 // ANSI, carriage returns, or progress bars because slash commands capture text.
 const DEFAULT_PROGRESS_HEARTBEAT_MS = 60_000;
+const SUMMARY_HEADER = 'slug\tstatus\tmembers\tfunding\taudits\tschema\tsource\tapi_status\ti18n';
 
 // ── child_process helpers ───────────────────────────────────────────────────
 
@@ -122,6 +123,26 @@ async function cleanupLogoAssetsFile(outputRoot, path) {
   if (Array.isArray(created) && created.length > 0) {
     await cleanupCreatedLogoAssets(outputRoot, created);
   }
+}
+
+function createSerialQueue() {
+  let tail = Promise.resolve();
+  return async (fn) => {
+    const next = tail.then(fn, fn);
+    tail = next.catch(() => {});
+    return next;
+  };
+}
+
+async function runQueuedCommit(options, fn) {
+  if (typeof options.commitQueue === 'function') return options.commitQueue(fn);
+  return fn();
+}
+
+async function writeSlugSummary(outputRoot, slug, row, i18nCol = '-') {
+  const slugDir = protocolDir(outputRoot, slug);
+  await mkdir(slugDir, { recursive: true });
+  await writeFile(join(slugDir, 'summary.tsv'), `${SUMMARY_HEADER}\n${row}\t${i18nCol}\n`);
 }
 
 async function sumEnvelopeTelemetry(dir, pattern = /\.envelope\.json$/) {
@@ -214,10 +235,10 @@ export async function guardClobber(outputRoot, slug, { forceOverwrite }) {
   if (forceOverwrite) return;
   const clean = await isClean(outputRoot, { slug });
   if (!clean) {
-    throw new Error(
+    throw Object.assign(new Error(
       `${slug}: uncommitted changes in out/${slug}/ — refusing to overwrite. ` +
       `Commit or discard them first, or pass --force-overwrite.`
-    );
+    ), { kind: 'preflight_dirty' });
   }
 }
 
@@ -225,18 +246,18 @@ async function rollbackFailedSlug(outputRoot, slug) {
   await resetSlugToHead(outputRoot, { slug });
 }
 
-async function commitOkSlugs(outputRoot, okSlugs, runId) {
-  // INVARIANT: this loop runs SEQUENTIALLY, AFTER the parallel runWithLimit
-  // call above and AFTER post-processing has produced all canonical artifacts.
-  // Do NOT inline these commits into runOne() or wrap them in Promise.all() —
-  // concurrent writes to out/.git/index will race under --parallel >1.
+async function commitOkSlugs(outputRoot, okSlugs, runId, { message = null } = {}) {
+  // INVARIANT: callers must keep this loop sequential. Concurrent writes to
+  // out/.git/index will race under --parallel >1.
   for (const slug of okSlugs) {
-    const message = `crawl(${slug}): R1+R2 ok`;
+    const commitMessage = typeof message === 'function'
+      ? message(slug)
+      : (message || `crawl(${slug}): R1+R2 ok`);
     const assetPaths = await readJsonSafe(
       join(outputRoot, slug, '_debug', 'normalize.logo-assets-to-commit.json'),
       [],
     );
-    await commit(outputRoot, { paths: [`${slug}/`, ...assetPaths], message, runId });
+    await commit(outputRoot, { paths: [`${slug}/`, ...assetPaths], message: commitMessage, runId });
   }
 }
 
@@ -615,15 +636,35 @@ export async function runOne({
     }
   }
 
-  await writeFile(
-    summaryRowFile,
-    `${slug}\t${status}\t${members}\t${funding}\t${audits}\t${schemaRes.code === 0 ? 'pass' : 'fail'}\t${finalSource}\t${apiStatus}\n`,
-  );
+  const summaryRow = `${slug}\t${status}\t${members}\t${funding}\t${audits}\t${schemaRes.code === 0 ? 'pass' : 'fail'}\t${finalSource}\t${apiStatus}`;
+  await writeFile(summaryRowFile, `${summaryRow}\n`);
 
   // ── meta.json ───────────────────────────────────────────────────────────
 
   await writeMeta(status, { schema: schemaRes.code === 0 ? 'pass' : 'fail' });
-  if (status !== 'OK') {
+  if (status === 'OK') {
+    await invalidateI18nArtifacts(slugDir, { manifest });
+    const postRes = await callStage('post', [
+      '--manifest', manifestPath,
+      '--slug-dir', slugDir,
+    ]);
+    if (postRes.code !== 0) {
+      process.stderr.write(`[post] ${slug} failed; record.import.json may be missing\n`);
+      if (postRes.stderr) process.stderr.write(postRes.stderr);
+    } else {
+      logProvider(slug, 'post export done: record.import.json');
+    }
+    await writeSlugSummary(outputRoot, slug, summaryRow, '-');
+    const assetPaths = await readJsonSafe(assetsToCommitNorm, []);
+    await runQueuedCommit(options, async () => {
+      await commit(outputRoot, {
+        paths: [`${slug}/`, ...assetPaths],
+        message: `crawl(${slug}): R1+R2 ok`,
+        runId,
+      });
+    });
+    logProvider(slug, 'committed: R1+R2+normalize+post');
+  } else {
     await cleanupLogoAssetsFile(outputRoot, createdAssetsNorm);
     await rollbackFailedSlug(outputRoot, slug);
   }
@@ -697,6 +738,7 @@ export async function run({
   const effectiveParallelism = dryRun ? 1 : Math.max(1, parallelism | 0);
   const i18nSelected = resolveI18nSelection(options.i18nArg, manifest);
   const callStage = options.callCli || callCli;
+  const commitQueue = createSerialQueue();
   const budgetPlan = computeBudgetPlan(manifest, {
     maxBudget: options.maxBudget,
     i18nLocaleCount: i18nSelected.length,
@@ -712,7 +754,7 @@ export async function run({
       runMetaDir,
       index: i + 1,
       total,
-      options: { ...options, dryRun, budgetPlan },
+      options: { ...options, dryRun, budgetPlan, commitQueue },
     });
   });
 
@@ -739,23 +781,25 @@ export async function run({
     const summaryRowFile = join(runMetaDir, '.summary-rows', `${indexLabel}-${slug}.tsv`);
     const slugDir = protocolDir(outputRoot, slug);
     const debugDir = join(slugDir, '_debug');
-    await mkdir(debugDir, { recursive: true });
     const error = r.error?.stack || r.error?.message || String(r.error || 'unknown worker failure');
     await writeFile(join(runMetaDir, '.worker-logs', `${indexLabel}-${slug}.log`), error + '\n');
-    await writeFile(join(debugDir, 'worker.stderr.log'), error + '\n');
     await writeFile(summaryRowFile, `${slug}\tCRAWL_FAIL\t-\t-\t-\t-\tworker\t-\n`);
-    await writeFile(join(slugDir, 'meta.json'), JSON.stringify({
-      status: 'CRAWL_FAIL',
-      failure_stage: 'worker',
-      error: error.slice(0, 1000),
-      r1: { cost_usd: 0, turns: 0 },
-      r2: null,
-      source_used: 'worker',
-      rootdata: null,
-      budget: budgetPlan,
-      i18n: null,
-    }, null, 2));
-    await rollbackFailedSlug(outputRoot, slug);
+    if (r.error?.kind !== 'preflight_dirty') {
+      await mkdir(debugDir, { recursive: true });
+      await writeFile(join(debugDir, 'worker.stderr.log'), error + '\n');
+      await writeFile(join(slugDir, 'meta.json'), JSON.stringify({
+        status: 'CRAWL_FAIL',
+        failure_stage: 'worker',
+        error: error.slice(0, 1000),
+        r1: { cost_usd: 0, turns: 0 },
+        r2: null,
+        source_used: 'worker',
+        rootdata: null,
+        budget: budgetPlan,
+        i18n: null,
+      }, null, 2));
+      await rollbackFailedSlug(outputRoot, slug);
+    }
     workerFailures.push({ slug, error });
   }
 
@@ -782,11 +826,11 @@ export async function run({
 
   // ── i18n stage ───────────────────────────────────────────────────────────
 
-  for (const slug of okSlugs) {
-    await invalidateI18nArtifacts(protocolDir(outputRoot, slug), { manifest });
-  }
-
   if (okSlugs.length > 0 && i18nSelected.length > 0) {
+    for (const slug of okSlugs) {
+      await invalidateI18nArtifacts(protocolDir(outputRoot, slug), { manifest });
+    }
+
     const i18nProvider = (process.env.I18N_PROVIDER || 'claude').toLowerCase();
     const i18nProviderLabel = i18nProvider === 'openai' ? 'OpenAI-compatible API' : 'Claude';
     console.log('');
@@ -827,9 +871,9 @@ export async function run({
     process.stderr.write('i18n: no --i18n flag — skipping translation. Pass --i18n all | zh_CN,ja_JP,... | none to control explicitly.\n');
   }
 
-  // ── post.mjs (always, on OK slugs) ──────────────────────────────────────
+  // ── post.mjs after i18n (base post already ran per successful slug) ─────
 
-  if (okSlugs.length > 0) {
+  if (okSlugs.length > 0 && i18nSelected.length > 0) {
     for (const slug of okSlugs) {
       const r = await callStage('post', [
         '--manifest', manifestPath,
@@ -846,7 +890,7 @@ export async function run({
 
   // ── Merge per-slug summary rows + i18n column → summary.tsv ─────────────
 
-  const lines = ['slug\tstatus\tmembers\tfunding\taudits\tschema\tsource\tapi_status\ti18n'];
+  const lines = [SUMMARY_HEADER];
   for (const f of rowFiles) {
     const row = (await readFile(join(summaryRowsDir, f), 'utf8')).replace(/\n+$/, '');
     if (!row) continue;
@@ -877,8 +921,12 @@ export async function run({
     await writeFile(join(slugDir, 'summary.tsv'), `${lines[0]}\n${row}\n`);
   }
 
-  // ── Commit phase ─────────────────────────────────────────────────────────
-  await commitOkSlugs(outputRoot, okSlugs, runId);
+  // ── Final commit phase for i18n/summary deltas ──────────────────────────
+  if (i18nSelected.length > 0) {
+    await commitOkSlugs(outputRoot, okSlugs, runId, {
+      message: (slug) => `i18n(${slug}): post updates`,
+    });
+  }
 
   const outBrowserCommand = `${join(SCRIPT_DIR, 'run.sh')} browse --out ${outputRoot}`;
 

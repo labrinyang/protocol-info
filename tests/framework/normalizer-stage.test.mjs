@@ -74,6 +74,29 @@ export const tests = [
     },
   },
   {
+    name: 'drops stale gaps when the current record already has a concrete value',
+    fn: async () => {
+      const path = await makeNormalizerModule(
+        `export default ({record}) => ({record, changes:[], gaps:[]})`
+      );
+      const out = await runNormalizers({
+        normalizers: [{ name: 'test', module_abs: path }],
+        record: {
+          providerLogoUrl: 'https://cdn.example/provider.png',
+          members: [{ memberName: 'TN Lee', avatarUrl: 'https://cdn.example/tn.png' }],
+        },
+        incomingGaps: [
+          { field: 'providerLogoUrl', reason: 'old missing logo' },
+          { field: 'members[0].avatarUrl', entity_key: 'member:TN Lee', reason: 'old missing avatar' },
+          { field: 'members[0].oneLiner', entity_key: 'member:TN Lee', reason: 'still missing' },
+        ],
+      });
+      assert.deepEqual(out.gaps, [
+        { field: 'members[0].oneLiner', entity_key: 'member:TN Lee', reason: 'still missing' },
+      ]);
+    },
+  },
+  {
     name: 'drops stale wildcard gaps only when all matching concrete fields are resolved',
     fn: async () => {
       const path = await makeNormalizerModule(

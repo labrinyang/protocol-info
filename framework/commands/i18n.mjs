@@ -93,6 +93,7 @@ export default async function i18nCmd(args, ctx = {}) {
     return 1;
   }
 
+  let rollbackOnError = false;
   try {
     await preflightWritableSlug(outputRoot, slug, { forceOverwrite: !!ctx.forceOverwrite });
     const normalized = await writeCtx.normalizeEnvelope(await loadRecordEnvelope(outputRoot, { slug }));
@@ -103,6 +104,7 @@ export default async function i18nCmd(args, ctx = {}) {
       return 1;
     }
     await writeRecordEnvelope(outputRoot, { slug, envelope: normalized });
+    rollbackOnError = true;
     await clearI18nSidecars(slugDir, { manifest });
     const i18nCode = await runI18nStage({ slugDir, locales, manifestPath, model: ctx.i18nModel });
     if (i18nCode !== 0) {
@@ -136,7 +138,11 @@ export default async function i18nCmd(args, ctx = {}) {
     return 0;
   } catch (err) {
     try {
-      await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
+      if (rollbackOnError) {
+        await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
+      } else {
+        await writeCtx.cleanupCreatedAssets();
+      }
     } catch {
       // Preserve original error.
     }

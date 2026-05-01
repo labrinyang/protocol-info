@@ -48,8 +48,10 @@ export default async function restoreCmd(args, ctx = {}) {
     return 1;
   }
 
+  let rollbackOnError = false;
   try {
     await preflightWritableSlug(outputRoot, slug, { forceOverwrite: !!ctx.forceOverwrite });
+    rollbackOnError = true;
     await restore(outputRoot, { slug, sha });
 
     const slugDir = join(outputRoot, slug);
@@ -86,7 +88,11 @@ export default async function restoreCmd(args, ctx = {}) {
     return 0;
   } catch (err) {
     try {
-      await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
+      if (rollbackOnError) {
+        await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
+      } else {
+        await writeCtx.cleanupCreatedAssets();
+      }
     } catch {
       // Preserve original error.
     }

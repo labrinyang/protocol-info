@@ -48,6 +48,7 @@ export const WORKFLOW_COMMANDS = {
   history: () => import('./commands/history.mjs'),
   diff: () => import('./commands/diff.mjs'),
   restore: () => import('./commands/restore.mjs'),
+  'pdf-text': () => import('./commands/pdf-text.mjs'),
 };
 
 // ── .env autoload (tolerant: skip if run.sh already loaded vars) ────────────
@@ -225,6 +226,7 @@ Workflow commands (v2.1):
                               research one value; apply validates + commits
   i18n <slug> [--locales LIST]   translate current record, post-process, commit
   refresh <slug> <subtask>       rerun metadata/team/funding/audits and merge
+  pdf-text <slug> <audit-index>  print extracted audit report text from _debug/rootdata.json
   history <slug> [--limit N]     show git history for one protocol
   diff <slug> [from] [to]        show git diff for one protocol (default: latest two slug commits)
   restore <slug> <sha>           restore a previous commit, validate, commit

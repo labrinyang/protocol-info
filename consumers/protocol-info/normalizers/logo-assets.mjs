@@ -8,7 +8,7 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { cdnLogoUrl, parseCdnLogoPath } from '../../../framework/logo-assets.mjs';
 import { extractProviderLogoUrl, search as defaultSearchRootData } from '../fetchers/rootdata.mjs';
-import { unavatarSourceForMember } from './rootdata-avatar.mjs';
+import { unavatarSourcesForMember } from './rootdata-avatar.mjs';
 
 export const LOGO_FOLDERS = Object.freeze({
   member: 'protocol-member-logo',
@@ -42,9 +42,23 @@ function normalizeKey(value) {
     .replace(/^-|-$/g, '');
 }
 
+const AUDITOR_ALIAS_KEYS = new Map([
+  ['adevarlabs', 'adevar'],
+  ['adevar-labs', 'adevar'],
+  ['ackee', 'ackee'],
+  ['ackee-blockchain', 'ackee'],
+  ['abdk', 'abdk'],
+  ['abdk-consulting', 'abdk'],
+]);
+
 function canonicalEntityKey(value) {
   return normalizeKey(value)
-    .replace(/-(?:inc|incorporated|llc|ltd|limited|labs|lab|foundation|security|audit|audits)$/g, '');
+    .replace(/-(?:inc|incorporated|llc|ltd|limited|labs|lab|foundation|security|audit|audits|blockchain|consulting)$/g, '');
+}
+
+function canonicalAuditorKey(value) {
+  const key = normalizeKey(value);
+  return AUDITOR_ALIAS_KEYS.get(key) || canonicalEntityKey(value);
 }
 
 function withFallbackFalse(url) {
@@ -256,9 +270,9 @@ function githubOwnerFromRootDataItem(item) {
 }
 
 function isExactRootDataEntityMatch(query, item) {
-  const queryKey = canonicalEntityKey(query);
+  const queryKey = canonicalAuditorKey(query);
   if (!queryKey) return false;
-  return rootDataResultNameCandidates(item).some((candidate) => canonicalEntityKey(candidate) === queryKey);
+  return rootDataResultNameCandidates(item).some((candidate) => canonicalAuditorKey(candidate) === queryKey);
 }
 
 async function sourceFromRootDataAudit({
@@ -326,7 +340,7 @@ async function buildAuditLogoCache(outputRoot) {
       continue;
     }
     for (const item of record?.audits?.items || []) {
-      const key = normalizeKey(item?.auditor);
+      const key = canonicalAuditorKey(item?.auditor);
       const url = item?.auditorLogoUrl;
       if (!key || !url) continue;
       const nextScore = scoreCachedUrl(outputRoot, url);
@@ -456,17 +470,29 @@ export default async function normalize({
       env,
     });
     const failedPrimaryReason = result.url ? null : result.reason;
-    const unavatarFallback = !result.url ? unavatarSourceForMember(member) : null;
-    if (unavatarFallback?.url && unavatarFallback.url !== before) {
-      const fallbackResult = await rehostLogoAsset({
-        sourceUrl: unavatarFallback.url,
-        outputRoot,
-        folder: LOGO_FOLDERS.member,
-        nameBase: logoName([slug, member.memberName]),
-        fetchImage,
-        env,
-      });
-      if (fallbackResult.url) result = { ...fallbackResult, fallbackSource: unavatarFallback.source, primaryReason: failedPrimaryReason };
+    let fallbackSource = null;
+    if (!result.url) {
+      const tried = new Set([before]);
+      for (const unavatarFallback of unavatarSourcesForMember(member)) {
+        if (!unavatarFallback?.url || tried.has(unavatarFallback.url)) continue;
+        tried.add(unavatarFallback.url);
+        const fallbackResult = await rehostLogoAsset({
+          sourceUrl: unavatarFallback.url,
+          outputRoot,
+          folder: LOGO_FOLDERS.member,
+          nameBase: logoName([slug, member.memberName]),
+          fetchImage,
+          env,
+        });
+        if (fallbackResult.url) {
+          result = fallbackResult;
+          fallbackSource = unavatarFallback.source;
+          break;
+        }
+      }
+    }
+    if (fallbackSource) {
+      result = { ...result, fallbackSource, primaryReason: failedPrimaryReason };
     }
     trackCreated(result);
     member.avatarUrl = result.url;
@@ -499,7 +525,7 @@ export default async function normalize({
   for (let i = 0; i < (out.audits?.items || []).length; i++) {
     const item = out.audits.items[i];
     const before = item.auditorLogoUrl ?? null;
-    const auditorKey = normalizeKey(item.auditor);
+    const auditorKey = canonicalAuditorKey(item.auditor);
     const field = `audits.items[${i}].auditorLogoUrl`;
     const entityKey = `auditor:${item.auditor || ''}`;
     const local = outputRoot && item.auditor
