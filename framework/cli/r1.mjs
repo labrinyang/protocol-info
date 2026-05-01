@@ -13,6 +13,7 @@ import { loadManifest, selectEvidence } from '../manifest-loader.mjs';
 import { runSubtask } from '../subtask-runner.mjs';
 import { mergeSlices } from '../merger.mjs';
 import { runWithLimit } from '../parallel-runner.mjs';
+import { clearStaleR1Envelopes, r1EnvelopePath } from '../r1-artifacts.mjs';
 
 // FRAMEWORK_DIR resolves to .../framework/ — dirname() strips r1.mjs, second
 // dirname() strips the cli/ directory, leaving the framework root where
@@ -61,6 +62,7 @@ const findingsSchema = JSON.parse(await readFile(join(FRAMEWORK_DIR, 'schemas/fi
 const gapsSchema = JSON.parse(await readFile(join(FRAMEWORK_DIR, 'schemas/gaps.schema.json'), 'utf8'));
 const r1DefaultBudget = (manifest._abs.subtasks || [])
   .reduce((sum, st) => sum + Number(st.max_budget_usd || 0), 0);
+await clearStaleR1Envelopes(debugDir, manifest._abs.subtasks || []);
 
 // Evidence is loaded defensively (try/catch) because in run.sh's parallel pipeline
 // the fetcher writes $rootdata_pkt concurrently with r1.mjs starting; once Phase 4
@@ -244,7 +246,7 @@ const tasks = manifest._abs.subtasks.map(st => async () => {
 
     if (r.envelope) {
       try {
-        await writeFile(join(debugDir, `${st.name}.envelope.json`), JSON.stringify(r.envelope, null, 2));
+        await writeFile(r1EnvelopePath(debugDir, st.name), JSON.stringify(r.envelope, null, 2));
       } catch (writeErr) {
         console.error(`[r1:${st.name}] failed to write envelope: ${writeErr.message}`);
         // Envelope write failure is operational, not subtask failure — continue with parsed result.

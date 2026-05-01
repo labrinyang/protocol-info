@@ -12,7 +12,7 @@ By default, generated artifacts are written to `out/` under the current working
 directory where the command is invoked. Plugin updates do not move the output
 root because it is not tied to the plugin cache path.
 
-Current release: `2.4.1`.
+Current release: `2.4.2`.
 
 ## 2.4 Highlights
 

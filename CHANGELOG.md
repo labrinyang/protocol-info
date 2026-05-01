@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.4.2] — 2026-05-01
+
+### Fixed
+- R1 now clears stale per-subtask `*.envelope.json` files at the start of a new
+  run, preventing envelopes left by killed batches from looking like current
+  completed subtasks.
+
 ## [2.4.1] — 2026-05-01
 
 ### Added
