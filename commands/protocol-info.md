@@ -62,6 +62,27 @@ Claude invocations have a default wall-clock watchdog (`CLAUDE_TIMEOUT_MS`,
 15 minutes; `R1_CLAUDE_TIMEOUT_MS` overrides R1), so a stalled subtask fails as
 `error_kind=timeout` and the R1 partial path can continue.
 
+## Background orchestration
+
+When you orchestrate several single-protocol crawls yourself instead of using a
+single `--batch --parallel ...` invocation, do not pace the queue with fixed
+`ScheduleWakeup` delays such as 40 minutes. Claude Code background commands send
+a task-completion notification as soon as the process exits; use that
+notification to start the next protocol immediately.
+
+Before changing crawler timeouts or assuming a crawl is slow, separate actual
+crawl runtime from orchestration idle time:
+
+- compare adjacent `out/.runs/<run-id>/` timestamps to estimate per-protocol
+  runtime;
+- check whether a crawl process is still alive before waiting longer;
+- inspect `out/<slug>/_debug/r1/r1-status.json` only when a current process is
+  still running or the run failed.
+
+Use scheduled wakeups only as a coarse fallback watchdog when completion
+notifications are unavailable or suspected broken. They should not be the normal
+mechanism for advancing a queue.
+
 ## After the run finishes
 
 Keep the reply tight. The reviewer's main tool is the live out browser — surface the printed command first. Per-record JSON paths are inside the browser already, so do not enumerate them in the reply.

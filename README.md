@@ -12,7 +12,7 @@ By default, generated artifacts are written to `out/` under the current working
 directory where the command is invoked. Plugin updates do not move the output
 root because it is not tied to the plugin cache path.
 
-Current release: `2.4.2`.
+Current release: `2.4.3`.
 
 ## 2.4 Highlights
 
@@ -189,7 +189,7 @@ After installation, you can call the slash command directly:
   --batch --display-name "Morpho"
 ```
 
-You can also trigger the bundled skill with natural language, for example:
+You can also trigger the bundled skills with natural language, for example:
 
 - "Research Pendle protocol info and translate it into Chinese and Japanese."
 - "Batch crawl Morpho and Aave earn metadata without translation."
@@ -197,8 +197,16 @@ You can also trigger the bundled skill with natural language, for example:
 - "Crawl protocol info for Morpho and translate to all locales."
 - "Translate the existing Pendle record into Japanese."
 - "Verify Pendle fundingRounds and apply the update."
+- "Keep crawling this backlog, but start the next protocol as soon as the
+  current background task finishes."
 
-The skill lives at `skills/protocol-info-crawler/SKILL.md` and dispatches to `/protocol-info:protocol-info`.
+The plugin exposes a user-facing `protocol-info-router` skill. It chooses among
+three model-only focused sub-skills, all dispatching to the existing
+`/protocol-info:protocol-info` slash command: `protocol-info-crawler` for new
+crawls, `protocol-info-maintainer` for existing records, and
+`protocol-info-batch-operator` for long-running queues. The focused sub-skills
+are hidden from the `/` menu with `user-invocable: false` so the skill list stays
+centered on the router without shadowing the slash command.
 
 ## Use As A Standalone CLI
 

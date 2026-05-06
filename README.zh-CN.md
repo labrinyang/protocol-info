@@ -11,7 +11,7 @@
 默认情况下，生成产物会写入调用命令时当前目录下的 `out/`。输出根目录不绑定
 plugin cache，因此更新插件不会改变历史输出所在位置。
 
-当前版本：`2.4.2`。
+当前版本：`2.4.3`。
 
 ## 2.4 重点更新
 
@@ -165,7 +165,7 @@ R1_HEARTBEAT_MS=60000
   --batch --display-name "Morpho"
 ```
 
-也可以用自然语言触发内置 skill，例如：
+也可以用自然语言触发内置 skills，例如：
 
 - “调研 Pendle 的 protocol info，并翻译成中文和日文。”
 - “批量抓 Morpho 和 Aave 的 earn 信息，不要翻译。”
@@ -173,8 +173,15 @@ R1_HEARTBEAT_MS=60000
 - “Crawl protocol info for Morpho and translate to all locales.”
 - “把已有 Pendle 记录补翻成日语。”
 - “核实 Pendle 的 fundingRounds 并应用更新。”
+- “继续跑这批 backlog，当前后台任务一完成就马上启动下一个协议。”
 
-Skill 位于 `skills/protocol-info-crawler/SKILL.md`，最终会派发到 `/protocol-info:protocol-info`。
+插件暴露一个用户可见的 `protocol-info-router` 主路由 skill，它会自主选择三个
+仅供模型调度的聚焦子技能，最终都派发到现有
+`/protocol-info:protocol-info` slash command：`protocol-info-crawler` 负责
+新建/重爬记录，`protocol-info-maintainer` 负责维护已有记录，
+`protocol-info-batch-operator` 负责长队列调度。聚焦子技能通过
+`user-invocable: false` 从 `/` 菜单隐藏，用户侧 skill 列表会主要保留路由入口，
+同时不会遮蔽原 slash command。
 
 ## 作为独立 CLI 使用
 

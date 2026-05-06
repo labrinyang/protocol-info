@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.4.3] — 2026-05-06
+
+### Changed
+- Plugin agent instructions now distinguish actual crawl runtime from
+  orchestration idle time and tell background batch operators to advance queues
+  from task-completion notifications instead of fixed wakeup delays.
+- Plugin skills are split into focused entries for new crawls, existing-record
+  maintenance, and long batch orchestration.
+- Added a main `protocol-info-router` skill that chooses the focused plugin
+  sub-skill before dispatching without shadowing the existing
+  `/protocol-info:protocol-info` slash command.
+- Focused protocol-info sub-skills are now `user-invocable: false`, keeping the
+  user-facing skill list centered on the main router while still allowing model
+  dispatch.
+
 ## [2.4.2] — 2026-05-01
 
 ### Fixed
