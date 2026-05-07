@@ -12,7 +12,7 @@ By default, generated artifacts are written to `out/` under the current working
 directory where the command is invoked. Plugin updates do not move the output
 root because it is not tied to the plugin cache path.
 
-Current release: `2.4.3`.
+Current release: `2.4.4`.
 
 ## 2.4 Highlights
 
@@ -375,22 +375,23 @@ node framework/out-browser.mjs --out ./out --port 8765
 The browser server reads the current `out/` tree on every API request and the
 page polls it automatically, so edits to `out/<slug>/record.json` show up
 without regenerating HTML. It lets you filter protocols, inspect artifacts,
-review per-protocol changes, check logo asset coverage, copy workflow commands,
-and copy one merged import JSON for the visible records. Record counts are
-computed from the current `record.json` so they stay accurate even when a
+review per-protocol changes, check logo asset coverage, open protocol/logo
+folders in Finder, copy one merged import JSON for the visible records, and
+copy a TSV summary for the visible records. The browser is desktop-first; it
+keeps the review queue, detail pane, and workspace actions visible together.
+Record counts are computed from the current `record.json` so they stay accurate even when a
 per-slug `summary.tsv` is absent. JSON artifacts show shape/key chips, syntax
-highlighting, raw copy, minified copy, and direct file links. Diffs are shown as
-colored per-line commit diffs with copy support. Its detail pane has four
+highlighting, raw copy, path copy, Finder reveal, and direct file links. Diffs are shown as
+colored per-line commit diffs with copy support. Its detail pane has three
 modes:
 
 - `Artifacts` — preview/copy `record.json`, `record.import.json`, `record.full.json`, findings, gaps, changes, and meta files, with JSON-oriented inspection controls.
 - `Changes` — view the slug-scoped local git history plus latest diff stats and a colored unified diff.
-- `Assets` — inspect provider, member, and audit logo assets, including whether the local file exists under the uploadable logo folders.
-- `Commands` — copy common `get`, `set`, `analyze`, `i18n`, `refresh`, `history`, `diff`, and `restore` commands for the selected protocol.
+- `Logos` — inspect provider, member, and audit logo assets, including whether the local file exists under the uploadable logo folders.
 
 It serves only review artifacts; raw Claude/debug logs stay under `_debug/`.
 
-![Live out browser — protocol review console with artifacts, changes, assets, commands, and run filters](docs/images/out-browser.png)
+![Live out browser — protocol review console with artifacts, changes, logos, and Finder shortcuts](docs/images/out-browser.png)
 
 Typical files:
 
@@ -606,7 +607,7 @@ Recommended review flow:
 
 1. Run `./run.sh browse` and open the printed local URL, or inspect `out/.runs/<run-id>/summary.tsv`.
 2. For each `OK` row, review `out/<slug>/record.json`.
-3. In the `Assets` panel, confirm provider, member, and auditor logos exist locally before uploading the logo folders.
+3. In the `Logos` panel, confirm provider, member, and auditor logos exist locally before uploading the logo folders.
 4. Check `findings.json` for source coverage.
 5. Check `gaps.json` for missing or weak fields.
 6. Check `changes.json` when R2 changed R1 output.

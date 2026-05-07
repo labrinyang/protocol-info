@@ -11,7 +11,7 @@
 默认情况下，生成产物会写入调用命令时当前目录下的 `out/`。输出根目录不绑定
 plugin cache，因此更新插件不会改变历史输出所在位置。
 
-当前版本：`2.4.3`。
+当前版本：`2.4.4`。
 
 ## 2.4 重点更新
 
@@ -344,16 +344,15 @@ node framework/out-browser.mjs --out ./out --port 8765
 
 实时 server 每次 API 请求都会读取当前 `out/` 树，页面会自动轮询；
 `out/<slug>/record.json` 更新后，浏览器里的数据会自动刷新，不需要重建 HTML。
-它可以筛选协议、查看产物、检查协议级改动、确认 logo 资产覆盖、复制工作流命令，或为当前可见记录复制一份合并后的 import JSON。列表和详情里的成员/融资/审计数量直接从当前 `record.json` 计算，即使单个 slug 缺少 `summary.tsv` 也不会显示成空。JSON 产物支持 shape/key chip、语法高亮、raw copy、minified copy 和直接打开文件；diff 会按行着色并支持复制。详情区有四个模式：
+桌面端是主要使用场景。它可以筛选协议、查看产物、检查协议级改动、确认 logo 资产覆盖、在 Finder 打开协议目录和 logo 目录，或为当前可见记录复制一份合并后的 import JSON 和 TSV summary。列表和详情里的成员/融资/审计数量直接从当前 `record.json` 计算，即使单个 slug 缺少 `summary.tsv` 也不会显示成空。JSON 产物支持 shape/key chip、语法高亮、raw copy、路径复制、Finder reveal 和直接打开文件；diff 会按行着色并支持复制。详情区有三个模式：
 
 - `Artifacts`：预览/复制 `record.json`、`record.import.json`、`record.full.json`、findings、gaps、changes、meta 等文件，并提供 JSON 检查控件。
 - `Changes`：查看该 slug 的本地 git history、最新 diff 统计和彩色 unified diff。
-- `Assets`：检查 provider、member、audit logo 资产，以及本地上传目录中是否已有对应文件。
-- `Commands`：复制当前协议常用的 `get`、`set`、`analyze`、`i18n`、`refresh`、`history`、`diff`、`restore` 命令。
+- `Logos`：检查 provider、member、audit logo 资产，以及本地上传目录中是否已有对应文件。
 
 它只提供审核用的关键产物；Claude/debug 原始日志仍保留在 `_debug/`。
 
-![实时 out browser 本地审核工作台：Artifacts、Changes、Assets、Commands 和 run filter](docs/images/out-browser.png)
+![实时 out browser 本地审核工作台：Artifacts、Changes、Logos 和 Finder 快捷入口](docs/images/out-browser.png)
 
 常见文件：
 
@@ -569,7 +568,7 @@ Consumer normalizer 会做决定性后处理：
 
 1. 运行 `./run.sh browse` 并打开打印出来的本地 URL，或检查 `out/.runs/<run-id>/summary.tsv`。
 2. 对每个 `OK` row，检查 `out/<slug>/record.json`。
-3. 在 `Assets` 面板确认 provider、member、auditor logo 都有本地文件，再上传 logo 文件夹。
+3. 在 `Logos` 面板确认 provider、member、auditor logo 都有本地文件，再上传 logo 文件夹。
 4. 查看 `findings.json`，确认来源覆盖。
 5. 查看 `gaps.json`，确认缺失或弱证据字段。
 6. 如果 R2 修改过 R1 输出，查看 `changes.json`。

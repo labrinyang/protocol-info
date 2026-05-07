@@ -131,7 +131,7 @@ export const tests = [
     },
   },
   {
-    name: 'buildOutBrowser HTML lists protocols as primary nav, runs as filter',
+    name: 'buildOutBrowser HTML renders simplified review queue without run filter UI',
     fn: async () => {
       const { ensureRepo, commit } = await import('../../framework/version-store.mjs');
       const dir = await mkdtemp(join(tmpdir(), 'pi-html-'));
@@ -146,15 +146,17 @@ export const tests = [
         await buildOutBrowser(dir);
         const html = await readFile(join(dir, 'index.html'), 'utf8');
         const data = embeddedData(html);
-        assert.match(html, /Protocols/i);
+        assert.match(html, /Review queue/i);
         assert.match(html, /pendle/);
-        assert.match(html, /class="runs-filter-list"/);
-        assert.match(html, /<option value="unknown">unknown<\/option>/);
-        assert.deepEqual(data.facets.statuses, ['unknown']);
-        // Run-id should appear in the filter section, not as a directory link.
+        assert.equal(data.facets, undefined);
+        assert.equal(data.runsLog, undefined);
+        assert.equal(data.totals.runs, undefined);
+        assert.match(html, /data-queue-filter="issues"/);
         assert.match(html, /R1/);
-        // The legacy "runs as primary nav" markers should be gone:
+        assert.doesNotMatch(html, /1 OK \/ 0 fail/);
+        assert.doesNotMatch(html, /runs-filter-list/);
         assert.doesNotMatch(html, /class="runs-list"/);
+        assert.doesNotMatch(html, /All statuses/);
       } finally {
         await rm(dir, { recursive: true, force: true });
       }
@@ -212,7 +214,7 @@ export const tests = [
     },
   },
   {
-    name: 'buildOutBrowser renders v2.1 workflow and logo asset panels',
+    name: 'buildOutBrowser renders simplified artifact/change/logo review panels',
     fn: async () => {
       const { ensureRepo, commit } = await import('../../framework/version-store.mjs');
       const dir = await mkdtemp(join(tmpdir(), 'pi-html-logo-'));
@@ -254,19 +256,34 @@ export const tests = [
         const data = embeddedData(html);
         const pendle = data.protocols.find((p) => p.slug === 'pendle');
         assert.match(html, /Logo assets/);
-        assert.match(html, /Workflow commands/);
-        assert.match(html, /command-row/);
         assert.match(html, /asset-sections/);
         assert.match(html, /json-chip/);
         assert.match(html, /json-key/);
         assert.match(html, /diff-line\.add/);
-        assert.match(html, /Copy minified JSON/);
         assert.match(html, /Copy diff/);
+        assert.match(html, /Open out/);
+        assert.match(html, /Show folder/);
+        assert.match(html, /Logo folders/);
+        assert.match(html, /--semantic-success/);
+        assert.match(html, /--semantic-warning/);
+        assert.match(html, /--semantic-danger/);
+        assert.match(html, /--semantic-location/);
+        assert.match(html, /--syntax-json-key/);
+        assert.match(html, /--diff-add-bg/);
+        assert.match(html, /oklch/);
+        assert.match(html, /Copy visible summary/);
+        assert.doesNotMatch(html, /Copy run summary/);
+        assert.doesNotMatch(html, /@media \(max-width/);
+        assert.match(html, /data-reveal-rel="\."/);
+        assert.match(html, /data-reveal-rel/);
         assert.match(html, /data-detail-mode/);
         assert.match(html, /Artifacts/);
         assert.match(html, /Changes/);
-        assert.match(html, /Assets/);
-        assert.match(html, /Commands/);
+        assert.match(html, /Logos/);
+        assert.doesNotMatch(html, /Workflow commands/);
+        assert.doesNotMatch(html, /command-row/);
+        assert.doesNotMatch(html, /Copy minified JSON/);
+        assert.doesNotMatch(html, /data-detail-mode="commands"/);
         assert.match(html, /Search slug, provider, status/);
         assert.match(html, /protocol-logo\/pendle\.png/);
         assert.match(html, /protocol-member-logo\/pendle-alice\.png/);
@@ -274,6 +291,7 @@ export const tests = [
         assert.equal(pendle.view.defaultArtifact, 'record.json');
         assert.equal(pendle.view.initials, 'P');
         assert.equal(pendle.view.modeCounts.assets, 3);
+        assert.deepEqual(data.logoFolders.map((item) => item.relPath), ['protocol-logo', 'protocol-member-logo', 'audit-logo']);
         assert.deepEqual(
           pendle.view.metrics.slice(0, 3).map((item) => item.value),
           ['1', '0', '1'],
@@ -281,10 +299,8 @@ export const tests = [
         assert.equal(pendle.view.facts.find((item) => item.label === 'Audits').value, '1');
         assert.equal(pendle.artifacts.find((item) => item.name === 'record.json').jsonMeta.shape, 'object(8)');
         assert.ok(pendle.view.searchText.includes('fixed_rate'));
-        assert.ok(pendle.view.workflowCommands.some((item) => item.group === 'inspect'));
-        assert.ok(pendle.view.workflowCommands.some((item) => item.group === 'version' && item.risk === 'destructive'));
-        assert.ok(pendle.view.workflowCommands.some((item) => item.command.includes(`./run.sh diff pendle`)));
-        assert.ok(pendle.view.workflowCommands.some((item) => item.command.includes(`'"Updated source-language description"'`)));
+        assert.equal(pendle.view.workflowCommands, undefined);
+        assert.equal(pendle.view.modeCounts.commands, undefined);
         const script = html.match(/<script>\n([\s\S]*)<\/script>\n<\/body>/)?.[1];
         assert.ok(script, 'expected browser script');
         new Function(script);
@@ -337,6 +353,29 @@ export const tests = [
         const afterPendle = after.protocols.find((p) => p.slug === 'pendle');
         assert.notEqual(after.revision, before.revision);
         assert.equal(afterPendle.view.metrics.find((item) => item.key === 'members').value, '1');
+      } finally {
+        if (server) await new Promise((resolve) => server.close(resolve));
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: 'live out browser reveal endpoint rejects paths outside out root',
+    fn: async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'pi-live-reveal-'));
+      let server = null;
+      try {
+        await mkdir(join(dir, 'pendle'), { recursive: true });
+        await writeFile(join(dir, 'pendle', 'record.json'), '{"slug":"pendle"}');
+        server = await startOutBrowserServer({
+          outputRoot: dir,
+          host: '127.0.0.1',
+          port: 0,
+          logger: { log: () => {} },
+        });
+        const { port } = server.address();
+        const res = await fetch(`http://127.0.0.1:${port}/api/reveal?rel=${encodeURIComponent('../')}`);
+        assert.equal(res.status, 403);
       } finally {
         if (server) await new Promise((resolve) => server.close(resolve));
         await rm(dir, { recursive: true, force: true });

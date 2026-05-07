@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.4.4] — 2026-05-07
+
+### Changed
+- Simplified the live out browser into a desktop-first review console with a
+  reduced queue/filter surface, semantic OKLCH color roles, Finder shortcuts
+  for protocol and logo folders, and three detail modes: Artifacts, Changes,
+  and Logos.
+
 ## [2.4.3] — 2026-05-06
 
 ### Changed
