@@ -14,7 +14,7 @@
 //   --max-turns <n>           per-Claude-call cap (clamps manifest default down)
 //   --max-budget <usd>        single-provider total LLM cap
 //   --parallel <n>            default 1; dry-run forces 1
-//   --i18n <flag>             "none" | "all" | "zh_CN,ja_JP,..." | empty
+//   --i18n <flag>             "none" | "all" | "zh-cn,ja-jp,..." | empty
 //   --i18n-parallel <n>       default 8
 //   --i18n-model <name>       default Haiku (manifest default)
 //   --r2-routing <mode>       single_provider | external_first | external_first_with_claude_fallback
@@ -197,7 +197,7 @@ Run-wide flags:
   --max-turns <n>         per-Claude-call turn cap (clamps manifest default)
   --max-budget <usd>      single-provider total LLM cap
   --parallel <n>          default 1; dry-run forces 1
-  --i18n <flag>           "none" | "all" | "zh_CN,ja_JP,..." | "" (silent skip)
+  --i18n <flag>           "none" | "all" | "zh-cn,ja-jp,..." | "" (silent skip)
   --i18n-parallel <n>     default 8
   --i18n-model <name>     override i18n model (default haiku; OpenAI uses OPENAI_MODEL)
   --r2-routing <mode>     single_provider (default), external_first, or external_first_with_claude_fallback
@@ -224,7 +224,8 @@ Workflow commands (v2.1):
   set <slug> <jsonpath> <json>   edit one value with validation + commit
   analyze <slug> <jsonpath> --query <text> [--apply]
                               research one value; apply validates + commits
-  i18n <slug> [--locales LIST]   translate current record, post-process, commit
+  i18n <slug> [--locales LIST] [--force]
+                              add missing translations, post-process, commit
   refresh <slug> <subtask>       rerun metadata/team/funding/audits and merge
   pdf-text <slug> <audit-index>  print extracted audit report text from _debug/rootdata.json
   history <slug> [--limit N]     show git history for one protocol

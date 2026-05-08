@@ -4,7 +4,7 @@ English | [简体中文](README.zh-CN.md)
 
 `protocol-info` is a Claude Code plugin and standalone CLI for researching DeFi earn/yield/staking protocols and producing schema-validated `EarnProtocolInfo` JSON.
 
-It runs Claude in headless mode, gathers structured evidence from optional fetchers such as RootData and DeFiLlama, reconciles field-level evidence, validates the final record against JSON Schema, rehosts protocol/member/auditor logos into stable output folders, and can optionally translate selected fields with Claude Haiku or an OpenAI-compatible gateway for 19 locales.
+It runs Claude in headless mode, gathers structured evidence from optional fetchers such as RootData and DeFiLlama, reconciles field-level evidence, validates the final record against JSON Schema, rehosts protocol/member/auditor logos into stable output folders, and can optionally translate selected fields with Claude Haiku or an OpenAI-compatible gateway for 20 translated locales.
 
 The output is intended for human review first, then import into the dashboard through the `earn-protocol-info` import endpoint.
 
@@ -12,7 +12,7 @@ By default, generated artifacts are written to `out/` under the current working
 directory where the command is invoked. Plugin updates do not move the output
 root because it is not tied to the plugin cache path.
 
-Current release: `2.4.6`.
+Current release: `2.4.7`.
 
 ## 2.4 Highlights
 
@@ -39,7 +39,7 @@ Current release: `2.4.6`.
 # Batch crawl with RootData key rotation and i18n.
 ROOTDATA_API_KEYS=sk-a,sk-b \
 I18N_PROVIDER=openai \
-./run.sh --parallel 4 --i18n zh_CN,ja_JP \
+./run.sh --parallel 4 --i18n zh-cn,ja-jp \
   --batch --display-name "Pendle" \
   --batch --display-name "Morpho"
 ```
@@ -184,7 +184,7 @@ After installation, you can call the slash command directly:
 ```text
 /protocol-info:protocol-info --display-name "Pendle"
 /protocol-info:protocol-info --display-name "Pendle" --i18n all
-/protocol-info:protocol-info --parallel 4 --i18n zh_CN,ja_JP \
+/protocol-info:protocol-info --parallel 4 --i18n zh-cn,ja-jp \
   --batch --display-name "Pendle" \
   --batch --display-name "Morpho"
 ```
@@ -259,7 +259,7 @@ i18n:
 
 ```bash
 ./run.sh --display-name "Pendle" --i18n all
-./run.sh --display-name "Pendle" --i18n zh_CN,ja_JP,en_US
+./run.sh --display-name "Pendle" --i18n zh-cn,ja-jp,en-us
 ./run.sh --display-name "Pendle" --i18n none
 ```
 
@@ -278,7 +278,7 @@ Workflow commands on an existing `out/<slug>/`:
 ./run.sh set pendle description '"Updated source-language description"'
 ./run.sh analyze pendle fundingRounds --query "verify latest funding rounds"
 ./run.sh analyze pendle fundingRounds --query "verify latest funding rounds" --llm-provider openai --apply
-./run.sh i18n pendle --locales zh_CN,ja_JP
+./run.sh i18n pendle --locales zh-cn,ja-jp
 ./run.sh refresh pendle audits --llm-provider openai
 ./run.sh history pendle
 ./run.sh diff pendle
@@ -321,7 +321,7 @@ Dry run:
 | `--max-budget <usd>` | No | Total single-provider LLM budget cap. The orchestrator splits it across R1, R2, and i18n. |
 | `--r2-routing <mode>` | No | R2 route. Default `single_provider`; `external_first` tries OpenAI-compatible evidence reconcile and fails closed on gate rejection; `external_first_with_claude_fallback` falls back to Claude web reconcile. |
 | `--parallel <n>` | No | Number of providers to run concurrently. Default: `1`. |
-| `--i18n <flag>` | No | `none`, `all`, or comma-separated locale codes such as `zh_CN,ja_JP`. Empty means silent skip. |
+| `--i18n <flag>` | No | `none`, `all`, or comma-separated locale codes such as `zh-cn,ja-jp`. Empty means silent skip. |
 | `--i18n-parallel <n>` | No | Locale translation concurrency. Default: `8`. |
 | `--i18n-model <name>` | No | Override i18n model. Manifest default: `claude-haiku-4-5-20251001`. |
 | `--dry-run` | No | Print resolved providers and stop. Forces `--parallel 1`. |
@@ -342,7 +342,8 @@ history and rollback are handled by the nested git repo under `out/`.
 | `set <slug> <jsonpath> <json>` | Yes | Manually replace one value, validate, post-process, commit. |
 | `analyze <slug> <jsonpath> --query <text>` | No | Research one field and print a proposed value with evidence. |
 | `analyze <slug> <jsonpath> --query <text> --apply` | Yes | Apply the proposal at the same path, validate, post-process, commit. |
-| `i18n <slug> [--locales LIST]` | Yes | Re-run translation sidecars and export files from the current record. |
+| `i18n <slug> [--locales LIST]` | Yes | Add missing locale sidecars, preserve existing translations, regenerate export files. |
+| `i18n <slug> [--locales LIST] --force` | Yes | Re-translate the requested locales and replace their existing sidecars. |
 | `refresh <slug> <metadata|team|funding|audits>` | Yes | Re-run one broad R1 subtask and merge through the audit-first guard. |
 | `history <slug> [--limit N]` | No | Show local git history for one protocol. |
 | `diff <slug> [from] [to]` | No | Show a unified diff for one protocol. With no refs, compares that slug's latest two commits. |
@@ -583,27 +584,31 @@ Important constraints:
 
 ## Supported Locales
 
+`record.import.json` uses these dashboard locale keys. `en` is the source-language fallback row; `--i18n all` translates the other 20 locales.
+
 | Code | Language |
 | --- | --- |
-| `bn` | Bengali |
+| `en` | English (default fallback) |
+| `en-us` | English (United States) |
+| `zh-cn` | Simplified Chinese (Mainland China) |
+| `zh-tw` | Traditional Chinese (Taiwan) |
+| `zh-hk` | Traditional Chinese (Hong Kong) |
+| `ja-jp` | Japanese |
+| `ko-kr` | Korean |
+| `fr-fr` | French |
 | `de` | German |
-| `en_US` | English (US) |
 | `es` | Spanish |
-| `fr_FR` | French |
-| `hi_IN` | Hindi |
-| `id` | Indonesian |
-| `it_IT` | Italian |
-| `ja_JP` | Japanese |
-| `ko_KR` | Korean |
+| `it-it` | Italian |
+| `pt-br` | Portuguese (Brazil) |
 | `pt` | Portuguese |
-| `pt_BR` | Portuguese (Brazil) |
 | `ru` | Russian |
-| `th_TH` | Thai |
-| `uk_UA` | Ukrainian |
+| `uk-ua` | Ukrainian |
+| `ar` | Arabic |
+| `hi-in` | Hindi |
+| `bn` | Bengali |
 | `vi` | Vietnamese |
-| `zh_CN` | Simplified Chinese |
-| `zh_HK` | Traditional Chinese (Hong Kong) |
-| `zh_TW` | Traditional Chinese (Taiwan) |
+| `th-th` | Thai |
+| `id` | Indonesian |
 
 ## Review And Import
 
@@ -654,13 +659,18 @@ Common causes are invalid URLs, missing required members, incomplete dates, or a
 
 ### Partial i18n success
 
-The summary column may show values such as `3/19`. Inspect:
+The summary column may show values such as `3/20`. Inspect:
 
 ```text
 out/<slug>/_debug/i18n/
 ```
 
 Successful locale sidecars are still used by post-processing.
+
+`i18n <slug> --locales ...` is incremental by default: existing locales are
+kept, missing locales are translated, and `record.full.json` is used to restore
+ignored `_debug/i18n/` sidecars when needed. Use `--force` to re-translate a
+locale that already exists.
 
 ### R1 appears stuck
 

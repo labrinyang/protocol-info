@@ -4,14 +4,14 @@
 
 `protocol-info` 是一个 Claude Code 插件，也可以作为独立 CLI 使用。它用于调研 DeFi earn/yield/staking 协议，并生成通过 JSON Schema 校验的 `EarnProtocolInfo` JSON。
 
-它会以 headless 模式调用 Claude，从 RootData、DeFiLlama 等可选 fetcher 获取结构化证据，按字段合并和对账，校验最终记录，把 protocol/team member/auditor logo 下载到稳定输出目录，并可选择用 Claude Haiku 或 OpenAI-compatible 网关翻译 19 个 locale 的字段。
+它会以 headless 模式调用 Claude，从 RootData、DeFiLlama 等可选 fetcher 获取结构化证据，按字段合并和对账，校验最终记录，把 protocol/team member/auditor logo 下载到稳定输出目录，并可选择用 Claude Haiku 或 OpenAI-compatible 网关翻译 20 个 locale 的字段。
 
 输出应先人工审核，再通过 dashboard 的 `earn-protocol-info` import endpoint 导入。
 
 默认情况下，生成产物会写入调用命令时当前目录下的 `out/`。输出根目录不绑定
 plugin cache，因此更新插件不会改变历史输出所在位置。
 
-当前版本：`2.4.6`。
+当前版本：`2.4.7`。
 
 ## 2.4 重点更新
 
@@ -36,7 +36,7 @@ plugin cache，因此更新插件不会改变历史输出所在位置。
 # RootData 多 key + i18n 批量抓取。
 ROOTDATA_API_KEYS=sk-a,sk-b \
 I18N_PROVIDER=openai \
-./run.sh --parallel 4 --i18n zh_CN,ja_JP \
+./run.sh --parallel 4 --i18n zh-cn,ja-jp \
   --batch --display-name "Pendle" \
   --batch --display-name "Morpho"
 ```
@@ -160,7 +160,7 @@ R1_HEARTBEAT_MS=60000
 ```text
 /protocol-info:protocol-info --display-name "Pendle"
 /protocol-info:protocol-info --display-name "Pendle" --i18n all
-/protocol-info:protocol-info --parallel 4 --i18n zh_CN,ja_JP \
+/protocol-info:protocol-info --parallel 4 --i18n zh-cn,ja-jp \
   --batch --display-name "Pendle" \
   --batch --display-name "Morpho"
 ```
@@ -234,7 +234,7 @@ i18n：
 
 ```bash
 ./run.sh --display-name "Pendle" --i18n all
-./run.sh --display-name "Pendle" --i18n zh_CN,ja_JP,en_US
+./run.sh --display-name "Pendle" --i18n zh-cn,ja-jp,en-us
 ./run.sh --display-name "Pendle" --i18n none
 ```
 
@@ -253,7 +253,7 @@ R2_LLM_PROVIDER=openai ./run.sh --display-name "Pendle"
 ./run.sh set pendle description '"更新后的源语言描述"'
 ./run.sh analyze pendle fundingRounds --query "verify latest funding rounds"
 ./run.sh analyze pendle fundingRounds --query "verify latest funding rounds" --llm-provider openai --apply
-./run.sh i18n pendle --locales zh_CN,ja_JP
+./run.sh i18n pendle --locales zh-cn,ja-jp
 ./run.sh refresh pendle audits --llm-provider openai
 ./run.sh history pendle
 ./run.sh diff pendle
@@ -295,7 +295,7 @@ Dry run：
 | `--max-budget <usd>` | 否 | 单个 provider 的总 LLM 预算上限，由 orchestrator 分配给 R1、R2、i18n。 |
 | `--r2-routing <mode>` | 否 | R2 路由。默认 `single_provider`；`external_first` 会先跑 OpenAI-compatible evidence reconcile 并在 gate 拒绝时 fail closed；`external_first_with_claude_fallback` 会按需回退 Claude web reconcile。 |
 | `--parallel <n>` | 否 | 并发 provider 数量，默认 `1`。 |
-| `--i18n <flag>` | 否 | `none`、`all`，或逗号分隔 locale，例如 `zh_CN,ja_JP`。为空时静默跳过。 |
+| `--i18n <flag>` | 否 | `none`、`all`，或逗号分隔 locale，例如 `zh-cn,ja-jp`。为空时静默跳过。 |
 | `--i18n-parallel <n>` | 否 | locale 翻译并发数，默认 `8`。 |
 | `--i18n-model <name>` | 否 | 覆盖 i18n 模型。manifest 默认值为 `claude-haiku-4-5-20251001`。 |
 | `--dry-run` | 否 | 打印解析后的 provider 后退出，并强制 `--parallel 1`。 |
@@ -314,7 +314,8 @@ Dry run：
 | `set <slug> <jsonpath> <json>` | 是 | 手动替换一个字段，校验、post-process、commit。 |
 | `analyze <slug> <jsonpath> --query <text>` | 否 | 调研一个字段，输出带证据的提案。 |
 | `analyze <slug> <jsonpath> --query <text> --apply` | 是 | 把提案应用到同一个路径，校验、post-process、commit。 |
-| `i18n <slug> [--locales LIST]` | 是 | 基于当前记录重新生成翻译 sidecar 和导出文件。 |
+| `i18n <slug> [--locales LIST]` | 是 | 增量补齐缺失 locale，保留已有翻译，并重新生成导出文件。 |
+| `i18n <slug> [--locales LIST] --force` | 是 | 重新翻译指定 locale，并替换对应已有 sidecar。 |
 | `refresh <slug> <metadata|team|funding|audits>` | 是 | 重跑一个大的 R1 subtask，并通过 audit-first guard 合并。 |
 | `history <slug> [--limit N]` | 否 | 查看单个协议的本地 git 历史。 |
 | `diff <slug> [from] [to]` | 否 | 查看单个协议的 unified diff。不传 ref 时，比较该 slug 最新两次提交。 |
@@ -542,27 +543,31 @@ Consumer normalizer 会做决定性后处理：
 
 ## 支持的 Locale
 
+`record.import.json` 使用以下 dashboard locale key。`en` 是源语言 fallback 行；`--i18n all` 会翻译其余 20 个 locale。
+
 | Code | 语言 |
 | --- | --- |
-| `bn` | 孟加拉语 |
+| `en` | English（默认 fallback） |
+| `en-us` | English (United States) 美式英文 |
+| `zh-cn` | 简体中文（中国大陆） |
+| `zh-tw` | 繁體中文（台灣） |
+| `zh-hk` | 繁體中文（香港） |
+| `ja-jp` | 日本語 |
+| `ko-kr` | 한국어 |
+| `fr-fr` | Français |
 | `de` | 德语 |
-| `en_US` | 英语（美国） |
 | `es` | 西班牙语 |
-| `fr_FR` | 法语 |
-| `hi_IN` | 印地语 |
-| `id` | 印尼语 |
-| `it_IT` | 意大利语 |
-| `ja_JP` | 日语 |
-| `ko_KR` | 韩语 |
-| `pt` | 葡萄牙语 |
-| `pt_BR` | 葡萄牙语（巴西） |
+| `it-it` | Italiano |
+| `pt-br` | Português (Brasil) |
+| `pt` | Português |
 | `ru` | 俄语 |
-| `th_TH` | 泰语 |
-| `uk_UA` | 乌克兰语 |
-| `vi` | 越南语 |
-| `zh_CN` | 简体中文 |
-| `zh_HK` | 繁体中文（香港） |
-| `zh_TW` | 繁体中文（台湾） |
+| `uk-ua` | Українська |
+| `ar` | العربية |
+| `hi-in` | हिन्दी |
+| `bn` | বাংলা（孟加拉语） |
+| `vi` | Tiếng Việt |
+| `th-th` | ภาษาไทย |
+| `id` | Bahasa Indonesia |
 
 ## 审核与导入
 
@@ -613,13 +618,17 @@ CLAUDE_BIN=/path/to/claude ./run.sh --display-name "Pendle"
 
 ### i18n 部分成功
 
-Summary 中可能出现 `3/19` 这类结果。检查：
+Summary 中可能出现 `3/20` 这类结果。检查：
 
 ```text
 out/<slug>/_debug/i18n/
 ```
 
 成功生成的 locale sidecar 仍会被 post-processing 使用。
+
+`i18n <slug> --locales ...` 默认是增量模式：已有 locale 会保留，只翻译缺失
+locale，并会在需要时从 `record.full.json` 恢复被 gitignore 的 `_debug/i18n/`
+sidecar。需要重翻已有 locale 时加 `--force`。
 
 ### R1 看起来卡住
 

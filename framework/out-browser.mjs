@@ -2187,7 +2187,6 @@ function i18nCodeLabel(code) {
 
 function dashboardLocale(code) {
   if (code === 'source') return 'en';
-  if (code === 'en_US') return 'en';
   return String(code || '').replace(/_/g, '-').toLowerCase();
 }
 

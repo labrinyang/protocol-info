@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.4.7] — 2026-05-08
+
+### Changed
+- Updated dashboard import i18n locale keys to preserve regional variants
+  from the provided dashboard catalog, including `en-us`, `fr-fr`, `ja-jp`,
+  `ko-kr`, `hi-in`, `it-it`, `th-th`, and `uk-ua`.
+- Added Arabic (`ar`) to the configured i18n locale catalog.
+- Made the `i18n` workflow command incremental by default: it now preserves
+  existing translations, restores missing sidecars from `record.full.json`, and
+  only translates missing requested locales unless `--force` is passed.
+
 ## [2.4.6] — 2026-05-08
 
 ### Fixed

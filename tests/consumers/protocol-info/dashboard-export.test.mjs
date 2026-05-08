@@ -28,7 +28,7 @@ export const tests = [
       });
       assert.equal(file.data.length, 3);
       const codes = file.data.map(d => d.locale).sort();
-      assert.deepEqual(codes, ['en', 'ja', 'zh-cn']);
+      assert.deepEqual(codes, ['en', 'ja-jp', 'zh-cn']);
       const zh = file.data.find(d => d.locale === 'zh-cn');
       assert.equal(zh.description, 'ZH');
       assert.equal(zh.members[0].memberName, 'A');
@@ -36,7 +36,7 @@ export const tests = [
     },
   },
   {
-    name: 'en_US translation is skipped because it maps to source locale en',
+    name: 'en_US translation emits en-us without colliding with source en',
     fn: async () => {
       const file = buildImportFile({
         record: { slug: '3jane', displayName: '3Jane', description: 'EN', members: [{ memberName: 'A', memberPosition: 'EN_POS', oneLiner: 'EN_OL' }] },
@@ -45,8 +45,22 @@ export const tests = [
           zh_CN: { description: 'ZH', members: [{ memberPosition: 'ZH_POS', oneLiner: 'ZH_OL' }] },
         },
       });
-      assert.deepEqual(file.data.map(d => `${d.slug}:${d.locale}`).sort(), ['3jane:en', '3jane:zh-cn']);
+      assert.deepEqual(file.data.map(d => `${d.slug}:${d.locale}`).sort(), ['3jane:en', '3jane:en-us', '3jane:zh-cn']);
       assert.equal(file.data.find(d => d.locale === 'en').description, 'EN');
+      assert.equal(file.data.find(d => d.locale === 'en-us').description, 'US English rewrite');
+    },
+  },
+  {
+    name: 'translation key that equals source locale is still deduped',
+    fn: async () => {
+      const file = buildImportFile({
+        record: { slug: '3jane', displayName: '3Jane', description: 'EN', members: [] },
+        translations: {
+          en: { description: 'duplicate source locale', members: [] },
+        },
+      });
+      assert.deepEqual(file.data.map(d => `${d.slug}:${d.locale}`), ['3jane:en']);
+      assert.equal(file.data[0].description, 'EN');
     },
   },
 ];

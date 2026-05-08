@@ -6,6 +6,7 @@
 import { readFile } from 'node:fs/promises';
 import { loadManifest } from '../manifest-loader.mjs';
 import { runI18nStage } from '../i18n-stage.mjs';
+import { normalizeI18nLocaleCode } from '../i18n-locales.mjs';
 
 function arg(name, def) {
   const i = process.argv.indexOf(`--${name}`);
@@ -36,8 +37,9 @@ const knownCodes = new Set((manifest.i18n?.locale_catalog || []).map(e => e.code
 const requested = localesArg.split(',').map(s => s.trim()).filter(Boolean);
 const selectedLocales = [];
 for (const code of requested) {
-  if (knownCodes.size === 0 || knownCodes.has(code)) {
-    selectedLocales.push(code);
+  const normalized = normalizeI18nLocaleCode(code, manifest);
+  if (knownCodes.size === 0 || knownCodes.has(normalized)) {
+    selectedLocales.push(normalized);
   } else {
     console.error(`[i18n] unknown locale '${code}' (not in manifest.i18n.locale_catalog) — skipping`);
   }

@@ -54,6 +54,13 @@ export const tests = [
     },
   },
   {
+    name: 'resolveI18nSelection: hyphen dashboard codes normalize to manifest codes',
+    fn: async () => {
+      const manifest = { i18n: { locale_catalog: [{ code: 'zh_CN' }, { code: 'ja_JP' }, { code: 'en_US' }] } };
+      assert.deepEqual(resolveI18nSelection('zh-cn, ja-jp ,en-us', manifest), ['zh_CN', 'ja_JP', 'en_US']);
+    },
+  },
+  {
     name: 'computeBudgetPlan scales stage totals under single-provider cap',
     fn: async () => {
       const manifest = {

@@ -29,6 +29,7 @@ import { ensureRepo, commit, isClean, resetSlugToHead } from './version-store.mj
 import { invalidateI18nArtifacts } from './i18n-cache.mjs';
 import { cleanupCreatedLogoAssets } from './logo-assets.mjs';
 import { resolveR2Routing } from './r2-runner.mjs';
+import { normalizeI18nLocaleCode } from './i18n-locales.mjs';
 
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_DIR = dirname(FRAMEWORK_DIR);
@@ -685,7 +686,7 @@ export function resolveI18nSelection(i18nArg, manifest) {
   }
   const out = [];
   for (const code of raw) {
-    const trimmed = code.replace(/\s+/g, '');
+    const trimmed = normalizeI18nLocaleCode(code, manifest);
     if (trimmed) out.push(trimmed);
   }
   return out;
@@ -868,7 +869,7 @@ export async function run({
       }
     }
   } else if (!options.i18nArg) {
-    process.stderr.write('i18n: no --i18n flag — skipping translation. Pass --i18n all | zh_CN,ja_JP,... | none to control explicitly.\n');
+    process.stderr.write('i18n: no --i18n flag — skipping translation. Pass --i18n all | zh-cn,ja-jp,... | none to control explicitly.\n');
   }
 
   // ── post.mjs after i18n (base post already ran per successful slug) ─────
