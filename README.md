@@ -12,7 +12,7 @@ By default, generated artifacts are written to `out/` under the current working
 directory where the command is invoked. Plugin updates do not move the output
 root because it is not tied to the plugin cache path.
 
-Current release: `2.4.4`.
+Current release: `2.4.5`.
 
 ## 2.4 Highlights
 
@@ -380,18 +380,22 @@ folders in Finder, copy one merged import JSON for the visible records, and
 copy a TSV summary for the visible records. The browser is desktop-first; it
 keeps the review queue, detail pane, and workspace actions visible together.
 Record counts are computed from the current `record.json` so they stay accurate even when a
-per-slug `summary.tsv` is absent. JSON artifacts show shape/key chips, syntax
-highlighting, raw copy, path copy, Finder reveal, and direct file links. Diffs are shown as
-colored per-line commit diffs with copy support. Its detail pane has three
+per-slug `summary.tsv` is absent, and the live queue polls the output tree every
+750 ms while the page is open. JSON artifacts show shape/key chips, syntax
+highlighting, raw copy, path copy, Finder reveal, direct file links, and a
+taller reader that can use the page's vertical scroll for long artifacts. Diffs are shown as
+colored per-line commit diffs with copy support. Its detail pane has five
 modes:
 
 - `Artifacts` — preview/copy `record.json`, `record.import.json`, `record.full.json`, findings, gaps, changes, and meta files, with JSON-oriented inspection controls.
+- `Preview` — render `record.json` as a protocol-info UI preview with overview, tags, links, team, funding, and audit sections.
+- `i18n` — switch between source and translated locales, compare translated fields against the source text, and copy the selected merged locale record.
 - `Changes` — view the slug-scoped local git history plus latest diff stats and a colored unified diff.
 - `Logos` — inspect provider, member, and audit logo assets, including whether the local file exists under the uploadable logo folders.
 
 It serves only review artifacts; raw Claude/debug logs stay under `_debug/`.
 
-![Live out browser — protocol review console with artifacts, changes, logos, and Finder shortcuts](docs/images/out-browser.png)
+![Live out browser — protocol review console with artifacts, preview, i18n, changes, logos, and Finder shortcuts](docs/images/out-browser.png)
 
 Typical files:
 

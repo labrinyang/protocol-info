@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.4.5] — 2026-05-08
+
+### Changed
+- Expanded the live out browser artifact reader with more vertical reading
+  space and added a protocol-info UI preview mode for `record.json` review.
+- Polished the live out browser desktop board with clearer action color
+  semantics, tighter preview spacing, and stronger keyboard focus states.
+- Added a dedicated i18n review mode with locale switching and sped up live
+  queue refresh polling for fresher left-panel data.
+
 ## [2.4.4] — 2026-05-07
 
 ### Changed

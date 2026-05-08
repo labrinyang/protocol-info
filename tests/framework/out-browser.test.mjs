@@ -227,17 +227,38 @@ export const tests = [
         await writeFile(join(dir, 'protocol-logo', 'pendle.png'), 'provider-logo');
         await writeFile(join(dir, 'protocol-member-logo', 'pendle-alice.png'), 'member-logo');
         await writeFile(join(dir, 'audit-logo', 'openzeppelin.png'), 'audit-logo');
-        await writeFile(join(dir, 'pendle', 'record.json'), JSON.stringify({
+        const record = {
           slug: 'pendle',
           provider: 'pendle',
           providerLogoUrl: 'https://uni.onekey-asset.com/static/logo/protocol-logo/pendle.png',
           displayName: 'Pendle',
           type: 'fixed_rate',
-          fundingRounds: [],
+          description: 'Yield trading protocol for fixed-rate DeFi markets.',
+          tags: ['yield', 'fixed-rate'],
+          establishment: 2021,
+          providerWebsite: 'https://pendle.finance',
+          providerXLink: 'https://x.com/pendle_fi',
+          providerDiscordLink: 'https://discord.gg/pendle',
+          status: 'draft',
+          fundingRounds: [
+            {
+              round: 'Strategic',
+              date: '2023-08',
+              amount: '$3.7M',
+              valuation: null,
+              investors: ['Binance Labs', 'Spartan Group'],
+            },
+          ],
           members: [
             {
               memberName: 'Alice',
+              memberPosition: 'Protocol Lead',
+              oneLiner: 'Previously built DeFi infrastructure.',
               avatarUrl: 'https://uni.onekey-asset.com/static/logo/protocol-member-logo/pendle-alice.png',
+              memberLink: {
+                xLink: 'https://x.com/alice',
+                linkedinLink: null,
+              },
             },
           ],
           audits: {
@@ -245,10 +266,44 @@ export const tests = [
               {
                 auditor: 'OpenZeppelin',
                 auditorLogoUrl: 'https://uni.onekey-asset.com/static/logo/audit-logo/openzeppelin.png',
+                date: '2024-01',
+                scope: 'Core protocol contracts',
+                reportUrl: 'https://example.com/audit.pdf',
               },
             ],
+            lastScannedAt: '2026-05-08',
+          },
+        };
+        await writeFile(join(dir, 'pendle', 'record.json'), JSON.stringify(record));
+        await writeFile(join(dir, 'pendle', 'record.full.json'), JSON.stringify({
+          ...record,
+          i18n: {
+            zh_CN: {
+              description: '固定利率 DeFi 市场的收益交易协议。',
+              members: [
+                {
+                  memberPosition: '协议负责人',
+                  oneLiner: '曾构建 DeFi 基础设施。',
+                },
+              ],
+            },
           },
         }));
+        await writeFile(join(dir, 'pendle', 'meta.json'), JSON.stringify({
+          status: 'OK',
+          i18n: {
+            provider: 'claude',
+            model: 'haiku',
+            locales_requested: ['zh_CN'],
+            locales_ok: ['zh_CN'],
+            locales_failed: [],
+            cost_usd: 0.0123,
+          },
+        }));
+        await writeFile(
+          join(dir, 'pendle', 'summary.tsv'),
+          'slug\tstatus\tmembers\tfunding\taudits\tschema\tsource\tapi_status\ti18n\npendle\tOK\t1\t1\t1\tpass\tr1\tdisabled\t1/1\n',
+        );
         await commit(dir, { paths: ['pendle/', 'protocol-logo/', 'protocol-member-logo/', 'audit-logo/'], message: 'crawl(pendle): ok', runId: 'R1' });
 
         await buildOutBrowser(dir);
@@ -257,6 +312,17 @@ export const tests = [
         const pendle = data.protocols.find((p) => p.slug === 'pendle');
         assert.match(html, /Logo assets/);
         assert.match(html, /asset-sections/);
+        assert.match(html, /Protocol info preview/);
+        assert.match(html, /preview-hero/);
+        assert.match(html, /Audit trail/);
+        assert.match(html, /i18n result/);
+        assert.match(html, /locale-switcher/);
+        assert.match(html, /zh_CN/);
+        assert.match(html, /Copy merged locale/);
+        assert.match(html, /LIVE_REFRESH_MS = 750/);
+        assert.match(html, /live-state/);
+        assert.match(html, /JSON reader/);
+        assert.match(html, /scroll down for the full artifact/);
         assert.match(html, /json-chip/);
         assert.match(html, /json-key/);
         assert.match(html, /diff-line\.add/);
@@ -268,8 +334,11 @@ export const tests = [
         assert.match(html, /--semantic-warning/);
         assert.match(html, /--semantic-danger/);
         assert.match(html, /--semantic-location/);
+        assert.match(html, /--semantic-location-soft/);
         assert.match(html, /--syntax-json-key/);
         assert.match(html, /--diff-add-bg/);
+        assert.match(html, /focus-visible/);
+        assert.match(html, /align-content: start/);
         assert.match(html, /oklch/);
         assert.match(html, /Copy visible summary/);
         assert.doesNotMatch(html, /Copy run summary/);
@@ -278,6 +347,8 @@ export const tests = [
         assert.match(html, /data-reveal-rel/);
         assert.match(html, /data-detail-mode/);
         assert.match(html, /Artifacts/);
+        assert.match(html, /Preview/);
+        assert.match(html, /i18n/);
         assert.match(html, /Changes/);
         assert.match(html, /Logos/);
         assert.doesNotMatch(html, /Workflow commands/);
@@ -291,13 +362,14 @@ export const tests = [
         assert.equal(pendle.view.defaultArtifact, 'record.json');
         assert.equal(pendle.view.initials, 'P');
         assert.equal(pendle.view.modeCounts.assets, 3);
+        assert.equal(pendle.row.i18n, '1/1');
         assert.deepEqual(data.logoFolders.map((item) => item.relPath), ['protocol-logo', 'protocol-member-logo', 'audit-logo']);
         assert.deepEqual(
           pendle.view.metrics.slice(0, 3).map((item) => item.value),
-          ['1', '0', '1'],
+          ['1', '1', '1'],
         );
         assert.equal(pendle.view.facts.find((item) => item.label === 'Audits').value, '1');
-        assert.equal(pendle.artifacts.find((item) => item.name === 'record.json').jsonMeta.shape, 'object(8)');
+        assert.equal(pendle.artifacts.find((item) => item.name === 'record.json').jsonMeta.shape, 'object(15)');
         assert.ok(pendle.view.searchText.includes('fixed_rate'));
         assert.equal(pendle.view.workflowCommands, undefined);
         assert.equal(pendle.view.modeCounts.commands, undefined);

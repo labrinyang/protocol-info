@@ -533,12 +533,13 @@ export function renderHtml(data, opts = {}) {
   --semantic-danger: oklch(73% 0.16 18);
   --semantic-danger-soft: oklch(91% 0.06 18);
   --semantic-neutral: oklch(91% 0.015 78);
-  --semantic-location: oklch(86% 0.17 90);
+  --semantic-location: oklch(80% 0.105 224);
+  --semantic-location-soft: oklch(93% 0.04 224);
   --brand-mark: oklch(86% 0.17 90);
   --code: oklch(15.5% 0.012 31);
   --code-line: oklch(15.5% 0.012 31);
   --code-text: oklch(96.5% 0.025 89);
-  --canvas-grid: oklch(15.5% 0.012 31 / 4.5%);
+  --canvas-grid: oklch(15.5% 0.012 31 / 3.2%);
   --syntax-json-key: oklch(84% 0.12 90);
   --syntax-json-string: oklch(82% 0.12 134);
   --syntax-json-number: oklch(82% 0.11 220);
@@ -564,7 +565,7 @@ export function renderHtml(data, opts = {}) {
 html { color-scheme: light; }
 body {
   margin: 0;
-  min-width: 1240px;
+  min-width: 1360px;
   color: var(--ink);
   background:
     linear-gradient(90deg, var(--canvas-grid) 1px, transparent 1px) 0 0 / 32px 32px,
@@ -590,14 +591,15 @@ button { font-weight: 700; }
   min-height: 78px;
   padding: 14px 24px;
   border-bottom: 2px solid var(--line);
-  background: var(--canvas);
+  background: var(--surface-warm);
   position: sticky;
   top: 0;
   z-index: 5;
   display: grid;
-  grid-template-columns: auto minmax(180px, 1fr) auto auto;
+  grid-template-columns: auto minmax(240px, 1fr) auto auto;
   align-items: center;
   gap: 14px;
+  box-shadow: 0 3px 0 var(--shadow);
 }
 .identity {
   min-width: 154px;
@@ -690,7 +692,7 @@ code, pre { font-family: var(--mono); }
 }
 .layout {
   display: grid;
-  grid-template-columns: minmax(300px, 360px) minmax(640px, 1fr) minmax(240px, 290px);
+  grid-template-columns: minmax(286px, 328px) minmax(760px, 1fr) minmax(244px, 276px);
   gap: 16px;
   padding: 18px 24px 24px;
   align-items: start;
@@ -711,9 +713,7 @@ code, pre { font-family: var(--mono); }
 }
 .detail {
   padding: 14px;
-  position: sticky;
-  top: 96px;
-  height: calc(100vh - 116px);
+  min-height: calc(100vh - 116px);
   display: flex;
   flex-direction: column;
 }
@@ -822,7 +822,7 @@ code, pre { font-family: var(--mono); }
   font-weight: 700;
 }
 .finder-button:hover {
-  background: var(--semantic-action);
+  background: var(--semantic-selected);
   transform: translateY(-1px);
 }
 .asset-card {
@@ -854,7 +854,13 @@ code, pre { font-family: var(--mono); }
   margin: -12px -12px 12px;
   padding: 11px 12px 9px;
   border-bottom: 2px solid var(--line);
-  background: var(--surface-soft);
+  background: var(--surface-warm);
+}
+.panel-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
 }
 .section-title {
   margin: 0;
@@ -869,6 +875,22 @@ code, pre { font-family: var(--mono); }
   font-family: var(--mono);
   font-size: 11px;
 }
+.live-state {
+  min-height: 19px;
+  padding: 2px 5px;
+  border: 2px solid var(--line);
+  background: var(--semantic-success-soft);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  box-shadow: 1px 1px 0 var(--shadow);
+}
+.live-state.checking { background: var(--semantic-location-soft); }
+.live-state.changed { background: var(--semantic-selected); }
+.live-state.error { background: var(--semantic-danger-soft); }
+.live-state.static { background: var(--semantic-neutral); color: var(--muted); }
 .protocol-row, .artifact-tab, .action {
   border: 2px solid transparent;
   background: transparent;
@@ -886,6 +908,16 @@ code, pre { font-family: var(--mono); }
   background: var(--semantic-selected-soft);
   box-shadow: 1px 1px 0 var(--shadow);
   transform: translate(1px, 1px);
+}
+.protocol-row:focus-visible,
+.artifact-tab:focus-visible,
+.mode-button:focus-visible,
+.filter-chip:focus-visible,
+.action:focus-visible,
+.finder-button:focus-visible,
+input:focus-visible {
+  outline: 3px solid var(--semantic-info);
+  outline-offset: 2px;
 }
 .protocol-row.active, .artifact-tab.active {
   border-color: var(--line);
@@ -1078,7 +1110,7 @@ code, pre { font-family: var(--mono); }
 .fact strong { display: block; margin-top: 4px; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 .mode-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 6px;
   margin: 9px 0 8px;
 }
@@ -1113,7 +1145,7 @@ code, pre { font-family: var(--mono); }
 }
 .artifact-pane {
   flex: 1;
-  min-height: 0;
+  min-height: 760px;
   display: flex;
   flex-direction: column;
 }
@@ -1237,7 +1269,154 @@ code, pre { font-family: var(--mono); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 7px 0; }
+.i18n-pane {
+  flex: 0 0 auto;
+  overflow: visible;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  padding: 2px 0 18px;
+}
+.i18n-summary {
+  border: 2px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  padding: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+.i18n-summary h3 {
+  margin: 3px 0 0;
+  font-size: 18px;
+  line-height: 1.1;
+}
+.i18n-summary p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.i18n-stats {
+  min-width: 230px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border: 2px solid var(--line);
+  background: var(--surface-soft);
+}
+.i18n-stats span {
+  min-width: 0;
+  padding: 7px 8px;
+  border-left: 2px solid var(--line);
+  border-top: 2px solid var(--line);
+}
+.i18n-stats span:nth-child(odd) { border-left: 0; }
+.i18n-stats span:nth-child(-n + 2) { border-top: 0; }
+.i18n-stats em {
+  display: block;
+  color: var(--muted);
+  font-style: normal;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.i18n-stats strong {
+  display: block;
+  margin-top: 3px;
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.locale-switcher {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.locale-button {
+  min-height: 31px;
+  padding: 5px 8px;
+  border: 2px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+.locale-button:hover {
+  background: var(--surface-soft);
+  transform: translateY(-1px);
+}
+.locale-button.active {
+  background: var(--semantic-selected);
+}
+.locale-button.failed {
+  background: var(--semantic-danger-soft);
+}
+.locale-button.source {
+  background: var(--semantic-location-soft);
+}
+.locale-button:focus-visible {
+  outline: 3px solid var(--semantic-info);
+  outline-offset: 2px;
+}
+.i18n-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.i18n-current {
+  min-width: 0;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.i18n-compare {
+  display: grid;
+  gap: 8px;
+}
+.i18n-row {
+  display: grid;
+  grid-template-columns: minmax(150px, .55fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0;
+  border: 2px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+.i18n-cell {
+  min-width: 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--line);
+  line-height: 1.48;
+  overflow-wrap: anywhere;
+}
+.i18n-cell:first-child {
+  border-left: 0;
+  background: var(--surface-warm);
+}
+.i18n-cell em {
+  display: block;
+  color: var(--muted);
+  font-style: normal;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.i18n-cell strong {
+  display: block;
+  margin-top: 3px;
+}
+.i18n-cell.missing {
+  color: var(--muted);
+  background: var(--semantic-warning-soft);
+}
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 7px; }
 .artifact-tab {
   padding: 6px 9px;
   border-color: var(--line);
@@ -1246,7 +1425,14 @@ code, pre { font-family: var(--mono); }
   color: var(--ink);
   box-shadow: var(--shadow-sm);
 }
-.actions { display: flex; gap: 7px; flex-wrap: wrap; margin: 7px 0 10px; }
+.reader-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  margin: 0 0 9px;
+}
+.actions { display: flex; gap: 7px; flex-wrap: wrap; margin: 0; justify-content: flex-end; }
 .action {
   min-height: 32px;
   padding: 6px 10px;
@@ -1257,12 +1443,23 @@ code, pre { font-family: var(--mono); }
   box-shadow: var(--shadow-sm);
 }
 .action.primary { background: var(--semantic-action); color: var(--ink); border-color: var(--line); }
+.action[data-reveal-rel],
+.top-actions .action[data-reveal-rel] {
+  background: var(--semantic-location);
+}
+.action[data-reveal-rel]:hover,
+.top-actions .action[data-reveal-rel]:hover {
+  background: var(--semantic-selected);
+}
+.action.primary:hover {
+  background: var(--semantic-action-soft);
+}
 .action:disabled { color: var(--muted); cursor: not-allowed; opacity: .65; }
 .json-meta {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
-  margin: 0 0 8px;
+  margin: 0;
 }
 .json-chip {
   max-width: 100%;
@@ -1278,6 +1475,16 @@ code, pre { font-family: var(--mono); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.json-reader-note {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.4;
+  margin-top: 4px;
+}
+.json-reader-note strong {
+  color: var(--ink);
 }
 .history {
   padding: 2px 0 10px;
@@ -1337,9 +1544,9 @@ code, pre { font-family: var(--mono); }
 }
 .preview-wrap {
   flex: 1;
-  min-height: 0;
+  min-height: 680px;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
   border: 2px solid var(--code-line);
   border-radius: 0;
   overflow: hidden;
@@ -1366,16 +1573,18 @@ code, pre { font-family: var(--mono); }
 }
 .preview {
   flex: 1;
-  min-height: 0;
-  overflow: auto;
+  min-height: 640px;
+  overflow-x: auto;
+  overflow-y: visible;
   margin: 0;
-  padding: 14px;
+  padding: 18px 20px 32px;
   background: var(--code);
   color: var(--code-text);
   font-size: 12px;
-  line-height: 1.55;
+  line-height: 1.62;
   white-space: pre;
 }
+.preview code { tab-size: 2; }
 .json-key { color: var(--syntax-json-key); }
 .json-string { color: var(--syntax-json-string); }
 .json-number { color: var(--syntax-json-number); }
@@ -1410,6 +1619,200 @@ code, pre { font-family: var(--mono); }
 .diff-line.add { color: var(--diff-add-text); background: var(--diff-add-bg); }
 .diff-line.del { color: var(--diff-remove-text); background: var(--diff-remove-bg); }
 .diff-line.meta { color: var(--diff-meta-text); }
+.protocol-preview {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  padding: 2px 0 18px;
+  flex: 0 0 auto;
+  overflow: visible;
+}
+.preview-hero {
+  border: 2px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr) minmax(184px, auto);
+  gap: 14px;
+  align-items: start;
+  padding: 14px;
+}
+.preview-logo {
+  width: 76px;
+  height: 76px;
+  border: 2px solid var(--line);
+  background: var(--semantic-info-soft);
+  object-fit: contain;
+  box-shadow: var(--shadow-sm);
+}
+.preview-logo.placeholder {
+  display: grid;
+  place-items: center;
+  font-family: var(--mono);
+  font-size: 18px;
+  font-weight: 700;
+}
+.preview-title {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+.preview-title h3 {
+  margin: 0;
+  font-family: var(--title);
+  font-size: 30px;
+  line-height: 1;
+}
+.preview-title p {
+  margin: 0;
+  max-width: 72ch;
+  color: var(--ink);
+  line-height: 1.55;
+}
+.preview-tags,
+.preview-links,
+.preview-section-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.preview-chip,
+.preview-link {
+  min-height: 26px;
+  padding: 4px 7px;
+  border: 2px solid var(--line);
+  background: var(--semantic-neutral);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  text-decoration: none;
+}
+.preview-link {
+  background: var(--semantic-location);
+}
+.preview-link:hover {
+  background: var(--semantic-selected);
+  transform: translateY(-1px);
+}
+.preview-health {
+  min-width: 180px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border: 2px solid var(--line);
+  background: var(--surface-soft);
+}
+.preview-health span {
+  min-width: 0;
+  padding: 8px;
+  border-left: 2px solid var(--line);
+  border-top: 2px solid var(--line);
+}
+.preview-health span:nth-child(odd) { border-left: 0; }
+.preview-health span:nth-child(-n + 2) { border-top: 0; }
+.preview-health em {
+  display: block;
+  color: var(--muted);
+  font-style: normal;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.preview-health strong {
+  display: block;
+  margin-top: 3px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.preview-section {
+  border: 2px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  padding: 12px;
+  align-self: start;
+}
+.preview-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.preview-section-head h3 {
+  margin: 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.preview-section-head span {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.preview-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px;
+}
+.person-card,
+.funding-row,
+.audit-row {
+  min-width: 0;
+  border: 2px solid var(--line);
+  background: var(--surface-warm);
+  padding: 9px;
+}
+.person-card {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+}
+.person-avatar {
+  width: 42px;
+  height: 42px;
+  border: 2px solid var(--line);
+  background: var(--semantic-info-soft);
+  object-fit: contain;
+}
+.person-avatar.placeholder {
+  display: grid;
+  place-items: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+.person-card strong,
+.funding-row strong,
+.audit-row strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.person-card p,
+.funding-row p,
+.audit-row p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.preview-list {
+  display: grid;
+  gap: 8px;
+}
+.funding-row,
+.audit-row {
+  display: grid;
+  grid-template-columns: minmax(120px, .9fr) minmax(0, 2fr) minmax(72px, auto);
+  gap: 10px;
+  align-items: start;
+}
+.row-kicker {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+}
 .static-diffs .diff pre {
   margin: 0;
   max-height: 300px;
@@ -1470,7 +1873,7 @@ code, pre { font-family: var(--mono); }
   </header>
   <main class="layout">
     <section class="list">
-      <div class="panel-head"><p class="section-title">Review queue</p><span class="count" id="record-count"></span></div>
+      <div class="panel-head"><p class="section-title">Review queue</p><span class="panel-meta"><span class="live-state static" id="live-state">static</span><span class="count" id="record-count"></span></span></div>
       <div class="queue-tools">
         <div class="filters">
           <input id="query" placeholder="Search slug, provider, status">
@@ -1510,12 +1913,18 @@ code, pre { font-family: var(--mono); }
 <script>
 let DATA = JSON.parse(document.getElementById('out-data').textContent);
 const LIVE_DATA_URL = ${JSON.stringify(liveDataUrl)};
+const LIVE_REFRESH_MS = 750;
 const state = {
   slug: DATA.protocols[0]?.slug || '',
   artifact: DATA.protocols[0]?.view?.defaultArtifact || 'record.import.json',
   mode: 'artifact',
+  locale: 'source',
   query: '',
   queueFilter: 'all',
+  liveStatus: LIVE_DATA_URL ? 'live' : 'static',
+  lastCheckedAt: '',
+  lastUpdatedAt: '',
+  refreshInFlight: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -1533,6 +1942,7 @@ function renderChrome() {
   setText('stat-issues', totals.issues || 0);
   setText('protocol-count', totals.protocols || 0);
   renderWorkbenchState();
+  renderLiveState();
 }
 
 function renderWorkbenchState() {
@@ -1544,6 +1954,33 @@ function renderWorkbenchState() {
   document.querySelectorAll('[data-queue-filter]').forEach((button) => {
     button.classList.toggle('active', button.dataset.queueFilter === state.queueFilter);
   });
+}
+
+function formatClock(value) {
+  if (!value) return '';
+  try {
+    return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  } catch {
+    return '';
+  }
+}
+
+function renderLiveState() {
+  const node = $('live-state');
+  if (!node) return;
+  const status = state.liveStatus || (LIVE_DATA_URL ? 'live' : 'static');
+  node.className = 'live-state ' + status;
+  if (!LIVE_DATA_URL) {
+    node.textContent = 'static';
+  } else if (status === 'checking') {
+    node.textContent = 'checking';
+  } else if (status === 'changed') {
+    node.textContent = 'updated ' + formatClock(state.lastUpdatedAt || state.lastCheckedAt);
+  } else if (status === 'error') {
+    node.textContent = 'retrying';
+  } else {
+    node.textContent = 'live ' + formatClock(state.lastCheckedAt || state.lastUpdatedAt);
+  }
 }
 
 function baseProtocols() {
@@ -1639,6 +2076,7 @@ function renderProtocols() {
   if (selected && previousSlug !== state.slug) {
     state.artifact = selected.view?.defaultArtifact || 'record.import.json';
     state.mode = 'artifact';
+    state.locale = 'source';
   }
   node.innerHTML = protocols.map((p) => {
     const row = p.row || {};
@@ -1678,6 +2116,7 @@ function renderProtocols() {
       const next = DATA.protocols.find((p) => p.slug === state.slug);
       state.artifact = next?.view?.defaultArtifact || 'record.import.json';
       state.mode = 'artifact';
+      state.locale = 'source';
       render();
     });
   });
@@ -1697,6 +2136,170 @@ function assetInitials(asset) {
     .map((part) => part[0])
     .join('')
     .toUpperCase() || 'LG';
+}
+
+function artifactByName(protocol, name) {
+  return protocol?.artifacts?.find((a) => a.name === name) || null;
+}
+
+function recordArtifact(protocol) {
+  return artifactByName(protocol, 'record.json');
+}
+
+function parseArtifactJson(artifact) {
+  if (!artifact || artifact.tooLarge || !artifact.content) return null;
+  try {
+    return JSON.parse(artifact.content);
+  } catch {
+    return null;
+  }
+}
+
+function parseProtocolArtifact(protocol, name) {
+  return parseArtifactJson(artifactByName(protocol, name));
+}
+
+function recordForPreview(protocol) {
+  return parseArtifactJson(recordArtifact(protocol)) || {};
+}
+
+function mergeTranslatedRecord(base, translated) {
+  const out = JSON.parse(JSON.stringify(base || {}));
+  if (!translated || typeof translated !== 'object') return out;
+  for (const [key, value] of Object.entries(translated)) {
+    if (Array.isArray(value) && Array.isArray(out[key])) {
+      value.forEach((item, index) => {
+        if (out[key][index] && item && typeof item === 'object' && !Array.isArray(item)) {
+          out[key][index] = { ...out[key][index], ...item };
+        }
+      });
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+function i18nCodeLabel(code) {
+  if (code === 'source') return 'Source';
+  return String(code || '').replace(/_/g, '-');
+}
+
+function dashboardLocale(code) {
+  if (code === 'source') return 'en';
+  if (code === 'en_US') return 'en';
+  return String(code || '').replace(/_/g, '-').toLowerCase();
+}
+
+function i18nInfo(protocol) {
+  const source = recordForPreview(protocol);
+  const full = parseProtocolArtifact(protocol, 'record.full.json') || {};
+  const meta = parseProtocolArtifact(protocol, 'meta.json')?.i18n || {};
+  const translations = full.i18n && typeof full.i18n === 'object' && !Array.isArray(full.i18n)
+    ? full.i18n
+    : {};
+  const okCodes = Array.isArray(meta.locales_ok) ? meta.locales_ok : Object.keys(translations);
+  const failedCodes = Array.isArray(meta.locales_failed) ? meta.locales_failed : [];
+  const requestedCodes = Array.isArray(meta.locales_requested) ? meta.locales_requested : [];
+  const codes = Array.from(new Set([
+    ...Object.keys(translations),
+    ...okCodes,
+    ...failedCodes,
+    ...requestedCodes,
+  ])).filter(Boolean).sort();
+  const locales = [{
+    id: 'source',
+    code: 'source',
+    label: 'Source',
+    dashboardLocale: 'en',
+    status: 'source',
+    translation: null,
+  }].concat(codes.map((code) => {
+    const failed = failedCodes.includes(code);
+    const ok = okCodes.includes(code) || Object.hasOwn(translations, code);
+    return {
+      id: code,
+      code,
+      label: i18nCodeLabel(code),
+      dashboardLocale: dashboardLocale(code),
+      status: failed ? 'failed' : (ok ? 'ok' : 'requested'),
+      translation: translations[code] || null,
+    };
+  }));
+  return {
+    source,
+    full,
+    meta,
+    translations,
+    locales,
+    okCodes,
+    failedCodes,
+    requestedCodes,
+    fullArtifact: artifactByName(protocol, 'record.full.json'),
+  };
+}
+
+function selectedI18n(protocol) {
+  const info = i18nInfo(protocol);
+  if (!info.locales.some((locale) => locale.id === state.locale)) state.locale = info.locales[0]?.id || 'source';
+  const selected = info.locales.find((locale) => locale.id === state.locale) || info.locales[0];
+  const record = selected?.id === 'source'
+    ? info.source
+    : mergeTranslatedRecord(info.source, selected?.translation || {});
+  return { ...info, selected, record };
+}
+
+function i18nLocaleCount(protocol) {
+  return Math.max(0, selectedI18n(protocol).locales.length - 1);
+}
+
+function i18nCompareRows(source, localized) {
+  const rows = [];
+  const push = (label, sourceValue, localizedValue) => {
+    rows.push({
+      label,
+      source: valueOrDash(sourceValue),
+      localized: localizedValue == null || localizedValue === '' ? '-' : String(localizedValue),
+      missing: localizedValue == null || localizedValue === '',
+    });
+  };
+  push('description', source.description, localized.description);
+  const sourceMembers = Array.isArray(source.members) ? source.members : [];
+  const localizedMembers = Array.isArray(localized.members) ? localized.members : [];
+  const memberCount = Math.max(sourceMembers.length, localizedMembers.length);
+  for (let index = 0; index < memberCount; index += 1) {
+    const sourceMember = sourceMembers[index] || {};
+    const localizedMember = localizedMembers[index] || {};
+    const memberName = sourceMember.memberName || localizedMember.memberName || 'member ' + (index + 1);
+    push(memberName + ' position', sourceMember.memberPosition, localizedMember.memberPosition);
+    push(memberName + ' one-liner', sourceMember.oneLiner, localizedMember.oneLiner);
+  }
+  return rows;
+}
+
+function valueOrDash(value) {
+  if (value == null || value === '') return '-';
+  return String(value);
+}
+
+function listCount(value) {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function renderPreviewLink(label, url) {
+  if (!url) return '';
+  return '<a class="preview-link" href="' + esc(url) + '" target="_blank" rel="noreferrer">' + esc(label) + '</a>';
+}
+
+function previewLocalLogo(protocol, url, kind) {
+  const assets = protocol?.recordView?.logoAssets || [];
+  if (!url) return null;
+  return assets.find((asset) => asset.kind === kind && asset.url === url && asset.local) || null;
+}
+
+function compactText(value, fallback = '-') {
+  const text = valueOrDash(value);
+  return text.length > 180 ? text.slice(0, 177) + '...' : text || fallback;
 }
 
 function renderFolderButtons(folders, opts = {}) {
@@ -1779,6 +2382,8 @@ function renderModeTabs(protocol) {
   const modeCounts = protocol.view?.modeCounts || {};
   const modes = [
     ['artifact', 'Artifacts', modeCounts.artifact ?? protocol.artifacts.length],
+    ['preview', 'Preview', 'UI'],
+    ['i18n', 'i18n', i18nLocaleCount(protocol) || protocol.row?.i18n || '-'],
     ['changes', 'Changes', modeCounts.changes ?? (protocol.history || []).length],
     ['assets', 'Logos', modeCounts.assets ?? counts.total ?? 0],
   ];
@@ -1801,6 +2406,16 @@ function renderJsonMeta(artifact) {
     : [];
   for (const key of keys.slice(0, 8)) chips.push(key);
   return '<div class="json-meta">' + chips.map((chip) => '<span class="json-chip">' + esc(chip) + '</span>').join('') + '</div>';
+}
+
+function readerStats(artifact, content) {
+  const source = String(content || '');
+  if (!artifact) return 'no file';
+  const lines = source ? source.split('\\n').length : 0;
+  const kind = artifact.kind === 'json' ? 'JSON reader' : artifact.kind.toUpperCase() + ' reader';
+  return '<div class="json-reader-note"><strong>' + esc(kind) + '</strong> · ' +
+    esc(lines) + ' lines · ' + esc(artifact.sizeLabel || '') +
+    ' · scroll down for the full artifact</div>';
 }
 
 function highlightJson(content) {
@@ -1840,17 +2455,81 @@ function renderArtifactPane(protocol, artifact) {
     : 'No artifacts found for this record.';
   return '<div class="artifact-pane">' +
     '<div class="tabs">' + tabs + '</div>' +
-    renderJsonMeta(artifact) +
-    '<div class="actions">' +
-      '<button class="action primary" id="copy-content" ' + (!artifact || artifact.tooLarge ? 'disabled' : '') + '>Copy content</button>' +
-      '<button class="action" id="copy-path" ' + (!artifact ? 'disabled' : '') + '>Copy path</button>' +
-      '<button class="action" data-reveal-rel="' + esc(artifact?.relPath || '') + '" data-copy-fallback="' + esc(artifact?.path || '') + '" ' + (!artifact ? 'disabled' : '') + '>Show in Finder</button>' +
-      (artifact ? '<a class="action" href="' + esc(artifact.href) + '" target="_blank" rel="noreferrer">Open file</a>' : '') +
+    '<div class="reader-tools">' +
+      '<div>' + renderJsonMeta(artifact) + readerStats(artifact, content) + '</div>' +
+      '<div class="actions">' +
+        '<button class="action primary" id="copy-content" ' + (!artifact || artifact.tooLarge ? 'disabled' : '') + '>Copy content</button>' +
+        '<button class="action" id="copy-path" ' + (!artifact ? 'disabled' : '') + '>Copy path</button>' +
+        '<button class="action" data-reveal-rel="' + esc(artifact?.relPath || '') + '" data-copy-fallback="' + esc(artifact?.path || '') + '" ' + (!artifact ? 'disabled' : '') + '>Show in Finder</button>' +
+        (artifact ? '<a class="action" href="' + esc(artifact.href) + '" target="_blank" rel="noreferrer">Open file</a>' : '') +
+      '</div>' +
     '</div>' +
     '<div class="preview-wrap">' +
       '<div class="preview-top"><span>' + esc(artifact?.name || 'no file') + '</span><span>' + esc(artifact?.sizeLabel || '') + '</span></div>' +
       '<pre class="preview"><code>' + renderArtifactPreview(artifact, content) + '</code></pre>' +
     '</div>' +
+  '</div>';
+}
+
+function renderI18nPane(protocol) {
+  const info = selectedI18n(protocol);
+  const selected = info.selected || info.locales[0];
+  const localized = info.record || {};
+  const rows = i18nCompareRows(info.source || {}, localized);
+  const okCount = info.okCodes.length;
+  const failedCount = info.failedCodes.length;
+  const requestedCount = info.requestedCodes.length || okCount + failedCount;
+  const provider = info.meta.provider || '-';
+  const cost = typeof info.meta.cost_usd === 'number' ? '$' + info.meta.cost_usd.toFixed(4) : '-';
+  const statusText = protocol.row?.i18n || '-';
+  const localeButtons = info.locales.map((locale) => {
+    const active = selected && locale.id === selected.id ? ' active' : '';
+    const cls = 'locale-button ' + locale.status + active;
+    const statusLabel = locale.status === 'failed' ? ' failed' : '';
+    return '<button type="button" class="' + cls + '" data-locale="' + esc(locale.id) + '" aria-pressed="' + (active ? 'true' : 'false') + '">' +
+      esc(locale.label) + '<span class="metric"> ' + esc(locale.dashboardLocale) + statusLabel + '</span></button>';
+  }).join('');
+  const rowsHtml = rows.length
+    ? '<div class="i18n-compare">' +
+        '<div class="i18n-row">' +
+          '<div class="i18n-cell"><em>Field</em><strong>Source</strong></div>' +
+          '<div class="i18n-cell"><em>Base</em><strong>record.json</strong></div>' +
+          '<div class="i18n-cell"><em>Locale</em><strong>' + esc(selected?.label || 'Source') + '</strong></div>' +
+        '</div>' +
+        rows.map((row) =>
+          '<div class="i18n-row">' +
+            '<div class="i18n-cell"><em>Field</em><strong>' + esc(row.label) + '</strong></div>' +
+            '<div class="i18n-cell">' + esc(row.source) + '</div>' +
+            '<div class="i18n-cell' + (row.missing ? ' missing' : '') + '">' + esc(row.localized) + '</div>' +
+          '</div>'
+        ).join('') +
+      '</div>'
+    : '<div class="empty">No translatable fields found in this record.</div>';
+  const fullAction = info.fullArtifact
+    ? '<button type="button" class="action" data-artifact="record.full.json">Open full i18n</button>'
+    : '<button type="button" class="action" disabled>Open full i18n</button>';
+  const summaryText = info.locales.length > 1
+    ? 'Switch locales to compare translated fields against the source record.'
+    : 'No translated locale is available yet. The source record is still shown for context.';
+  return '<div class="scroll-body i18n-pane">' +
+    '<section class="i18n-summary">' +
+      '<div><p class="mini-title">i18n result</p><h3>' + esc(statusText) + '</h3><p>' + esc(summaryText) + '</p></div>' +
+      '<div class="i18n-stats">' +
+        '<span><em>OK</em><strong>' + esc(okCount) + '</strong></span>' +
+        '<span><em>Failed</em><strong>' + esc(failedCount) + '</strong></span>' +
+        '<span><em>Requested</em><strong>' + esc(requestedCount) + '</strong></span>' +
+        '<span><em>Cost</em><strong>' + esc(cost) + '</strong></span>' +
+      '</div>' +
+    '</section>' +
+    '<div class="i18n-toolbar">' +
+      '<div><div class="locale-switcher">' + localeButtons + '</div><div class="i18n-current">provider ' + esc(provider) + ' · selected ' + esc(selected?.label || 'Source') + ' · dashboard locale ' + esc(selected?.dashboardLocale || 'en') + '</div></div>' +
+      '<div class="actions">' +
+        '<button type="button" class="action primary" id="copy-i18n-merged">Copy merged locale</button>' +
+        '<button type="button" class="action" id="copy-i18n-locale" ' + (selected?.id === 'source' || !selected?.translation ? 'disabled' : '') + '>Copy locale JSON</button>' +
+        fullAction +
+      '</div>' +
+    '</div>' +
+    rowsHtml +
   '</div>';
 }
 
@@ -1891,7 +2570,94 @@ function renderChangesPane(protocol) {
   return '<div class="scroll-body changes-pane">' + historyHtml + diffHtml + '</div>';
 }
 
+function renderProtocolPreview(protocol) {
+  const record = recordForPreview(protocol);
+  const providerLogo = previewLocalLogo(protocol, record.providerLogoUrl, 'provider');
+  const logo = logoSrc(providerLogo);
+  const title = record.displayName || protocol.view?.title || protocol.slug;
+  const members = Array.isArray(record.members) ? record.members : [];
+  const fundingRounds = Array.isArray(record.fundingRounds) ? record.fundingRounds : [];
+  const auditItems = Array.isArray(record.audits?.items) ? record.audits.items : [];
+  const tags = Array.isArray(record.tags) ? record.tags : [];
+  const logoHtml = logo
+    ? '<img class="preview-logo" src="' + esc(logo) + '" alt="">'
+    : '<span class="preview-logo placeholder">' + esc(protocol.view?.initials || assetInitials({ label: title })) + '</span>';
+  const links = [
+    renderPreviewLink('Website', record.providerWebsite),
+    renderPreviewLink('X', record.providerXLink),
+    renderPreviewLink('Discord', record.providerDiscordLink),
+  ].filter(Boolean).join('');
+  const tagHtml = tags.length
+    ? '<div class="preview-tags">' + tags.slice(0, 12).map((tag) => '<span class="preview-chip">' + esc(tag) + '</span>').join('') + '</div>'
+    : '<div class="preview-tags"><span class="preview-chip">no tags</span></div>';
+  const health = [
+    ['type', valueOrDash(record.type || protocol.recordView?.type)],
+    ['status', valueOrDash(record.status)],
+    ['founded', valueOrDash(record.establishment)],
+    ['provider', valueOrDash(record.provider || protocol.recordView?.provider)],
+  ].map(([label, value]) => '<span><em>' + esc(label) + '</em><strong>' + esc(value) + '</strong></span>').join('');
+  const people = members.length
+    ? members.slice(0, 12).map((member) => {
+        const asset = previewLocalLogo(protocol, member.avatarUrl, 'member');
+        const src = logoSrc(asset);
+        const avatar = src
+          ? '<img class="person-avatar" src="' + esc(src) + '" alt="">'
+          : '<span class="person-avatar placeholder">' + esc(assetInitials({ label: member.memberName || 'member' })) + '</span>';
+        const memberLinks = [
+          renderPreviewLink('X', member.memberLink?.xLink),
+          renderPreviewLink('LinkedIn', member.memberLink?.linkedinLink),
+        ].filter(Boolean).join('');
+        return '<article class="person-card">' + avatar +
+          '<div><strong>' + esc(valueOrDash(member.memberName)) + '</strong>' +
+          '<p>' + esc(valueOrDash(member.memberPosition)) + '</p>' +
+          '<p>' + esc(valueOrDash(member.oneLiner)) + '</p>' +
+          (memberLinks ? '<div class="preview-section-tags">' + memberLinks + '</div>' : '') +
+          '</div></article>';
+      }).join('')
+    : '<div class="empty">No team members recorded.</div>';
+  const funding = fundingRounds.length
+    ? fundingRounds.slice(0, 12).map((round) => {
+        const investors = Array.isArray(round.investors) && round.investors.length
+          ? round.investors.slice(0, 6).join(', ')
+          : 'undisclosed investors';
+        return '<article class="funding-row">' +
+          '<div><span class="row-kicker">' + esc(valueOrDash(round.date)) + '</span><strong>' + esc(valueOrDash(round.round)) + '</strong></div>' +
+          '<p>' + esc(investors) + '</p>' +
+          '<div><strong>' + esc(valueOrDash(round.amount)) + '</strong><p>' + esc(valueOrDash(round.valuation)) + '</p></div>' +
+        '</article>';
+      }).join('')
+    : '<div class="empty">No funding rounds recorded.</div>';
+  const audits = auditItems.length
+    ? auditItems.slice(0, 16).map((audit) => {
+        const auditLink = renderPreviewLink('Report', audit.reportUrl);
+        return '<article class="audit-row">' +
+          '<div><span class="row-kicker">' + esc(valueOrDash(audit.date)) + '</span><strong>' + esc(valueOrDash(audit.auditor)) + '</strong></div>' +
+          '<p>' + esc(compactText(audit.scope, 'scope unknown')) + '</p>' +
+          '<div>' + (auditLink || '<span class="preview-chip">no report</span>') + '</div>' +
+        '</article>';
+      }).join('')
+    : '<div class="empty">No audits recorded.</div>';
+  return '<div class="scroll-body protocol-preview">' +
+    '<section class="preview-hero">' +
+      logoHtml +
+      '<div class="preview-title">' +
+        '<div class="preview-section-tags"><span class="preview-chip">Protocol info preview</span></div>' +
+        '<h3>' + esc(title) + '</h3>' +
+        tagHtml +
+        '<p>' + esc(valueOrDash(record.description || protocol.recordView?.description)) + '</p>' +
+        (links ? '<div class="preview-links">' + links + '</div>' : '') +
+      '</div>' +
+      '<div class="preview-health">' + health + '</div>' +
+    '</section>' +
+    '<section class="preview-section"><div class="preview-section-head"><h3>Team</h3><span>' + esc(listCount(members)) + '</span></div><div class="preview-card-grid">' + people + '</div></section>' +
+    '<section class="preview-section"><div class="preview-section-head"><h3>Funding</h3><span>' + esc(listCount(fundingRounds)) + '</span></div><div class="preview-list">' + funding + '</div></section>' +
+    '<section class="preview-section"><div class="preview-section-head"><h3>Audit trail</h3><span>' + esc(listCount(auditItems)) + '</span></div><div class="preview-list">' + audits + '</div></section>' +
+  '</div>';
+}
+
 function renderDetailBody(protocol, artifact) {
+  if (state.mode === 'preview') return renderProtocolPreview(protocol);
+  if (state.mode === 'i18n') return renderI18nPane(protocol);
   if (state.mode === 'changes') return renderChangesPane(protocol);
   if (state.mode === 'assets') return '<div class="scroll-body">' + renderLogoAssets(protocol) + '</div>';
   return renderArtifactPane(protocol, artifact);
@@ -1947,6 +2713,12 @@ function renderDetail() {
       renderDetail();
     });
   });
+  node.querySelectorAll('[data-locale]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.locale = button.dataset.locale || 'source';
+      renderDetail();
+    });
+  });
   const copyContent = $('copy-content');
   if (copyContent && artifact && !artifact.tooLarge) {
     copyContent.addEventListener('click', () => copyText(artifact.content, artifact.name));
@@ -1958,6 +2730,20 @@ function renderDetail() {
   const copyDiff = $('copy-diff');
   if (copyDiff && protocol.defaultDiff) {
     copyDiff.addEventListener('click', () => copyText(protocol.defaultDiff, protocol.slug + ' diff'));
+  }
+  const copyI18nLocale = $('copy-i18n-locale');
+  if (copyI18nLocale) {
+    copyI18nLocale.addEventListener('click', () => {
+      const info = selectedI18n(protocol);
+      copyText(JSON.stringify(info.selected?.translation || {}, null, 2), (info.selected?.label || 'locale') + ' i18n');
+    });
+  }
+  const copyI18nMerged = $('copy-i18n-merged');
+  if (copyI18nMerged) {
+    copyI18nMerged.addEventListener('click', () => {
+      const info = selectedI18n(protocol);
+      copyText(JSON.stringify(info.record || {}, null, 2), (info.selected?.label || 'source') + ' merged record');
+    });
   }
   bindRevealButtons(node);
 }
@@ -2006,23 +2792,39 @@ function render() {
 
 async function refreshLiveData() {
   if (!LIVE_DATA_URL) return;
+  if (state.refreshInFlight) return;
+  state.refreshInFlight = true;
+  state.liveStatus = 'checking';
+  renderLiveState();
   try {
     const res = await fetch(LIVE_DATA_URL, { cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const next = await res.json();
-    if (!next || next.revision === DATA.revision) return;
+    state.lastCheckedAt = new Date().toISOString();
+    if (!next || next.revision === DATA.revision) {
+      state.liveStatus = 'live';
+      renderLiveState();
+      return;
+    }
     const previousSlug = state.slug;
     DATA = next;
+    state.liveStatus = 'changed';
+    state.lastUpdatedAt = state.lastCheckedAt;
     if (!DATA.protocols.some((p) => p.slug === previousSlug)) {
       state.slug = DATA.protocols[0]?.slug || '';
       state.artifact = DATA.protocols[0]?.view?.defaultArtifact || 'record.import.json';
       state.mode = 'artifact';
+      state.locale = 'source';
     }
     render();
     toast('Updated from out/');
   } catch (err) {
     // Keep the current snapshot visible; transient server/file reads should not
     // blank the review UI.
+    state.liveStatus = 'error';
+    renderLiveState();
+  } finally {
+    state.refreshInFlight = false;
   }
 }
 
@@ -2078,6 +2880,7 @@ function selectRelative(delta) {
   if (!next || next.slug === state.slug) return;
   state.slug = next.slug;
   state.artifact = next.view?.defaultArtifact || 'record.import.json';
+  state.locale = 'source';
   render();
 }
 
@@ -2160,7 +2963,7 @@ document.addEventListener('keydown', (event) => {
     selectRelative(-1);
     return;
   }
-  const modeKeys = { '1': 'artifact', '2': 'changes', '3': 'assets' };
+  const modeKeys = { '1': 'artifact', '2': 'preview', '3': 'i18n', '4': 'changes', '5': 'assets' };
   if (modeKeys[event.key]) {
     state.mode = modeKeys[event.key];
     event.preventDefault();
@@ -2171,7 +2974,12 @@ $('copy-root').addEventListener('click', () => copyText(DATA.outputRoot, 'output
 $('copy-imports').addEventListener('click', copyVisibleImports);
 $('copy-summary').addEventListener('click', copyVisibleSummary);
 render();
-if (LIVE_DATA_URL) setInterval(refreshLiveData, 1500);
+if (LIVE_DATA_URL) {
+  setInterval(refreshLiveData, LIVE_REFRESH_MS);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') refreshLiveData();
+  });
+}
 </script>
 </body>
 </html>`;
