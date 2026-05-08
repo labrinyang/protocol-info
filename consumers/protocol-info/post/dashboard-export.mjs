@@ -20,9 +20,13 @@ export function buildImportFile({ record, translations, sourceLocale = 'en', str
 
   const baseEn = withLocale(stripped(record), sourceLocale);
   const data = [baseEn];
+  const emittedLocales = new Set([sourceLocale]);
   for (const [code, tr] of Object.entries(translations || {})) {
+    const locale = dashboardLocaleFor(code);
+    if (emittedLocales.has(locale)) continue;
+    emittedLocales.add(locale);
     const merged = mergeTranslated(stripped(record), tr);
-    data.push(withLocale(merged, dashboardLocaleFor(code)));
+    data.push(withLocale(merged, locale));
   }
 
   return {

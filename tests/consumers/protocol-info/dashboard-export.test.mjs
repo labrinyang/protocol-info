@@ -35,4 +35,18 @@ export const tests = [
       assert.equal(zh.members[0].memberPosition, 'ZH_POS');
     },
   },
+  {
+    name: 'en_US translation is skipped because it maps to source locale en',
+    fn: async () => {
+      const file = buildImportFile({
+        record: { slug: '3jane', displayName: '3Jane', description: 'EN', members: [{ memberName: 'A', memberPosition: 'EN_POS', oneLiner: 'EN_OL' }] },
+        translations: {
+          en_US: { description: 'US English rewrite', members: [{ memberPosition: 'US_POS', oneLiner: 'US_OL' }] },
+          zh_CN: { description: 'ZH', members: [{ memberPosition: 'ZH_POS', oneLiner: 'ZH_OL' }] },
+        },
+      });
+      assert.deepEqual(file.data.map(d => `${d.slug}:${d.locale}`).sort(), ['3jane:en', '3jane:zh-cn']);
+      assert.equal(file.data.find(d => d.locale === 'en').description, 'EN');
+    },
+  },
 ];

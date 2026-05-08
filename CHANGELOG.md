@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.4.6] — 2026-05-08
+
+### Fixed
+- Prevented `record.import.json` from emitting duplicate `slug+locale` rows
+  when a translated locale maps to the source dashboard locale, such as
+  `en_US` mapping to `en`.
+
 ## [2.4.5] — 2026-05-08
 
 ### Changed
