@@ -5,9 +5,11 @@
 // Code's marketplace).
 
 import { spawn } from 'node:child_process';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 
 const GITIGNORE_BODY = `_debug/
 .runs/
@@ -16,7 +18,59 @@ index.html
 summary.tsv
 `;
 
-function git(args, { cwd, stdin = null } = {}) {
+const LOCK_STALE_MS = 5 * 60 * 1000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function lockPathFor(cwd) {
+  const hash = createHash('sha256').update(cwd).digest('hex').slice(0, 24);
+  return join(tmpdir(), `protocol-info-git-${hash}.lock`);
+}
+
+async function withGitLock(cwd, fn) {
+  const lockPath = lockPathFor(cwd);
+  const started = Date.now();
+  let delay = 10;
+
+  while (true) {
+    try {
+      await mkdir(lockPath);
+      await writeFile(join(lockPath, 'owner'), JSON.stringify({
+        pid: process.pid,
+        cwd,
+        acquiredAt: new Date().toISOString(),
+      }) + '\n');
+      break;
+    } catch (err) {
+      if (err?.code !== 'EEXIST') throw err;
+      let stale = false;
+      try {
+        const raw = await readFile(join(lockPath, 'owner'), 'utf8');
+        const owner = JSON.parse(raw);
+        const acquired = Date.parse(owner.acquiredAt);
+        stale = Number.isFinite(acquired) && Date.now() - acquired > LOCK_STALE_MS;
+      } catch {
+        stale = Date.now() - started > LOCK_STALE_MS;
+      }
+      if (stale) {
+        await rm(lockPath, { recursive: true, force: true });
+        continue;
+      }
+      await sleep(delay);
+      delay = Math.min(delay * 2, 250);
+    }
+  }
+
+  try {
+    return await fn();
+  } finally {
+    await rm(lockPath, { recursive: true, force: true });
+  }
+}
+
+function runGit(args, { cwd, stdin = null } = {}) {
   return new Promise((resolve, reject) => {
     const proc = spawn('git', args, { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
@@ -35,14 +89,31 @@ function git(args, { cwd, stdin = null } = {}) {
   });
 }
 
+function git(args, { cwd, stdin = null } = {}) {
+  return withGitLock(cwd, () => runGit(args, { cwd, stdin }));
+}
+
 export async function ensureRepo(outDir) {
   if (!existsSync(join(outDir, '.git'))) {
     await git(['init', '--quiet', '-b', 'main'], { cwd: outDir });
   }
-  await git(['config', 'user.email', 'protocol-info@local'], { cwd: outDir });
-  await git(['config', 'user.name', 'protocol-info'], { cwd: outDir });
-  await git(['config', 'commit.gpgsign', 'false'], { cwd: outDir });
+  await ensureConfig(outDir, 'user.email', 'protocol-info@local');
+  await ensureConfig(outDir, 'user.name', 'protocol-info');
+  await ensureConfig(outDir, 'commit.gpgsign', 'false');
   await ensureGitignore(outDir);
+}
+
+async function ensureConfig(outDir, key, value) {
+  let current = null;
+  try {
+    const { stdout } = await git(['config', '--get', key], { cwd: outDir });
+    current = stdout.trim();
+  } catch {
+    // Missing keys make `git config --get` exit 1. Set them below.
+  }
+  if (current !== value) {
+    await git(['config', key, value], { cwd: outDir });
+  }
 }
 
 async function ensureGitignore(outDir) {

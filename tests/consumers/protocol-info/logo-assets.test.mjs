@@ -67,6 +67,49 @@ export const tests = [
     },
   },
   {
+    name: 'provider logo falls back to paid Unavatar from verified provider X link',
+    fn: async () => {
+      const outputRoot = await tempOut();
+      const { fetchImage, calls } = conditionalImageFetch(async (url, options) => {
+        if (url.includes('cdn.rootdata.com')) {
+          return {
+            ok: false,
+            status: 404,
+            headers: { get: () => null },
+            arrayBuffer: async () => Buffer.from(''),
+          };
+        }
+        assert.equal(options.headers['x-api-key'], 'paid-key');
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (name) => name.toLowerCase() === 'content-type' ? 'image/png' : null },
+          arrayBuffer: async () => Buffer.from('unavatar-provider'),
+        };
+      });
+      const evidence = {
+        rootdata: {
+          provider_logo_url: 'https://cdn.rootdata.com/project/terminal.png',
+          validated_overrides: { providerXLink: 'https://x.com/Terminal_fi' },
+        },
+      };
+
+      const out = await normalize({
+        record: baseRecord({ slug: 'terminal', provider: 'terminal', displayName: 'Terminal' }),
+        evidence,
+        outputRoot,
+        fetchImage,
+        env: { UNAVATAR_API_KEY: 'paid-key' },
+      });
+
+      assert.equal(out.record.providerLogoUrl, `${LOGO_CDN_BASE}/protocol-logo/terminal.png`);
+      assert.equal(calls.length, 2);
+      assert.equal(calls[1].url, 'https://unavatar.io/x/Terminal_fi?fallback=false');
+      assert.equal(await readFile(join(outputRoot, 'protocol-logo', 'terminal.png'), 'utf8'), 'unavatar-provider');
+      assert.match(out.changes[0].reason, /provider_logo_rehosted_via_unavatar_fallback/);
+    },
+  },
+  {
     name: 'paid Unavatar member avatar sources are downloaded with x-api-key',
     fn: async () => {
       const outputRoot = await tempOut();

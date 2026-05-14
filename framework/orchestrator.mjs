@@ -30,14 +30,13 @@ import { invalidateI18nArtifacts } from './i18n-cache.mjs';
 import { cleanupCreatedLogoAssets } from './logo-assets.mjs';
 import { resolveR2Routing } from './r2-runner.mjs';
 import { normalizeI18nLocaleCode } from './i18n-locales.mjs';
+import { SUMMARY_HEADER } from './summary-schema.mjs';
 
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_DIR = dirname(FRAMEWORK_DIR);
 // Low-frequency plain-text heartbeat for Claude Code / terminal runs. Avoid
 // ANSI, carriage returns, or progress bars because slash commands capture text.
 const DEFAULT_PROGRESS_HEARTBEAT_MS = 60_000;
-const SUMMARY_HEADER = 'slug\tstatus\tmembers\tfunding\taudits\tschema\tsource\tapi_status\ti18n';
-
 // ── child_process helpers ───────────────────────────────────────────────────
 
 function formatElapsed(ms) {

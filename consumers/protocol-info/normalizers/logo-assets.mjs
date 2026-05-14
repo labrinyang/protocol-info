@@ -27,6 +27,25 @@ const EXT_BY_CONTENT_TYPE = {
   'image/svg+xml': 'svg',
 };
 const GITHUB_HOST_RE = /(?:^|\.)github\.com$/i;
+const X_HOST_RE = /(?:^|\.)twitter\.com$|(?:^|\.)x\.com$/i;
+const X_HANDLE_RE = /^[A-Za-z0-9_]{1,15}$/;
+const X_RESERVED_PATHS = new Set([
+  'about',
+  'account',
+  'download',
+  'explore',
+  'hashtag',
+  'home',
+  'i',
+  'intent',
+  'messages',
+  'notifications',
+  'privacy',
+  'search',
+  'settings',
+  'share',
+  'tos',
+]);
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -65,6 +84,34 @@ function withFallbackFalse(url) {
   const parsed = new URL(url);
   parsed.searchParams.set('fallback', 'false');
   return parsed.toString();
+}
+
+function firstPathSegment(parsed) {
+  const segment = parsed.pathname.split('/').filter(Boolean)[0] || '';
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+function xHandleFromValue(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('@') && X_HANDLE_RE.test(trimmed.slice(1))) return trimmed.slice(1);
+  if (X_HANDLE_RE.test(trimmed)) return trimmed;
+
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (!X_HOST_RE.test(parsed.hostname)) return null;
+  const segment = firstPathSegment(parsed).replace(/^@/, '');
+  if (!segment || X_RESERVED_PATHS.has(segment.toLowerCase())) return null;
+  return X_HANDLE_RE.test(segment) ? segment : null;
 }
 
 export function logoName(parts) {
@@ -203,6 +250,27 @@ function sourceFromRootData(evidence) {
     if (candidate && typeof candidate.value === 'string' && candidate.value.trim()) return candidate.value;
   }
   return null;
+}
+
+function providerUnavatarSources(evidence) {
+  const candidates = [
+    evidence?.rootdata?.validated_overrides?.providerXLink,
+    evidence?.rootdata?.anchors?.providerXLink,
+    evidence?.rootdata?.anchors?.provider_x_link,
+    evidence?.defillama?.twitter,
+  ];
+  const out = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const handle = xHandleFromValue(candidate);
+    if (!handle || seen.has(handle.toLowerCase())) continue;
+    seen.add(handle.toLowerCase());
+    out.push({
+      url: withFallbackFalse(`https://unavatar.io/x/${encodeURIComponent(handle)}`),
+      source: 'unavatar:provider-x',
+    });
+  }
+  return out;
 }
 
 function rootDataResultNameCandidates(item) {
@@ -419,12 +487,25 @@ export default async function normalize({
   };
 
   const providerBefore = out.providerLogoUrl ?? null;
-  const providerSources = [...new Set([providerBefore, sourceFromRootData(evidence)].filter(Boolean))];
+  const providerSources = [
+    ...[providerBefore, sourceFromRootData(evidence)]
+      .filter(Boolean)
+      .map((url, index) => ({
+        url,
+        source: index === 0 && url === providerBefore ? 'record.providerLogoUrl' : 'rootdata.provider_logo_url',
+      })),
+    ...providerUnavatarSources(evidence),
+  ];
   if (providerSources.length > 0) {
     let result = null;
+    let selectedSource = null;
+    const failedReasons = [];
+    const seenProviderSources = new Set();
     for (const providerSource of providerSources) {
+      if (!providerSource?.url || seenProviderSources.has(providerSource.url)) continue;
+      seenProviderSources.add(providerSource.url);
       result = await rehostLogoAsset({
-        sourceUrl: providerSource,
+        sourceUrl: providerSource.url,
         outputRoot,
         folder: LOGO_FOLDERS.provider,
         nameBase: logoName([slug]),
@@ -432,7 +513,11 @@ export default async function normalize({
         env,
       });
       trackCreated(result);
-      if (result.url) break;
+      if (result.url) {
+        selectedSource = providerSource;
+        break;
+      }
+      failedReasons.push(`${providerSource.source}:${result.reason}`);
     }
     out.providerLogoUrl = result.url;
     trackForCommit(result, providerBefore, out.providerLogoUrl ?? null);
@@ -440,15 +525,19 @@ export default async function normalize({
       field: 'providerLogoUrl',
       before: providerBefore,
       after: out.providerLogoUrl ?? null,
-      reason: result.url ? 'provider_logo_rehosted' : `provider_logo_rejected:${result.reason}`,
-      source: result.url ? 'framework:logo-assets' : 'framework:normalizer',
+      reason: result.url
+        ? selectedSource?.source === 'unavatar:provider-x'
+          ? `provider_logo_rehosted_via_unavatar_fallback:${failedReasons.join(',') || 'no_primary_logo'}`
+          : 'provider_logo_rehosted'
+        : `provider_logo_rejected:${failedReasons.join(',') || result.reason}`,
+      source: result.url ? selectedSource?.source || 'framework:logo-assets' : 'framework:normalizer',
       confidence: result.url ? 0.9 : 1,
     });
     if (!result.url) {
       pushGap(gaps, {
         field: 'providerLogoUrl',
-        reason: `Provider logo URL could not be rehosted (${result.reason}); providerLogoUrl set to null.`,
-        tried: ['record.providerLogoUrl', 'rootdata.provider_logo_url'],
+        reason: `Provider logo URL could not be rehosted (${failedReasons.join(',') || result.reason}); providerLogoUrl set to null.`,
+        tried: ['record.providerLogoUrl', 'rootdata.provider_logo_url', 'rootdata.validated_overrides.providerXLink', 'defillama.twitter'],
       });
     }
   } else {

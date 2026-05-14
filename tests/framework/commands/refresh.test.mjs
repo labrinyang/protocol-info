@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { existsSync } from 'node:fs';
 import { ensureRepo, commit, isClean, log } from '../../../framework/version-store.mjs';
 
 async function seedOut() {
@@ -10,6 +11,8 @@ async function seedOut() {
   await mkdir(join(out, 'pendle'), { recursive: true });
   await writeFile(join(out, 'pendle', 'record.json'), JSON.stringify({
     name: 'Pendle',
+    description: 'old',
+    status: 'active',
     fundingRounds: [{ round: 'Seed', amount: '$1M' }],
   }) + '\n');
   await writeFile(join(out, 'pendle', 'findings.json'), JSON.stringify([
@@ -30,6 +33,14 @@ async function commitOnly(outputRoot, { slug, message, runId }) {
 
 async function normalizeNoop(envelope) {
   return envelope;
+}
+
+async function addI18nArtifacts(out) {
+  await mkdir(join(out, 'pendle', '_debug', 'i18n'), { recursive: true });
+  await writeFile(join(out, 'pendle', '_debug', 'i18n', 'zh_CN.json'), '{"description":"old zh"}\n');
+  await writeFile(join(out, 'pendle', 'record.full.json'), '{"description":"old","i18n":{"zh_CN":{"description":"old zh"}}}\n');
+  await writeFile(join(out, 'pendle', 'meta.json'), '{"status":"OK","i18n":{"locales_ok":["zh_CN"]}}\n');
+  await commit(out, { paths: ['pendle/'], message: 'i18n(pendle): zh_CN', runId: 'R-i18n' });
 }
 
 export const tests = [
@@ -105,6 +116,106 @@ export const tests = [
       assert.deepEqual(record.fundingRounds, [{ round: 'Seed', amount: '$1M' }]);
       const gaps = JSON.parse(await readFile(join(out, 'pendle', 'gaps.json'), 'utf8'));
       assert.match(gaps.at(-1).reason, /suppressed/);
+    },
+  },
+  {
+    name: 'refresh preserves i18n artifacts when translatable fields do not change',
+    fn: async () => {
+      const out = await seedOut();
+      await addI18nArtifacts(out);
+      const cmd = (await import('../../../framework/commands/refresh.mjs')).default;
+      const code = await cmd(['pendle', 'funding'], {
+        outputRoot: out,
+        manifestPath: join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json'),
+        runRefreshSubtask: async () => ({
+          ok: true,
+          slice: {
+            fundingRounds: [
+              { round: 'Seed', amount: '$1M' },
+              { round: 'Series A', amount: '$5M' },
+            ],
+          },
+          findings: [{ field: 'fundingRounds', value: 'series a', source: 'source', confidence: 0.95 }],
+          changes: [{ field: 'fundingRounds', before: [], after: [], reason: 'new cited round', confidence: 0.95 }],
+          gaps: [],
+        }),
+        validate: async () => ({ ok: true, errors: [] }),
+        runPostProcessing: async ({ slugDir }) => {
+          assert.equal(existsSync(join(slugDir, '_debug', 'i18n', 'zh_CN.json')), true);
+          assert.equal(existsSync(join(slugDir, 'record.full.json')), true);
+          await writeFile(join(slugDir, 'record.import.json'), '{"ok":true}\n');
+          return 0;
+        },
+        commitAndRebuild: commitOnly,
+        normalizeEnvelope: normalizeNoop,
+        stderr: { write: () => {} },
+      });
+      assert.equal(code, 0);
+      assert.equal(existsSync(join(out, 'pendle', '_debug', 'i18n', 'zh_CN.json')), true);
+      assert.equal(existsSync(join(out, 'pendle', 'record.full.json')), true);
+      assert.equal(await isClean(out, { slug: 'pendle' }), true);
+    },
+  },
+  {
+    name: 'refresh invalidates i18n artifacts when translatable fields change',
+    fn: async () => {
+      const out = await seedOut();
+      await addI18nArtifacts(out);
+      const cmd = (await import('../../../framework/commands/refresh.mjs')).default;
+      const code = await cmd(['pendle', 'metadata'], {
+        outputRoot: out,
+        manifestPath: join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json'),
+        runRefreshSubtask: async () => ({
+          ok: true,
+          slice: { description: 'new' },
+          findings: [{ field: 'description', value: 'new', source: 'source', confidence: 0.95 }],
+          changes: [{ field: 'description', before: 'old', after: 'new', reason: 'verified', confidence: 0.95 }],
+          gaps: [],
+        }),
+        validate: async () => ({ ok: true, errors: [] }),
+        runPostProcessing: async ({ slugDir }) => {
+          assert.equal(existsSync(join(slugDir, '_debug', 'i18n', 'zh_CN.json')), false);
+          assert.equal(existsSync(join(slugDir, 'record.full.json')), false);
+          await writeFile(join(slugDir, 'record.import.json'), '{"ok":true}\n');
+          return 0;
+        },
+        commitAndRebuild: commitOnly,
+        normalizeEnvelope: normalizeNoop,
+        stderr: { write: () => {} },
+      });
+      assert.equal(code, 0);
+      assert.equal(existsSync(join(out, 'pendle', 'record.full.json')), false);
+      assert.equal(await isClean(out, { slug: 'pendle' }), true);
+    },
+  },
+  {
+    name: 'refresh preserves existing lifecycle status from automated metadata slices',
+    fn: async () => {
+      const out = await seedOut();
+      const cmd = (await import('../../../framework/commands/refresh.mjs')).default;
+      const code = await cmd(['pendle', 'metadata'], {
+        outputRoot: out,
+        manifestPath: 'manifest.json',
+        runRefreshSubtask: async () => ({
+          ok: true,
+          slice: { status: 'draft' },
+          findings: [{ field: 'status', value: 'draft', source: 'prompt', confidence: 0.5 }],
+          changes: [{ field: 'status', before: 'active', after: 'draft', reason: 'prompt default', confidence: 0.5 }],
+          gaps: [],
+        }),
+        validate: async () => ({ ok: true, errors: [] }),
+        runPostProcessing: async ({ slugDir }) => {
+          await writeFile(join(slugDir, 'record.import.json'), '{"ok":true}\n');
+          return 0;
+        },
+        commitAndRebuild: commitOnly,
+        normalizeEnvelope: normalizeNoop,
+        stderr: { write: () => {} },
+      });
+      assert.equal(code, 0);
+      const record = JSON.parse(await readFile(join(out, 'pendle', 'record.json'), 'utf8'));
+      assert.equal(record.status, 'active');
+      assert.equal(await isClean(out, { slug: 'pendle' }), true);
     },
   },
   {

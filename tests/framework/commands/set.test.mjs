@@ -166,6 +166,76 @@ export const tests = [
     },
   },
   {
+    name: 'set preserves i18n artifacts for non-translatable field updates',
+    fn: async () => {
+      const out = await seedOut();
+      await mkdir(join(out, 'pendle', '_debug', 'i18n'), { recursive: true });
+      await writeFile(join(out, 'pendle', '_debug', 'i18n', 'zh_CN.json'), '{"description":"old zh"}\n');
+      await writeFile(join(out, 'pendle', 'record.full.json'), '{"description":"old","i18n":{"zh_CN":{"description":"old zh"}}}\n');
+      await writeFile(join(out, 'pendle', 'meta.json'), '{"status":"OK","i18n":{"locales_ok":["zh_CN"]}}\n');
+      await commit(out, { paths: ['pendle/'], message: 'i18n(pendle): zh_CN', runId: 'R-i18n' });
+
+      const cmd = (await import('../../../framework/commands/set.mjs')).default;
+      const code = await cmd(['pendle', 'status', '"active"'], {
+        outputRoot: out,
+        manifestPath: join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json'),
+        validate: async () => ({ ok: true, errors: [] }),
+        runPostProcessing: async ({ slugDir }) => {
+          assert.equal(existsSync(join(slugDir, '_debug', 'i18n', 'zh_CN.json')), true);
+          assert.equal(existsSync(join(slugDir, 'record.full.json')), true);
+          const meta = JSON.parse(await readFile(join(slugDir, 'meta.json'), 'utf8'));
+          assert.deepEqual(meta.i18n, { locales_ok: ['zh_CN'] });
+          await writeFile(join(slugDir, 'record.import.json'), '{"ok":true}\n');
+          return 0;
+        },
+        commitAndRebuild: commitOnly,
+        normalizeEnvelope: normalizeNoop,
+        stderr: { write: () => {} },
+      });
+      assert.equal(code, 0);
+      assert.equal(existsSync(join(out, 'pendle', '_debug', 'i18n', 'zh_CN.json')), true);
+      assert.equal(existsSync(join(out, 'pendle', 'record.full.json')), true);
+      const meta = JSON.parse(await readFile(join(out, 'pendle', 'meta.json'), 'utf8'));
+      assert.deepEqual(meta.i18n, { locales_ok: ['zh_CN'] });
+      const record = JSON.parse(await readFile(join(out, 'pendle', 'record.json'), 'utf8'));
+      assert.equal(record.status, 'active');
+      assert.equal(await isClean(out, { slug: 'pendle' }), true);
+    },
+  },
+  {
+    name: 'set reseeds missing sidecars from record.full.json before non-translatable post-processing',
+    fn: async () => {
+      const out = await seedOut();
+      await writeFile(join(out, 'pendle', 'record.full.json'), '{"description":"old","i18n":{"zh_CN":{"description":"old zh"}}}\n');
+      await writeFile(join(out, 'pendle', 'meta.json'), '{"status":"OK","i18n":{"locales_ok":["zh_CN"]}}\n');
+      await commit(out, { paths: ['pendle/'], message: 'i18n(pendle): zh_CN', runId: 'R-i18n' });
+
+      const cmd = (await import('../../../framework/commands/set.mjs')).default;
+      const code = await cmd(['pendle', 'status', '"active"'], {
+        outputRoot: out,
+        manifestPath: join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json'),
+        validate: async () => ({ ok: true, errors: [] }),
+        runPostProcessing: async ({ slugDir }) => {
+          const sidecar = JSON.parse(await readFile(join(slugDir, '_debug', 'i18n', 'zh_CN.json'), 'utf8'));
+          assert.equal(sidecar.description, 'old zh');
+          const record = JSON.parse(await readFile(join(slugDir, 'record.json'), 'utf8'));
+          await writeFile(join(slugDir, 'record.full.json'), JSON.stringify({ ...record, i18n: { zh_CN: sidecar } }) + '\n');
+          await writeFile(join(slugDir, 'record.import.json'), '{"ok":true}\n');
+          return 0;
+        },
+        commitAndRebuild: commitOnly,
+        normalizeEnvelope: normalizeNoop,
+        stderr: { write: () => {} },
+      });
+
+      assert.equal(code, 0);
+      const full = JSON.parse(await readFile(join(out, 'pendle', 'record.full.json'), 'utf8'));
+      assert.equal(full.status, 'active');
+      assert.equal(full.i18n.zh_CN.description, 'old zh');
+      assert.equal(await isClean(out, { slug: 'pendle' }), true);
+    },
+  },
+  {
     name: 'set validation failure removes logo assets created by normalizers',
     fn: async () => {
       const out = await mkdtemp(join(tmpdir(), 'pi-set-logo-'));

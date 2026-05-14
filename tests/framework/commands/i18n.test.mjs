@@ -203,6 +203,7 @@ export const tests = [
       await mkdir(join(out, 'pendle', '_debug', 'i18n'), { recursive: true });
       await writeFile(join(out, 'pendle', '_debug', 'i18n', 'zh_CN.json'), '{"description":"zh old"}\n');
       await writeFile(join(out, 'pendle', '_debug', 'i18n', 'failures.log'), 'ja_JP\told failure\n');
+      await writeFile(join(out, 'pendle', 'summary.tsv'), 'slug\tstatus\tmembers\tfunding\taudits\tschema\tsource\tapi_status\ti18n\npendle\tSCHEMA_FAIL\t-\t-\t-\tfail\tr1\tok\t0/1\n');
       const calls = [];
       const cmd = (await import('../../../framework/commands/i18n.mjs')).default;
       const code = await cmd(['pendle', '--locales', 'zh-cn'], {
@@ -230,7 +231,8 @@ export const tests = [
       assert.deepEqual(calls, [['post']]);
       const hist = await log(out, { slug: 'pendle' });
       assert.equal(hist[0].message, 'i18n(pendle): refresh exports');
-      assert.match(await readFile(join(out, 'pendle', 'summary.tsv'), 'utf8'), /\t1\/1\n$/);
+      const summary = await readFile(join(out, 'pendle', 'summary.tsv'), 'utf8');
+      assert.match(summary, /pendle\tOK\t-\t-\t-\tpass\tr1\tok\t1\/1\n$/);
     },
   },
   {

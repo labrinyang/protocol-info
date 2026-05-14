@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { existsSync } from 'node:fs';
 import { ensureRepo, commit, isClean, log } from '../../../framework/version-store.mjs';
 
 async function seedOut() {
@@ -11,6 +12,7 @@ async function seedOut() {
   await writeFile(join(out, 'pendle', 'record.json'), JSON.stringify({
     name: 'Pendle',
     description: 'old',
+    status: 'draft',
     members: [],
   }) + '\n');
   await writeFile(join(out, 'pendle', 'findings.json'), JSON.stringify([
@@ -31,6 +33,14 @@ async function commitOnly(outputRoot, { slug, message, runId }) {
 
 async function normalizeNoop(envelope) {
   return envelope;
+}
+
+async function addI18nArtifacts(out) {
+  await mkdir(join(out, 'pendle', '_debug', 'i18n'), { recursive: true });
+  await writeFile(join(out, 'pendle', '_debug', 'i18n', 'zh_CN.json'), '{"description":"old zh"}\n');
+  await writeFile(join(out, 'pendle', 'record.full.json'), '{"description":"old","i18n":{"zh_CN":{"description":"old zh"}}}\n');
+  await writeFile(join(out, 'pendle', 'meta.json'), '{"status":"OK","i18n":{"locales_ok":["zh_CN"]}}\n');
+  await commit(out, { paths: ['pendle/'], message: 'i18n(pendle): zh_CN', runId: 'R-i18n' });
 }
 
 function proposal(overrides = {}) {
@@ -114,6 +124,65 @@ export const tests = [
       assert.equal(changes.at(-1).field, 'description');
       const hist = await log(out, { slug: 'pendle' });
       assert.equal(hist[0].message, 'analyze(pendle) description');
+      assert.equal(await isClean(out, { slug: 'pendle' }), true);
+    },
+  },
+  {
+    name: 'analyze --apply invalidates i18n only when the applied path is translatable',
+    fn: async () => {
+      const out = await seedOut();
+      await addI18nArtifacts(out);
+      const cmd = (await import('../../../framework/commands/analyze.mjs')).default;
+      const code = await cmd(['pendle', 'status', '--query', 'promote', '--apply'], {
+        outputRoot: out,
+        manifestPath: join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json'),
+        analyzeKey: async () => proposal({ path: 'status', proposed_value: 'active' }),
+        validate: async () => ({ ok: true, errors: [] }),
+        runPostProcessing: async ({ slugDir }) => {
+          assert.equal(existsSync(join(slugDir, '_debug', 'i18n', 'zh_CN.json')), true);
+          assert.equal(existsSync(join(slugDir, 'record.full.json')), true);
+          await writeFile(join(slugDir, 'record.import.json'), '{"ok":true}\n');
+          return 0;
+        },
+        commitAndRebuild: commitOnly,
+        normalizeEnvelope: normalizeNoop,
+        stdout: { write: () => {} },
+        stderr: { write: () => {} },
+      });
+
+      assert.equal(code, 0);
+      assert.equal(existsSync(join(out, 'pendle', '_debug', 'i18n', 'zh_CN.json')), true);
+      assert.equal(existsSync(join(out, 'pendle', 'record.full.json')), true);
+      const record = JSON.parse(await readFile(join(out, 'pendle', 'record.json'), 'utf8'));
+      assert.equal(record.status, 'active');
+      assert.equal(await isClean(out, { slug: 'pendle' }), true);
+    },
+  },
+  {
+    name: 'analyze --apply invalidates i18n when the applied path is translatable',
+    fn: async () => {
+      const out = await seedOut();
+      await addI18nArtifacts(out);
+      const cmd = (await import('../../../framework/commands/analyze.mjs')).default;
+      const code = await cmd(['pendle', 'description', '--query', 'verify it', '--apply'], {
+        outputRoot: out,
+        manifestPath: join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json'),
+        analyzeKey: async () => proposal(),
+        validate: async () => ({ ok: true, errors: [] }),
+        runPostProcessing: async ({ slugDir }) => {
+          assert.equal(existsSync(join(slugDir, '_debug', 'i18n', 'zh_CN.json')), false);
+          assert.equal(existsSync(join(slugDir, 'record.full.json')), false);
+          await writeFile(join(slugDir, 'record.import.json'), '{"ok":true}\n');
+          return 0;
+        },
+        commitAndRebuild: commitOnly,
+        normalizeEnvelope: normalizeNoop,
+        stdout: { write: () => {} },
+        stderr: { write: () => {} },
+      });
+
+      assert.equal(code, 0);
+      assert.equal(existsSync(join(out, 'pendle', 'record.full.json')), false);
       assert.equal(await isClean(out, { slug: 'pendle' }), true);
     },
   },

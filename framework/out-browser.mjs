@@ -12,6 +12,7 @@ import { dirname, join, relative, resolve, sep, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { log as gitLog, diff as gitDiff } from './version-store.mjs';
 import { parseCdnLogoPath } from './logo-assets.mjs';
+import { SUMMARY_COLUMNS } from './summary-schema.mjs';
 
 const DEFAULT_OUT_ROOT = join(process.cwd(), 'out');
 const MAX_EMBED_BYTES = 1_500_000;
@@ -1914,6 +1915,7 @@ input:focus-visible {
 let DATA = JSON.parse(document.getElementById('out-data').textContent);
 const LIVE_DATA_URL = ${JSON.stringify(liveDataUrl)};
 const LIVE_REFRESH_MS = 750;
+const SUMMARY_COLUMNS = ${JSON.stringify(SUMMARY_COLUMNS)};
 const state = {
   slug: DATA.protocols[0]?.slug || '',
   artifact: DATA.protocols[0]?.view?.defaultArtifact || 'record.import.json',
@@ -2856,7 +2858,7 @@ function copyVisibleSummary() {
   // Build a TSV-shaped summary across visible protocols.
   const rows = visibleProtocols().map((p) => p.row || {});
   if (rows.length === 0) return copyText('', 'visible summary');
-  const headers = ['slug', 'status', 'members', 'funding', 'audits', 'schema', 'source', 'api_status', 'i18n'];
+  const headers = SUMMARY_COLUMNS;
   const tsv = [headers.join('\\t')]
     .concat(rows.map((r) => headers.map((h) => r[h] ?? '').join('\\t')))
     .join('\\n');

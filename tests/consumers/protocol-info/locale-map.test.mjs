@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { dashboardLocaleFor } from '../../../consumers/protocol-info/post/locale-map.mjs';
+import { dashboardLocaleFor, DASHBOARD_LOCALE_CODES } from '../../../consumers/protocol-info/post/locale-map.mjs';
 
 export const tests = [
   { name: 'en → en', fn: async () => assert.equal(dashboardLocaleFor('en'), 'en') },
@@ -16,5 +16,6 @@ export const tests = [
   { name: 'th_TH → th-th', fn: async () => assert.equal(dashboardLocaleFor('th_TH'), 'th-th') },
   { name: 'uk_UA → uk-ua', fn: async () => assert.equal(dashboardLocaleFor('uk_UA'), 'uk-ua') },
   { name: 'ar → ar', fn: async () => assert.equal(dashboardLocaleFor('ar'), 'ar') },
-  { name: 'unknown XX → xx (lowercase fallback)', fn: async () => assert.equal(dashboardLocaleFor('XX'), 'xx') },
+  { name: 'known dashboard catalog includes source and translated locales', fn: async () => assert.equal(DASHBOARD_LOCALE_CODES.length, 21) },
+  { name: 'unknown locale fails loudly', fn: async () => assert.throws(() => dashboardLocaleFor('XX'), /unsupported dashboard locale/) },
 ];

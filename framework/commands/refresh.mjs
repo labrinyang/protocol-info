@@ -7,8 +7,9 @@ import { validateRecord } from '../schema-validator.mjs';
 import { loadManifest } from '../manifest-loader.mjs';
 import { mergeR2 } from '../merger.mjs';
 import { runRefreshSubtask as defaultRunRefreshSubtask } from '../refresh-runner.mjs';
-import { invalidateI18nArtifacts } from '../i18n-cache.mjs';
 import { createWriteCommandContext, writeValidationFailure } from '../command-write-context.mjs';
+import { invalidateI18nForRecordChange } from '../i18n-invalidation.mjs';
+import { seedSidecarsFromFull } from '../i18n-cache.mjs';
 
 const COMMAND_DIR = dirname(fileURLToPath(import.meta.url));
 const FRAMEWORK_DIR = dirname(COMMAND_DIR);
@@ -106,6 +107,9 @@ export default async function refreshCmd(args, ctx = {}) {
       changes: result.changes || [],
       gaps: result.gaps || [],
     };
+    if (Object.hasOwn(refreshed.record, 'status') && Object.hasOwn(prior.record, 'status')) {
+      refreshed.record.status = prior.record.status;
+    }
     const merged = merge(prior, refreshed);
     const normalized = await writeCtx.normalizeEnvelope(merged);
     const validation = await validate(normalized.record);
@@ -117,7 +121,8 @@ export default async function refreshCmd(args, ctx = {}) {
 
     await writeRecordEnvelope(outputRoot, { slug, envelope: normalized });
     rollbackOnError = true;
-    await invalidateI18nArtifacts(join(outputRoot, slug), { manifestPath });
+    const invalidatedI18n = await invalidateI18nForRecordChange(outputRoot, slug, prior.record, normalized.record, manifestPath);
+    if (!invalidatedI18n) await seedSidecarsFromFull(join(outputRoot, slug), { manifestPath });
     const postCode = await runPostProcessing({ slugDir: join(outputRoot, slug), manifestPath });
     if (postCode !== 0) {
       await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);

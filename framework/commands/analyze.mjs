@@ -7,8 +7,9 @@ import { preflightWritableSlug, rollbackSlugAndCleanup, commitAndRebuild } from 
 import { validateRecord } from '../schema-validator.mjs';
 import { loadManifest } from '../manifest-loader.mjs';
 import { analyzeKey as defaultAnalyzeKey } from '../key-analyzer.mjs';
-import { invalidateI18nArtifacts } from '../i18n-cache.mjs';
 import { createWriteCommandContext, writeValidationFailure } from '../command-write-context.mjs';
+import { invalidateI18nForPath } from '../i18n-invalidation.mjs';
+import { seedSidecarsFromFull } from '../i18n-cache.mjs';
 
 const COMMAND_DIR = dirname(fileURLToPath(import.meta.url));
 const FRAMEWORK_DIR = dirname(COMMAND_DIR);
@@ -163,7 +164,8 @@ export default async function analyzeCmd(args, ctx = {}) {
 
     await writeRecordEnvelope(outputRoot, { slug, envelope: normalized });
     rollbackOnError = true;
-    await invalidateI18nArtifacts(join(outputRoot, slug), { manifestPath });
+    const invalidatedI18n = await invalidateI18nForPath(outputRoot, slug, jsonpath, manifestPath);
+    if (!invalidatedI18n) await seedSidecarsFromFull(join(outputRoot, slug), { manifestPath });
     const postCode = await runPostProcessing({ slugDir: join(outputRoot, slug), manifestPath });
     if (postCode !== 0) {
       await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);

@@ -48,6 +48,7 @@ export const WORKFLOW_COMMANDS = {
   history: () => import('./commands/history.mjs'),
   diff: () => import('./commands/diff.mjs'),
   restore: () => import('./commands/restore.mjs'),
+  'restore-sidecars': () => import('./commands/restore-sidecars.mjs'),
   'pdf-text': () => import('./commands/pdf-text.mjs'),
 };
 
@@ -231,6 +232,7 @@ Workflow commands (v2.1):
   history <slug> [--limit N]     show git history for one protocol
   diff <slug> [from] [to]        show git diff for one protocol (default: latest two slug commits)
   restore <slug> <sha>           restore a previous commit, validate, commit
+  restore-sidecars <slug>        restore _debug/i18n sidecars from record.full.json
 `;
 
 export async function dispatchWorkflowCommand(argv, {

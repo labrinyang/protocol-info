@@ -171,7 +171,7 @@
       "properties": {
         "items": {
           "type": "array",
-          "maxItems": 100,
+          "maxItems": 30,
           "description": "One entry per audit report, newest first.",
           "items": {
             "type": "object",

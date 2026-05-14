@@ -60,6 +60,16 @@ export const tests = [
     },
   },
   {
+    name: 'ensureRepo serializes concurrent git config writes',
+    fn: async () => {
+      const dir = await makeTempOut();
+      await Promise.all(Array.from({ length: 16 }, () => ensureRepo(dir)));
+      assert.ok(existsSync(join(dir, '.git')), '.git not created');
+      const email = await gitStdout(dir, ['config', '--get', 'user.email']);
+      assert.equal(email.trim(), 'protocol-info@local');
+    },
+  },
+  {
     name: 'gitignore behavior: .runs/, .runs.log, _debug/, index.html, summary.tsv are actually ignored',
     fn: async () => {
       const { writeFile, mkdir } = await import('node:fs/promises');

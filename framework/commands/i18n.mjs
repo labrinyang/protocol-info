@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,11 +9,11 @@ import { loadRecordEnvelope, writeRecordEnvelope } from '../record-state.mjs';
 import { validateRecord } from '../schema-validator.mjs';
 import { createWriteCommandContext, writeValidationFailure } from '../command-write-context.mjs';
 import { normalizeI18nLocaleCode } from '../i18n-locales.mjs';
+import { SUMMARY_HEADER } from '../summary-schema.mjs';
+import { listTranslationSidecars, seedSidecarsFromFull } from '../i18n-cache.mjs';
 
 const COMMAND_DIR = dirname(fileURLToPath(import.meta.url));
 const FRAMEWORK_DIR = dirname(COMMAND_DIR);
-const SUMMARY_HEADER = 'slug\tstatus\tmembers\tfunding\taudits\tschema\tsource\tapi_status\ti18n';
-
 function freshRunId() {
   return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
 }
@@ -44,46 +44,6 @@ function selectedLocales(localesArg, manifest) {
 function i18nDirFor(slugDir, manifest) {
   const out = manifest.output || {};
   return join(slugDir, out.debug_dir || '_debug', 'i18n');
-}
-
-function fullFileFor(slugDir, manifest) {
-  const out = manifest.output || {};
-  return join(slugDir, out.full_filename || 'record.full.json');
-}
-
-async function listTranslationSidecars(i18nDir, manifest) {
-  const codes = new Set();
-  try {
-    for (const f of await readdir(i18nDir)) {
-      if (!f.endsWith('.json') || f.endsWith('.envelope.json') || f === 'failures.log') continue;
-      codes.add(normalizeI18nLocaleCode(f.slice(0, -'.json'.length), manifest));
-    }
-  } catch {
-    // Missing i18n debug directory simply means there are no sidecars yet.
-  }
-  return codes;
-}
-
-async function seedSidecarsFromFull(slugDir, manifest) {
-  const fullFile = fullFileFor(slugDir, manifest);
-  let full;
-  try {
-    full = JSON.parse(await readFile(fullFile, 'utf8'));
-  } catch {
-    return;
-  }
-  const translations = full?.i18n;
-  if (!translations || typeof translations !== 'object' || Array.isArray(translations)) return;
-
-  const i18nDir = i18nDirFor(slugDir, manifest);
-  await mkdir(i18nDir, { recursive: true });
-  for (const [rawCode, translation] of Object.entries(translations)) {
-    const code = normalizeI18nLocaleCode(rawCode, manifest);
-    if (!code || translation == null) continue;
-    const sidecar = join(i18nDir, `${code}.json`);
-    if (existsSync(sidecar)) continue;
-    await writeFile(sidecar, JSON.stringify(translation, null, 2));
-  }
 }
 
 async function removeLocaleSidecars(i18nDir, locales) {
@@ -118,11 +78,11 @@ async function summaryI18nColumn(slugDir, manifest) {
   } catch {
     // Fall back to the number of successful sidecars below.
   }
-  const sidecars = await listTranslationSidecars(i18nDirFor(slugDir, manifest), manifest);
+  const sidecars = await listTranslationSidecars(slugDir, { manifest });
   return sidecars.size > 0 ? `${sidecars.size}/${sidecars.size}` : '-';
 }
 
-async function updateSlugSummaryI18n(slugDir, slug, i18nCol) {
+async function updateSlugSummaryI18n(slugDir, slug, i18nCol, validation = { ok: true }) {
   const summaryPath = join(slugDir, 'summary.tsv');
   let baseCols = [slug, 'OK', '-', '-', '-', 'pass', '-', '-'];
   try {
@@ -140,11 +100,11 @@ async function updateSlugSummaryI18n(slugDir, slug, i18nCol) {
       };
       baseCols = [
         value('slug', slug),
-        value('status', 'OK'),
+        validation.ok ? 'OK' : 'SCHEMA_FAIL',
         value('members', '-'),
         value('funding', '-'),
         value('audits', '-'),
-        value('schema', 'pass'),
+        validation.ok ? 'pass' : 'fail',
         value('source', '-'),
         value('api_status', '-'),
       ];
@@ -152,6 +112,8 @@ async function updateSlugSummaryI18n(slugDir, slug, i18nCol) {
   } catch {
     // Missing summary.tsv is repaired below from available defaults.
   }
+  baseCols[1] = validation.ok ? 'OK' : 'SCHEMA_FAIL';
+  baseCols[5] = validation.ok ? 'pass' : 'fail';
   await writeFile(summaryPath, `${SUMMARY_HEADER}\n${baseCols.join('\t')}\t${i18nCol}\n`);
 }
 
@@ -245,9 +207,9 @@ export default async function i18nCmd(args, ctx = {}) {
     }
     await writeRecordEnvelope(outputRoot, { slug, envelope: normalized });
     rollbackOnError = true;
-    await seedSidecarsFromFull(slugDir, manifest);
+    await seedSidecarsFromFull(slugDir, { manifest });
     const i18nDir = i18nDirFor(slugDir, manifest);
-    const existingLocales = await listTranslationSidecars(i18nDir, manifest);
+    const existingLocales = await listTranslationSidecars(slugDir, { manifest });
     const localesToRun = incrementalLocales(locales, existingLocales, force);
     if (force) await removeLocaleSidecars(i18nDir, localesToRun);
 
@@ -269,7 +231,7 @@ export default async function i18nCmd(args, ctx = {}) {
       stderr.write(`i18n: post-processing exited ${postCode}; rolled back\n`);
       return postCode;
     }
-    await updateSlugSummaryI18n(slugDir, slug, await summaryI18nColumn(slugDir, manifest));
+    await updateSlugSummaryI18n(slugDir, slug, await summaryI18nColumn(slugDir, manifest), validation);
 
     await commitRebuild(outputRoot, {
       slug,
