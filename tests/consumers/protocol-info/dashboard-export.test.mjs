@@ -3,16 +3,17 @@ import { buildImportFile } from '../../../consumers/protocol-info/post/dashboard
 
 export const tests = [
   {
-    name: 'no translations → 1 record (locale=en, sources stripped)',
+    name: 'no translations → 1 record (locale=en, non-dashboard fields stripped)',
     fn: async () => {
       const file = buildImportFile({
-        record: { slug: 's', displayName: 'S', sources: ['x'] },
+        record: { slug: 's', displayName: 'S', sources: ['x'], i18nGlossary: ['Pendle V2'] },
         translations: {},
       });
       assert.equal(file.version, '1.0');
       assert.equal(file.data.length, 1);
       assert.equal(file.data[0].locale, 'en');
       assert.equal('sources' in file.data[0], false);
+      assert.equal('i18nGlossary' in file.data[0], false);
       assert.deepEqual(Object.keys(file.data[0]).slice(0, 3), ['slug', 'locale', 'displayName']);
     },
   },

@@ -11,6 +11,7 @@ import { runOpenAIChatCompletion } from './openai-wrapper.mjs';
 import { assertProviderAllowed, resolveOpenAIPricing, resolveOpenAIModel } from './llm-router.mjs';
 import { runWithLimit } from './parallel-runner.mjs';
 import { validate } from './schema-validator.mjs';
+import { buildI18nSchema } from './i18n-schema-generator.mjs';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -196,11 +197,42 @@ function retryPromptSuffix(sourceJson) {
   ].filter(Boolean).join('\n');
 }
 
+function glossarySection(record) {
+  const terms = Array.isArray(record?.i18nGlossary)
+    ? record.i18nGlossary.map((term) => String(term).trim()).filter(Boolean)
+    : [];
+  if (terms.length === 0) return '';
+  return [
+    '',
+    'Preserve these glossary terms verbatim. Do not translate, romanize, or alter capitalization:',
+    ...terms.map((term) => `- ${term}`),
+    '',
+  ].join('\n');
+}
+
+function schemasForFields(baseSchema, fields, manifest) {
+  const allFields = manifest.i18n?.translatable_fields || [];
+  if (
+    fields.length === allFields.length &&
+    fields.every((field, index) => field === allFields[index])
+  ) {
+    return baseSchema;
+  }
+  return buildI18nSchema({
+    fullSchema: baseSchema,
+    translatableFields: fields,
+    fieldCaps: manifest.i18n?.field_caps || {},
+    title: baseSchema.title,
+    description: `Partial i18n payload for: ${fields.join(', ')}`,
+  });
+}
+
 export async function runI18nStage({
   manifest,
   record,
   selectedLocales,
   outputDir,
+  translatableFields = null,
   parallelism = 8,
   claudeBin = 'claude',
   modelOverride = null,
@@ -224,9 +256,12 @@ export async function runI18nStage({
   const i18nCfg = manifest._abs.i18n;
   const sysPrompt = await readFile(i18nCfg.system_prompt_abs, 'utf8');
   const userTmpl = await readFile(i18nCfg.user_prompt_abs, 'utf8');
-  const i18nSchema = JSON.parse(await readFile(i18nCfg.schema_abs, 'utf8'));
-  const sourceJson = extractTranslatable(record, manifest.i18n.translatable_fields);
+  const baseI18nSchema = JSON.parse(await readFile(i18nCfg.schema_abs, 'utf8'));
+  const fields = translatableFields || manifest.i18n.translatable_fields;
+  const i18nSchema = schemasForFields(baseI18nSchema, fields, manifest);
+  const sourceJson = extractTranslatable(record, fields);
   const promptSourceJson = stripNullSourceLiterals(sourceJson);
+  const glossary = glossarySection(record);
   const normalizedProvider = String(provider || 'claude').toLowerCase();
   assertProviderAllowed({ stage: 'i18n', provider: normalizedProvider, manifest });
   const openAIPricing = normalizedProvider === 'openai'
@@ -285,6 +320,7 @@ export async function runI18nStage({
     const userPrompt = userTmpl
       .replaceAll('{{LOCALE_CODE}}', code)
       .replaceAll('{{LOCALE_NAME}}', localeName)
+      .replaceAll('{{GLOSSARY_SECTION}}', glossary)
       .replaceAll('{{SOURCE_JSON}}', JSON.stringify(promptSourceJson, null, 2));
 
     const baseBudget = manifest.i18n.max_budget_usd_per_call ?? 0.10;

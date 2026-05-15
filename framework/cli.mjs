@@ -44,6 +44,8 @@ export const WORKFLOW_COMMANDS = {
   set: () => import('./commands/set.mjs'),
   analyze: () => import('./commands/analyze.mjs'),
   i18n: () => import('./commands/i18n.mjs'),
+  'export-imports': () => import('./commands/export-imports.mjs'),
+  promote: () => import('./commands/promote.mjs'),
   refresh: () => import('./commands/refresh.mjs'),
   history: () => import('./commands/history.mjs'),
   diff: () => import('./commands/diff.mjs'),
@@ -225,8 +227,14 @@ Workflow commands (v2.1):
   set <slug> <jsonpath> <json>   edit one value with validation + commit
   analyze <slug> <jsonpath> --query <text> [--apply]
                               research one value; apply validates + commits
-  i18n <slug> [--locales LIST] [--force]
-                              add missing translations, post-process, commit
+  i18n <slug> [--locales LIST] [--fields LIST] [--force]
+                              add or refresh translations, post-process, commit
+  i18n --batch <slug...> [--locales LIST] [--parallel-slugs N] [--i18n-parallel N]
+                              run i18n across multiple slugs
+  export-imports --out <dir> [--combined]
+                              create flat dashboard import files
+  promote <slug> <active|archived>
+                              validate lifecycle transition and commit
   refresh <slug> <subtask>       rerun metadata/team/funding/audits and merge
   pdf-text <slug> <audit-index>  print extracted audit report text from _debug/rootdata.json
   history <slug> [--limit N]     show git history for one protocol

@@ -45,6 +45,12 @@
       "enum": ["fixed_rate", "simple_earn", "staking"]
     },
     "description": { "type": ["string", "null"], "maxLength": 1000 },
+    "i18nGlossary": {
+      "type": "array",
+      "description": "Optional per-record terms that translation must preserve verbatim.",
+      "items": { "type": "string", "minLength": 1, "maxLength": 80 },
+      "maxItems": 30
+    },
     "tags": {
       "type": "array",
       "items": { "type": "string", "minLength": 1, "maxLength": 32 },

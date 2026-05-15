@@ -229,6 +229,83 @@ export const tests = [
     },
   },
   {
+    name: 'runI18nStage supports field-scoped translation and glossary injection',
+    fn: async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'pi-i18n-fields-'));
+      const systemPrompt = join(dir, 'system.md');
+      const userPrompt = join(dir, 'user.md');
+      const schemaPath = join(dir, 'schema.json');
+      const outputDir = join(dir, 'out');
+      await writeFile(systemPrompt, 'Translate precisely.');
+      await writeFile(userPrompt, 'Locale {{LOCALE_CODE}}\n{{GLOSSARY_SECTION}}\n{{SOURCE_JSON}}');
+      await writeFile(schemaPath, JSON.stringify({
+        type: 'object',
+        additionalProperties: false,
+        required: ['description', 'members'],
+        properties: {
+          description: { type: ['string', 'null'], maxLength: 1000 },
+          members: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['memberPosition', 'oneLiner'],
+              properties: {
+                memberPosition: { type: 'string', maxLength: 80 },
+                oneLiner: { type: ['string', 'null'], maxLength: 140 },
+              },
+            },
+          },
+        },
+      }));
+
+      const result = await runI18nStage({
+        manifest: {
+          i18n: {
+            enabled: true,
+            translatable_fields: ['description', 'members[].memberPosition', 'members[].oneLiner'],
+            locale_catalog: [{ code: 'zh_CN', name_en: 'Simplified Chinese' }],
+          },
+          _abs: {
+            i18n: {
+              system_prompt_abs: systemPrompt,
+              user_prompt_abs: userPrompt,
+              schema_abs: schemaPath,
+            },
+          },
+        },
+        record: {
+          description: 'A protocol.',
+          i18nGlossary: ['Pendle V2'],
+          members: [{ memberPosition: 'Founder', oneLiner: 'Builds yield markets.' }],
+        },
+        selectedLocales: ['zh_CN'],
+        translatableFields: ['members[].oneLiner'],
+        outputDir,
+        provider: 'openai',
+        env: { OPENAI_API_KEY: 'test-key' },
+        runOpenAI: async ({ userPrompt: renderedPrompt, schemaJson }) => {
+          assert.doesNotMatch(renderedPrompt, /A protocol/);
+          assert.match(renderedPrompt, /Pendle V2/);
+          assert.deepEqual(schemaJson.required, ['members']);
+          assert.deepEqual(schemaJson.properties.members.items.required, ['oneLiner']);
+          return {
+            structured_output: { members: [{ oneLiner: '构建收益市场。' }] },
+            total_cost_usd: 0,
+            num_turns: 1,
+            provider: 'openai',
+            model: 'gpt-test',
+          };
+        },
+      });
+
+      assert.equal(result.ok, 1);
+      assert.deepEqual(result.translations.zh_CN, {
+        members: [{ oneLiner: '构建收益市场。' }],
+      });
+    },
+  },
+  {
     name: 'runI18nStage rejects overlong translated output before writing sidecar',
     fn: async () => {
       const dir = await mkdtemp(join(tmpdir(), 'pi-i18n-overlong-'));

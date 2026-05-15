@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 
 const steps = [
   { name: 'bash -n run.sh', cmd: 'bash', args: ['-n', 'run.sh'] },
+  { name: 'i18n schema freshness', cmd: 'node', args: ['scripts/generate-i18n-schema.mjs', '--check'] },
   { name: 'check-slice-coherence', cmd: 'node', args: ['scripts/check-slice-coherence.mjs'] },
   { name: 'tests/run.mjs', cmd: 'node', args: ['tests/run.mjs'] },
 ];

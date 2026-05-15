@@ -7,7 +7,7 @@
 import { dashboardLocaleFor } from './locale-map.mjs';
 import { mergeTranslated } from '../../../framework/i18n-stage.mjs';
 
-export function buildImportFile({ record, translations, sourceLocale = 'en', stripFields = ['sources'] }) {
+export function buildImportFile({ record, translations, sourceLocale = 'en', stripFields = ['sources', 'i18nGlossary'] }) {
   const stripped = (r) => {
     const out = { ...r };
     for (const f of stripFields) delete out[f];

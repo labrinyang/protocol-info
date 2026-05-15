@@ -2,13 +2,19 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "i18n.schema.json",
   "title": "EarnProtocolInfo i18n payload (one locale)",
-  "description": "Translated text fields for a single locale. Structurally mirrors the translatable subset of EarnProtocolInfo: description + members[{memberPosition, oneLiner}]. No identifiers, URLs, dates, or enums.",
+  "description": "Translated text fields for a single locale. Generated from manifest.i18n.translatable_fields and the canonical schema.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["description", "members"],
+  "required": [
+    "description",
+    "members"
+  ],
   "properties": {
     "description": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "maxLength": 1000
     },
     "members": {
@@ -18,14 +24,20 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["memberPosition", "oneLiner"],
+        "required": [
+          "memberPosition",
+          "oneLiner"
+        ],
         "properties": {
           "memberPosition": {
             "type": "string",
             "maxLength": 80
           },
           "oneLiner": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "maxLength": 140
           }
         }

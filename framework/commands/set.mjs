@@ -87,7 +87,7 @@ export default async function setCmd(args, ctx = {}) {
     await commitRebuild(outputRoot, {
       slug,
       extraPaths: writeCtx.assetPathsToCommit(),
-      message: `set(${slug}) ${jsonpath}`,
+      message: ctx.commitMessage || `set(${slug}) ${jsonpath}`,
       runId: freshRunId(),
     });
     return 0;

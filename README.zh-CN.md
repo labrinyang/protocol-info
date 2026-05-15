@@ -254,10 +254,15 @@ R2_LLM_PROVIDER=openai ./run.sh --display-name "Pendle"
 ./run.sh analyze pendle fundingRounds --query "verify latest funding rounds"
 ./run.sh analyze pendle fundingRounds --query "verify latest funding rounds" --llm-provider openai --apply
 ./run.sh i18n pendle --locales zh-cn,ja-jp
+./run.sh i18n pendle --locales zh-cn,ja-jp --fields members[].oneLiner
+./run.sh i18n --batch pendle morpho aave --locales all --parallel-slugs 4 --i18n-parallel 8
+./run.sh export-imports --out Aimports --combined
+./run.sh promote pendle active
 ./run.sh refresh pendle audits --llm-provider openai
 ./run.sh history pendle
 ./run.sh diff pendle
 ./run.sh restore pendle <sha>
+./run.sh restore-sidecars pendle
 ```
 
 写入类命令都会先运行 deterministic normalizer，再校验完整记录；源字段变化时
@@ -316,10 +321,17 @@ Dry run：
 | `analyze <slug> <jsonpath> --query <text> --apply` | 是 | 把提案应用到同一个路径，校验、post-process、commit。 |
 | `i18n <slug> [--locales LIST]` | 是 | 增量补齐缺失 locale，保留已有翻译，并重新生成导出文件。 |
 | `i18n <slug> [--locales LIST] --force` | 是 | 重新翻译指定 locale，并替换对应已有 sidecar。 |
+| `i18n <slug> [--locales LIST] --fields <path,path>` | 是 | 只翻译 manifest 中指定的可翻译字段，深度合并进已有 sidecar，并记录源字段 hash 以便后续跳过未变化字段。 |
+| `i18n --batch <slug...> [--locales LIST] [--parallel-slugs N] [--i18n-parallel N]` | 是 | 并发为多个 slug 跑 i18n；每个 slug 独立提交，批量摘要写入 `out/.runs/`。 |
+| `export-imports --out <dir> [--combined]` | 是 | 把有效的 per-slug `record.import.json` 复制到扁平导入目录，并可生成 `combined.import.json`。 |
+| `promote <slug> <active|archived>` | 是 | 校验生命周期转换，然后复用 `set status` 的校验、post-process、commit 路径。 |
 | `refresh <slug> <metadata|team|funding|audits>` | 是 | 重跑一个大的 R1 subtask，并通过 audit-first guard 合并。 |
 | `history <slug> [--limit N]` | 否 | 查看单个协议的本地 git 历史。 |
 | `diff <slug> [from] [to]` | 否 | 查看单个协议的 unified diff。不传 ref 时，比较该 slug 最新两次提交。 |
 | `restore <slug> <sha>` | 是 | 恢复到过去的有效版本，post-process 后 commit。 |
+| `restore-sidecars <slug>` | 是 | 从 `record.full.json` 恢复被忽略的 `_debug/i18n/` sidecar。 |
+
+状态转换规则保持收窄：`draft -> active`、`draft -> archived`、`active -> archived`、`archived -> active`。如果目标状态已经是当前状态，`promote` 会直接 no-op。
 
 ## 输出结构
 
@@ -629,6 +641,18 @@ out/<slug>/_debug/i18n/
 `i18n <slug> --locales ...` 默认是增量模式：已有 locale 会保留，只翻译缺失
 locale，并会在需要时从 `record.full.json` 恢复被 gitignore 的 `_debug/i18n/`
 sidecar。需要重翻已有 locale 时加 `--force`。
+
+只改了某个可翻译字段时用 `--fields`，例如：
+
+```bash
+./run.sh i18n pendle --locales zh-cn,ja-jp --fields members[].oneLiner
+```
+
+命令会校验字段名必须来自 `manifest.i18n.translatable_fields`，只把该子集发给
+模型，随后深度合并到已有 sidecar，并把源字段 hash 写到
+`_debug/i18n-meta/source-hashes.json`，后续相同内容可直接跳过。如果
+`_debug/i18n/` 被清理，可用 `./run.sh restore-sidecars <slug>` 从
+`record.full.json` 恢复。
 
 ### R1 看起来卡住
 

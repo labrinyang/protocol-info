@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseTranslatablePath } from '../../../framework/i18n-fields.mjs';
+import { buildI18nSchema } from '../../../framework/i18n-schema-generator.mjs';
 import { SUMMARY_COLUMNS, SUMMARY_HEADER } from '../../../framework/summary-schema.mjs';
 import { dashboardLocaleFor, DASHBOARD_LOCALE_CODES } from '../../../consumers/protocol-info/post/locale-map.mjs';
 
@@ -50,6 +51,20 @@ export const tests = [
         }
         assert.equal(translated.minLength, undefined, `${field}: minLength encourages filler text`);
       }
+    },
+  },
+  {
+    name: 'committed i18n schema is generated from manifest and full schema',
+    fn: async () => {
+      const root = join(process.cwd(), 'consumers', 'protocol-info');
+      const manifest = await json(join(root, 'manifest.json'));
+      const full = await json(join(root, 'schemas', 'full.json'));
+      const i18n = await json(join(root, 'schemas', 'i18n.json'));
+      assert.deepEqual(i18n, buildI18nSchema({
+        fullSchema: full,
+        translatableFields: manifest.i18n.translatable_fields,
+        fieldCaps: manifest.i18n.field_caps,
+      }));
     },
   },
   {

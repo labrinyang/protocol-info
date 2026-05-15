@@ -197,6 +197,117 @@ export const tests = [
     },
   },
   {
+    name: 'i18n --fields merges partial sidecars and stores leaf source hashes',
+    fn: async () => {
+      const out = await seedOut();
+      await writeFile(join(out, 'pendle', 'record.json'), JSON.stringify({
+        description: 'AMM',
+        members: [
+          { memberName: 'Alice', memberPosition: 'CEO', oneLiner: 'Builds markets.' },
+          { memberName: 'Bob', memberPosition: 'CTO', oneLiner: 'Ships contracts.' },
+        ],
+      }) + '\n');
+      await commit(out, { paths: ['pendle/record.json'], message: 'set(pendle) members', runId: 'R-members' });
+      await mkdir(join(out, 'pendle', '_debug', 'i18n'), { recursive: true });
+      await writeFile(join(out, 'pendle', '_debug', 'i18n', 'zh_CN.json'), JSON.stringify({
+        description: '旧描述',
+        members: [
+          { memberPosition: '首席执行官', oneLiner: '旧一' },
+          { memberPosition: '首席技术官', oneLiner: '旧二' },
+        ],
+      }) + '\n');
+
+      const cmd = (await import('../../../framework/commands/i18n.mjs')).default;
+      const code = await cmd(['pendle', '--locales', 'zh-cn', '--fields', 'members[].oneLiner', '--i18n-parallel', '3'], {
+        outputRoot: out,
+        manifestPath,
+        runI18nStage: async ({ slugDir, locales, fields, parallel }) => {
+          assert.deepEqual(locales, ['zh_CN']);
+          assert.deepEqual(fields, ['members[].oneLiner']);
+          assert.equal(parallel, 3);
+          await writeFile(join(slugDir, '_debug', 'i18n', 'zh_CN.json'), JSON.stringify({
+            members: [
+              { oneLiner: '新一' },
+              { oneLiner: '新二' },
+            ],
+          }) + '\n');
+          return 0;
+        },
+        runPostProcessing: async ({ slugDir }) => {
+          const translation = JSON.parse(await readFile(join(slugDir, '_debug', 'i18n', 'zh_CN.json'), 'utf8'));
+          await writeFile(join(slugDir, 'record.full.json'), JSON.stringify({ i18n: { zh_CN: translation } }));
+          await writeFile(join(slugDir, 'record.import.json'), '{"data":[]}\n');
+          await writeFile(join(slugDir, 'meta.json'), '{"i18n":{"locales_ok":["zh_CN"]}}\n');
+          return 0;
+        },
+        commitAndRebuild: commitOnly,
+        validate: async () => ({ ok: true, errors: [] }),
+        stderr: { write: () => {} },
+      });
+
+      assert.equal(code, 0);
+      const sidecar = JSON.parse(await readFile(join(out, 'pendle', '_debug', 'i18n', 'zh_CN.json'), 'utf8'));
+      assert.equal(sidecar.description, '旧描述');
+      assert.deepEqual(sidecar.members, [
+        { memberPosition: '首席执行官', oneLiner: '新一' },
+        { memberPosition: '首席技术官', oneLiner: '新二' },
+      ]);
+      const hashes = JSON.parse(await readFile(join(out, 'pendle', '_debug', 'i18n-meta', 'source-hashes.json'), 'utf8'));
+      assert.ok(hashes.locales.zh_CN['members[0].oneLiner']);
+      assert.ok(hashes.locales.zh_CN['members[1].oneLiner']);
+      const hist = await log(out, { slug: 'pendle' });
+      assert.equal(hist[0].message, 'i18n(pendle): zh_CN fields members[].oneLiner');
+    },
+  },
+  {
+    name: 'i18n --fields skips stage when source hashes are unchanged',
+    fn: async () => {
+      const out = await seedOut();
+      await writeFile(join(out, 'pendle', 'record.json'), JSON.stringify({
+        description: 'AMM',
+        members: [{ memberName: 'Alice', memberPosition: 'CEO', oneLiner: 'Builds markets.' }],
+      }) + '\n');
+      await commit(out, { paths: ['pendle/record.json'], message: 'set(pendle) members', runId: 'R-members' });
+      await mkdir(join(out, 'pendle', '_debug', 'i18n'), { recursive: true });
+      await writeFile(join(out, 'pendle', '_debug', 'i18n', 'zh_CN.json'), '{"members":[{"oneLiner":"构建市场。"}]}\n');
+
+      const { sourceHashesFor } = await import('../../../framework/i18n-hashes.mjs');
+      await mkdir(join(out, 'pendle', '_debug', 'i18n-meta'), { recursive: true });
+      await writeFile(join(out, 'pendle', '_debug', 'i18n-meta', 'source-hashes.json'), JSON.stringify({
+        version: 1,
+        locales: {
+          zh_CN: sourceHashesFor(
+            { members: [{ oneLiner: 'Builds markets.' }] },
+            ['members[].oneLiner'],
+          ),
+        },
+      }) + '\n');
+
+      const calls = [];
+      const cmd = (await import('../../../framework/commands/i18n.mjs')).default;
+      const code = await cmd(['pendle', '--locales', 'zh-cn', '--fields', 'members[].oneLiner'], {
+        outputRoot: out,
+        manifestPath,
+        runI18nStage: async () => {
+          throw new Error('stage should skip unchanged field hashes');
+        },
+        runPostProcessing: async ({ slugDir }) => {
+          calls.push('post');
+          await writeFile(join(slugDir, 'record.full.json'), '{"i18n":{"zh_CN":{"members":[{"oneLiner":"构建市场。"}]}}}\n');
+          await writeFile(join(slugDir, 'record.import.json'), '{"data":[]}\n');
+          await writeFile(join(slugDir, 'meta.json'), '{"i18n":{"locales_ok":["zh_CN"]}}\n');
+          return 0;
+        },
+        commitAndRebuild: commitOnly,
+        validate: async () => ({ ok: true, errors: [] }),
+        stderr: { write: () => {} },
+      });
+
+      assert.equal(code, 0);
+      assert.deepEqual(calls, ['post']);
+    },
+  },
+  {
     name: 'i18n skips translation stage when requested locales already exist',
     fn: async () => {
       const out = await seedOut();
@@ -233,6 +344,47 @@ export const tests = [
       assert.equal(hist[0].message, 'i18n(pendle): refresh exports');
       const summary = await readFile(join(out, 'pendle', 'summary.tsv'), 'utf8');
       assert.match(summary, /pendle\tOK\t-\t-\t-\tpass\tr1\tok\t1\/1\n$/);
+    },
+  },
+  {
+    name: 'i18n batch runs siblings and reports partial failures',
+    fn: async () => {
+      const out = await seedOut();
+      await mkdir(join(out, 'bad'), { recursive: true });
+      await writeFile(join(out, 'bad', 'record.json'), '{"description":"Bad"}\n');
+      await writeFile(join(out, 'bad', 'meta.json'), '{"status":"OK"}\n');
+      await commit(out, { paths: ['bad/'], message: 'crawl(bad): ok', runId: 'R-bad' });
+
+      const cmd = (await import('../../../framework/commands/i18n.mjs')).default;
+      const code = await cmd(['--batch', 'pendle', 'bad', '--locales', 'zh-cn', '--parallel-slugs', '2'], {
+        outputRoot: out,
+        manifestPath,
+        runI18nStage: async ({ slugDir }) => {
+          if (slugDir.endsWith('/bad')) return 7;
+          await mkdir(join(slugDir, '_debug', 'i18n'), { recursive: true });
+          await writeFile(join(slugDir, '_debug', 'i18n', 'zh_CN.json'), '{"description":"zh"}\n');
+          return 0;
+        },
+        runPostProcessing: async ({ slugDir }) => {
+          await writeFile(join(slugDir, 'record.full.json'), '{"i18n":{"zh_CN":{"description":"zh"}}}\n');
+          await writeFile(join(slugDir, 'record.import.json'), '{"data":[]}\n');
+          await writeFile(join(slugDir, 'meta.json'), '{"i18n":{"locales_ok":["zh_CN"]}}\n');
+          return 0;
+        },
+        commitAndRebuild: commitOnly,
+        validate: async () => ({ ok: true, errors: [] }),
+        stderr: { write: () => {} },
+      });
+
+      assert.equal(code, 1);
+      assert.equal((await log(out, { slug: 'pendle' })).length, 2);
+      assert.equal((await log(out, { slug: 'bad' })).length, 1);
+      const runDirs = (await readdir(join(out, '.runs'))).filter(Boolean);
+      assert.equal(runDirs.length, 1);
+      const summary = JSON.parse(await readFile(join(out, '.runs', runDirs[0], 'i18n-batch-summary.json'), 'utf8'));
+      assert.deepEqual(summary.ok, ['pendle']);
+      assert.equal(summary.failed[0].slug, 'bad');
+      assert.equal(summary.failed[0].code, 7);
     },
   },
   {

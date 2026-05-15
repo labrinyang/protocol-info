@@ -1,6 +1,6 @@
 ---
 description: Crawl or edit DeFi protocol-info records with schema validation, i18n, and local git history
-argument-hint: "--display-name <name> [...] | get/set/analyze/i18n/refresh/history/diff/restore <slug> [...]"
+argument-hint: "--display-name <name> [...] | get/set/analyze/i18n/export-imports/promote/refresh/history/diff/restore <slug> [...]"
 allowed-tools: Bash
 ---
 
@@ -18,7 +18,8 @@ Run the protocol-info crawler pipeline with the user's arguments. The pipeline i
 
 The same runner also supports workflow subcommands on an existing
 `out/<slug>/`: `get`, `set`, `analyze`, `i18n`, `refresh`, `history`, `diff`,
-and `restore`. Pass those through verbatim too.
+`restore`, `restore-sidecars`, `promote`, and `export-imports`. Pass those
+through verbatim too.
 
 ## How to run
 
@@ -126,6 +127,10 @@ Do **not**:
 /protocol-info:protocol-info get pendle description
 /protocol-info:protocol-info analyze pendle fundingRounds --query "verify latest funding rounds"
 /protocol-info:protocol-info analyze pendle fundingRounds --query "verify latest funding rounds" --apply
+/protocol-info:protocol-info i18n pendle --locales zh_CN,ja_JP --fields members[].oneLiner
+/protocol-info:protocol-info i18n --batch pendle morpho --locales all --parallel-slugs 2 --i18n-parallel 8
+/protocol-info:protocol-info export-imports --out Aimports --combined
+/protocol-info:protocol-info promote pendle active
 ```
 
 ## Environment

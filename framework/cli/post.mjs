@@ -91,7 +91,7 @@ for (const p of manifest._abs.post_processing || []) {
       record,
       translations,
       sourceLocale: p.config?.source_locale_dashboard_code || 'en',
-      stripFields: p.config?.strip_fields || ['sources'],
+      stripFields: p.config?.strip_fields || ['sources', 'i18nGlossary'],
     });
     await writeFile(importFile, JSON.stringify(file, null, 2));
   } else if (typeof mod.default === 'function') {

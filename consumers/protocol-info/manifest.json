@@ -68,6 +68,11 @@
     "user_prompt": "./prompts/i18n.user.md.tmpl",
     "schema": "./schemas/i18n.json",
     "translatable_fields": ["description", "members[].memberPosition", "members[].oneLiner"],
+    "field_caps": {
+      "description": { "maxLength": 1000 },
+      "members[].memberPosition": { "maxLength": 80 },
+      "members[].oneLiner": { "maxLength": 140 }
+    },
     "locale_catalog": [
       { "code": "en_US", "name_zh": "英语（美国）", "name_en": "English (United States)" },
       { "code": "zh_CN", "name_zh": "简体中文（中国大陆）", "name_en": "Simplified Chinese (Mainland China)" },
@@ -98,7 +103,7 @@
       "config": {
         "envelope_version": "1.0",
         "source_locale_dashboard_code": "en",
-        "strip_fields": ["sources"]
+        "strip_fields": ["sources", "i18nGlossary"]
       }
     }
   ],

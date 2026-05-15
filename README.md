@@ -279,10 +279,15 @@ Workflow commands on an existing `out/<slug>/`:
 ./run.sh analyze pendle fundingRounds --query "verify latest funding rounds"
 ./run.sh analyze pendle fundingRounds --query "verify latest funding rounds" --llm-provider openai --apply
 ./run.sh i18n pendle --locales zh-cn,ja-jp
+./run.sh i18n pendle --locales zh-cn,ja-jp --fields members[].oneLiner
+./run.sh i18n --batch pendle morpho aave --locales all --parallel-slugs 4 --i18n-parallel 8
+./run.sh export-imports --out Aimports --combined
+./run.sh promote pendle active
 ./run.sh refresh pendle audits --llm-provider openai
 ./run.sh history pendle
 ./run.sh diff pendle
 ./run.sh restore pendle <sha>
+./run.sh restore-sidecars pendle
 ```
 
 Write commands normalize deterministic fields, validate the full record,
@@ -344,10 +349,17 @@ history and rollback are handled by the nested git repo under `out/`.
 | `analyze <slug> <jsonpath> --query <text> --apply` | Yes | Apply the proposal at the same path, validate, post-process, commit. |
 | `i18n <slug> [--locales LIST]` | Yes | Add missing locale sidecars, preserve existing translations, regenerate export files. |
 | `i18n <slug> [--locales LIST] --force` | Yes | Re-translate the requested locales and replace their existing sidecars. |
+| `i18n <slug> [--locales LIST] --fields <path,path>` | Yes | Translate only selected manifest translatable fields, deep-merge them into existing sidecars, and store source hashes for unchanged-field skips. |
+| `i18n --batch <slug...> [--locales LIST] [--parallel-slugs N] [--i18n-parallel N]` | Yes | Run i18n across multiple slugs; each slug commits independently and writes a batch summary under `out/.runs/`. |
+| `export-imports --out <dir> [--combined]` | Yes | Copy valid per-slug `record.import.json` files to a flat import folder and optionally write `combined.import.json`. |
+| `promote <slug> <active|archived>` | Yes | Validate lifecycle transition, then reuse the `set status` validation/post/commit path. |
 | `refresh <slug> <metadata|team|funding|audits>` | Yes | Re-run one broad R1 subtask and merge through the audit-first guard. |
 | `history <slug> [--limit N]` | No | Show local git history for one protocol. |
 | `diff <slug> [from] [to]` | No | Show a unified diff for one protocol. With no refs, compares that slug's latest two commits. |
 | `restore <slug> <sha>` | Yes | Restore a previous valid version, post-process, commit. |
+| `restore-sidecars <slug>` | Yes | Recreate ignored `_debug/i18n/` sidecars from `record.full.json`. |
+
+Promotion rules are deliberately narrow: `draft -> active`, `draft -> archived`, `active -> archived`, and `archived -> active`. `promote` is a no-op when the record is already at the requested status.
 
 ## Output Layout
 
@@ -671,6 +683,18 @@ Successful locale sidecars are still used by post-processing.
 kept, missing locales are translated, and `record.full.json` is used to restore
 ignored `_debug/i18n/` sidecars when needed. Use `--force` to re-translate a
 locale that already exists.
+
+Use `--fields` when only one translatable field changed, for example:
+
+```bash
+./run.sh i18n pendle --locales zh-cn,ja-jp --fields members[].oneLiner
+```
+
+The command validates field names against `manifest.i18n.translatable_fields`,
+prompts the model with only that subset, deep-merges the result into existing
+sidecars, and stores source hashes under `_debug/i18n-meta/source-hashes.json`
+so unchanged fields can be skipped later. If `_debug/i18n/` was cleaned, run
+`./run.sh restore-sidecars <slug>` to recover sidecars from `record.full.json`.
 
 ### R1 appears stuck
 
