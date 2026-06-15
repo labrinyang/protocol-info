@@ -6,6 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.4.8] — 2026-06-15
+
+### Added
+- `export-imports` workflow command to collect dashboard import envelopes from
+  protocol output directories.
+- `promote` workflow command support for regenerating i18n exports during
+  promotion.
+- Generated i18n schema and hash metadata support for stricter translation
+  drift detection.
+
+### Changed
+- Hardened i18n artifact handling so non-translatable writes preserve existing
+  translation outputs and sidecars can be restored from full artifacts.
+- Expanded workflow proposal documentation for larger protocol-info follow-up
+  improvements.
+
+### Fixed
+- Enforced dashboard and i18n artifact contracts in tests and schema checks.
+- Improved logo asset normalization and version-store handling around generated
+  artifacts.
+
 ## [2.4.7] — 2026-05-08
 
 ### Changed
