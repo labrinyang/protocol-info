@@ -19,7 +19,8 @@
 // behavior matches the bash run.sh exactly. See `framework/cli/*.mjs`.
 
 import { spawn } from 'node:child_process';
-import { readFile, writeFile, appendFile, mkdir, readdir, stat, rename, unlink } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { readFile, writeFile, appendFile, mkdir, readdir, stat, rename, unlink, rm, rmdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +32,10 @@ import { cleanupCreatedLogoAssets } from './logo-assets.mjs';
 import { resolveR2Routing } from './r2-runner.mjs';
 import { normalizeI18nLocaleCode } from './i18n-locales.mjs';
 import { SUMMARY_HEADER } from './summary-schema.mjs';
+import { assertSafeSlug, assertSafeSlugLocation, safeSlugDir } from './safe-path.mjs';
+import { recordIdentityError } from './record-state.mjs';
+import { runCanonicalPostProcessing } from './canonical-post.mjs';
+import { rollbackSlugAndCleanup } from './slug-transaction.mjs';
 
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_DIR = dirname(FRAMEWORK_DIR);
@@ -122,6 +127,23 @@ async function cleanupLogoAssetsFile(outputRoot, path) {
   const created = await readJsonSafe(path, []);
   if (Array.isArray(created) && created.length > 0) {
     await cleanupCreatedLogoAssets(outputRoot, created);
+  }
+}
+
+function normalizationLedgerPaths(ledgerDir, slug) {
+  assertSafeSlug(slug);
+  return {
+    createdAssets: join(ledgerDir, `${slug}.created-logo-assets.json`),
+    assetsToCommit: join(ledgerDir, `${slug}.logo-assets-to-commit.json`),
+  };
+}
+
+async function cleanupNormalizationLedgerDir(ledgerDir) {
+  await rm(ledgerDir, { recursive: true, force: true });
+  try {
+    await rmdir(dirname(ledgerDir));
+  } catch (error) {
+    if (error?.code !== 'ENOENT' && error?.code !== 'ENOTEMPTY') throw error;
   }
 }
 
@@ -218,7 +240,7 @@ export function slugify(s) {
 }
 
 export function protocolDir(outputRoot, slug) {
-  return join(outputRoot, slug);
+  return safeSlugDir(outputRoot, slug);
 }
 
 export function runIndexDir(outputRoot, runId) {
@@ -246,24 +268,32 @@ async function rollbackFailedSlug(outputRoot, slug) {
   await resetSlugToHead(outputRoot, { slug });
 }
 
-async function commitOkSlugs(outputRoot, okSlugs, runId, { message = null } = {}) {
+async function rollbackFailedSlugAndCleanupFile(outputRoot, slug, createdAssetsPath) {
+  const created = await readJsonSafe(createdAssetsPath, []);
+  await rollbackSlugAndCleanup(outputRoot, slug, Array.isArray(created) ? created : []);
+}
+
+async function commitOkSlugs(
+  outputRoot,
+  okSlugs,
+  runId,
+  { message = null, normalizationLedgerDir } = {},
+) {
   // INVARIANT: callers must keep this loop sequential. Concurrent writes to
   // out/.git/index will race under --parallel >1.
   for (const slug of okSlugs) {
     const commitMessage = typeof message === 'function'
       ? message(slug)
       : (message || `crawl(${slug}): R1+R2 ok`);
-    const assetPaths = await readJsonSafe(
-      join(outputRoot, slug, '_debug', 'normalize.logo-assets-to-commit.json'),
-      [],
-    );
+    const { assetsToCommit } = normalizationLedgerPaths(normalizationLedgerDir, slug);
+    const assetPaths = await readJsonSafe(assetsToCommit, []);
     await commit(outputRoot, { paths: [`${slug}/`, ...assetPaths], message: commitMessage, runId });
   }
 }
 
 // ── runOne: full per-provider pipeline ──────────────────────────────────────
 
-export async function runOne({
+async function runOnePipeline({
   manifestPath,
   manifest,
   provider,
@@ -295,6 +325,9 @@ export async function runOne({
   const callStage = options.callCli || callCli;
   const callSchemaValidator = options.callValidator || callValidator;
 
+  assertSafeSlug(slug);
+  await assertSafeSlugLocation(outputRoot, slug);
+
   console.log(`[${index}/${total}] ${slug} (type: model-inferred)`);
 
   if (options.dryRun) {
@@ -303,6 +336,15 @@ export async function runOne({
     console.log(`  -> dry-run: would crawl ${slug} (display="${display}")`);
     return { slug, status: 'DRY_RUN' };
   }
+
+  const normalizationLedgerDir = options.normalizationLedgerDir;
+  if (!normalizationLedgerDir) throw new Error('runOne() requires a normalization ledger directory');
+  const normalizationLedgers = normalizationLedgerPaths(normalizationLedgerDir, slug);
+  await mkdir(normalizationLedgerDir, { recursive: true });
+  await Promise.all([
+    writeFile(normalizationLedgers.createdAssets, '[]'),
+    writeFile(normalizationLedgers.assetsToCommit, '[]'),
+  ]);
 
   await guardClobber(outputRoot, slug, { forceOverwrite: !!options.forceOverwrite });
   await mkdir(summaryRowsDir, { recursive: true });
@@ -445,6 +487,18 @@ export async function runOne({
     return { slug, status: 'CRAWL_FAIL' };
   }
 
+  const r1IdentityError = recordIdentityError(await readJsonSafe(recordPath, null), {
+    slug,
+    provider: providerKey,
+  });
+  if (r1IdentityError) {
+    console.log('  -> IDENTITY_FAIL (R1 record identity did not match the requested provider)');
+    await writeFile(summaryRowFile, `${slug}\tIDENTITY_FAIL\t-\t-\t-\t-\tr1\t${apiStatus}\n`);
+    await writeMeta('IDENTITY_FAIL', { failure_stage: 'r1_identity', error: r1IdentityError });
+    await rollbackFailedSlug(outputRoot, slug);
+    return { slug, status: 'IDENTITY_FAIL' };
+  }
+
   // ── R1 telemetry: aggregate across ALL subtask envelopes ────────────────
 
   const r1Telemetry = await sumEnvelopeTelemetry(r1DebugDir);
@@ -539,7 +593,10 @@ export async function runOne({
     } catch { /* best effort */ }
   }
 
-  if (r2Res.code === 0 && (await fileNonEmpty(recordR2))) {
+  const r2IdentityError = r2Res.code === 0 && (await fileNonEmpty(recordR2))
+    ? recordIdentityError(await readJsonSafe(recordR2, null), { slug, provider: providerKey })
+    : null;
+  if (r2Res.code === 0 && (await fileNonEmpty(recordR2)) && !r2IdentityError) {
     // Promote R2 sidecars
     await rename(recordR2, recordPath);
     if (existsSync(findingsR2)) await rename(findingsR2, findingsPath);
@@ -557,7 +614,9 @@ export async function runOne({
     r2Cost = t.cost_usd;
     r2Turns = t.turns;
     logProvider(slug, `R2 reconcile fallback: keeping R1 record, cost=${formatUsd(r2Cost)}, turns=${r2Turns}`);
-    process.stderr.write(`  -> R2 reconcile failed (exit ${r2Res.code}); keeping R1 record\n`);
+    process.stderr.write(r2IdentityError
+      ? `  -> R2 reconcile produced an identity mismatch (${r2IdentityError}); keeping R1 record\n`
+      : `  -> R2 reconcile failed (exit ${r2Res.code}); keeping R1 record\n`);
     for (const p of [recordR2, findingsR2, changesR2, gapsR2]) {
       try { await unlink(p); } catch { /* best effort */ }
     }
@@ -572,8 +631,8 @@ export async function runOne({
   const recordNorm = recordPath + '.normalized';
   const changesNorm = changesPath + '.normalized';
   const gapsNorm = gapsPath + '.normalized';
-  const createdAssetsNorm = join(debugDir, 'normalize.created-logo-assets.json');
-  const assetsToCommitNorm = join(debugDir, 'normalize.logo-assets-to-commit.json');
+  const createdAssetsNorm = normalizationLedgers.createdAssets;
+  const assetsToCommitNorm = normalizationLedgers.assetsToCommit;
 
   const normRes = await callStage('normalize', [
     '--manifest', manifestPath,
@@ -620,11 +679,46 @@ export async function runOne({
   const members = Array.isArray(recordObj?.members) ? recordObj.members.length : '-';
   const funding = Array.isArray(recordObj?.fundingRounds) ? recordObj.fundingRounds.length : '-';
   const audits = Array.isArray(recordObj?.audits?.items) ? recordObj.audits.items.length : '-';
+  const finalIdentityError = recordIdentityError(recordObj, { slug, provider: providerKey });
 
   let status;
-  if (schemaRes.code === 0) {
-    status = 'OK';
-    console.log(`  -> OK  members=${members} funding=${funding} audits=${audits} source=${finalSource}`);
+  if (schemaRes.code === 0 && !finalIdentityError) {
+    await writeMeta('POST_PENDING', { schema: 'pass' });
+    await invalidateI18nArtifacts(slugDir, { manifest });
+    const post = await runCanonicalPostProcessing({
+      runPostProcessing: () => callStage('post', [
+        '--manifest', manifestPath,
+        '--slug-dir', slugDir,
+      ]),
+      slugDir,
+      manifestPath,
+      manifest,
+      slug,
+      provider: providerKey,
+    });
+    const postRes = post.result || {};
+    if (!post.ok) {
+      status = 'POST_FAIL';
+      const postError = post.error;
+      console.log(`  -> POST_FAIL  members=${members} funding=${funding} audits=${audits} source=${finalSource}`);
+      try {
+        await writeFile(join(debugDir, 'post.stderr.log'), `${postError}\n${postRes.stderr || ''}`);
+      } catch { /* best effort */ }
+      if (postRes.stderr) process.stderr.write(postRes.stderr);
+      await writeMeta(status, { schema: 'pass', failure_stage: 'post', error: postError });
+    } else {
+      status = 'OK';
+      await writeMeta(status, { schema: 'pass' });
+      logProvider(slug, 'post export done: record.import.json');
+      console.log(`  -> OK  members=${members} funding=${funding} audits=${audits} source=${finalSource}`);
+    }
+  } else if (finalIdentityError) {
+    status = 'IDENTITY_FAIL';
+    console.log(`  -> IDENTITY_FAIL  members=${members} funding=${funding} audits=${audits} source=${finalSource}`);
+    try {
+      await writeFile(join(debugDir, 'identity.stderr.log'), `${finalIdentityError}\n`);
+    } catch { /* best effort */ }
+    await writeMeta(status, { schema: schemaRes.code === 0 ? 'pass' : 'fail', failure_stage: 'identity', error: finalIdentityError });
   } else {
     status = 'SCHEMA_FAIL';
     console.log(`  -> SCHEMA_FAIL  members=${members} funding=${funding} audits=${audits} source=${finalSource}`);
@@ -634,26 +728,13 @@ export async function runOne({
     if (schemaCombined) {
       process.stderr.write(schemaCombined.split('\n').map(l => '        ' + l).join('\n') + '\n');
     }
+    await writeMeta(status, { schema: 'fail' });
   }
 
   const summaryRow = `${slug}\t${status}\t${members}\t${funding}\t${audits}\t${schemaRes.code === 0 ? 'pass' : 'fail'}\t${finalSource}\t${apiStatus}`;
   await writeFile(summaryRowFile, `${summaryRow}\n`);
 
-  // ── meta.json ───────────────────────────────────────────────────────────
-
-  await writeMeta(status, { schema: schemaRes.code === 0 ? 'pass' : 'fail' });
   if (status === 'OK') {
-    await invalidateI18nArtifacts(slugDir, { manifest });
-    const postRes = await callStage('post', [
-      '--manifest', manifestPath,
-      '--slug-dir', slugDir,
-    ]);
-    if (postRes.code !== 0) {
-      process.stderr.write(`[post] ${slug} failed; record.import.json may be missing\n`);
-      if (postRes.stderr) process.stderr.write(postRes.stderr);
-    } else {
-      logProvider(slug, 'post export done: record.import.json');
-    }
     await writeSlugSummary(outputRoot, slug, summaryRow, '-');
     const assetPaths = await readJsonSafe(assetsToCommitNorm, []);
     await runQueuedCommit(options, async () => {
@@ -665,11 +746,53 @@ export async function runOne({
     });
     logProvider(slug, 'committed: R1+R2+normalize+post');
   } else {
-    await cleanupLogoAssetsFile(outputRoot, createdAssetsNorm);
-    await rollbackFailedSlug(outputRoot, slug);
+    await rollbackFailedSlugAndCleanupFile(outputRoot, slug, createdAssetsNorm);
   }
 
   return { slug, status, members, funding, audits, source: finalSource, api_status: apiStatus };
+}
+
+export async function runOne(args) {
+  if (args.options?.normalizationLedgerDir) return runOnePipeline(args);
+
+  let outputRoot = args.outputRoot;
+  let runId = args.runId;
+  if (!outputRoot) {
+    if (!args.runDir) throw new Error('runOne() requires outputRoot + runId');
+    outputRoot = dirname(args.runDir);
+    runId = runId || basename(args.runDir);
+  }
+  if (!runId) throw new Error('runOne() requires runId');
+  const runMetaDir = args.runMetaDir || runIndexDir(outputRoot, runId);
+  const normalizationLedgerDir = join(
+    runMetaDir,
+    '.normalizer-ledgers',
+    `run-one-${randomUUID()}`,
+  );
+  let discardNormalizationLedger = false;
+
+  try {
+    const result = await runOnePipeline({
+      ...args,
+      outputRoot,
+      runId,
+      runMetaDir,
+      options: { ...args.options, normalizationLedgerDir },
+    });
+    discardNormalizationLedger = true;
+    return result;
+  } catch (error) {
+    if (error?.kind !== 'preflight_dirty') {
+      const { createdAssets } = normalizationLedgerPaths(normalizationLedgerDir, args.provider.slug);
+      await rollbackFailedSlugAndCleanupFile(outputRoot, args.provider.slug, createdAssets);
+    }
+    discardNormalizationLedger = true;
+    throw error;
+  } finally {
+    if (discardNormalizationLedger) {
+      await cleanupNormalizationLedgerDir(normalizationLedgerDir);
+    }
+  }
 }
 
 // ── i18n selection resolver ─────────────────────────────────────────────────
@@ -704,6 +827,7 @@ export async function run({
   options = {},
 }) {
   const manifest = await loadManifest(manifestPath);
+  for (const provider of providers || []) assertSafeSlug(provider?.slug);
   if (!outputRoot) {
     if (!runDir) throw new Error('run() requires outputRoot + runId');
     outputRoot = dirname(runDir);
@@ -725,11 +849,23 @@ export async function run({
 
   await mkdir(outputRoot, { recursive: true });
   await ensureRepo(outputRoot);
+  for (const provider of providers || []) {
+    await assertSafeSlugLocation(outputRoot, provider.slug);
+  }
   if (!dryRun) {
     await mkdir(runMetaDir, { recursive: true });
     await mkdir(join(runMetaDir, '.summary-rows'), { recursive: true });
     await mkdir(join(runMetaDir, '.worker-logs'), { recursive: true });
   }
+  const normalizationLedgerDir = join(runMetaDir, '.normalizer-ledgers', randomUUID());
+  if (!dryRun) await mkdir(normalizationLedgerDir, { recursive: true });
+
+  // A handled run removes this nonce directory in the finally block below.
+  // SIGKILL can leave ignored scratch under .runs/, but a later run receives a
+  // fresh nonce and never replays it; operators may remove such orphaned
+  // directories without affecting committed protocol output.
+  let discardNormalizationLedger = false;
+  try {
 
   // Header for summary.tsv (rewritten at the end with i18n column merge)
   const summaryFile = join(runMetaDir, 'summary.tsv');
@@ -754,7 +890,13 @@ export async function run({
       runMetaDir,
       index: i + 1,
       total,
-      options: { ...options, dryRun, budgetPlan, commitQueue },
+      options: {
+        ...options,
+        dryRun,
+        budgetPlan,
+        commitQueue,
+        normalizationLedgerDir,
+      },
     });
   });
 
@@ -798,7 +940,8 @@ export async function run({
         budget: budgetPlan,
         i18n: null,
       }, null, 2));
-      await rollbackFailedSlug(outputRoot, slug);
+      const { createdAssets } = normalizationLedgerPaths(normalizationLedgerDir, slug);
+      await rollbackFailedSlugAndCleanupFile(outputRoot, slug, createdAssets);
     }
     workerFailures.push({ slug, error });
   }
@@ -816,13 +959,6 @@ export async function run({
     const cols = content.split('\n')[0].split('\t');
     if (cols[1] === 'OK') okSlugs.push(cols[0]);
   }
-
-  const failedCount = workerFailures.length + (rawWorkerFailures.length - workerFailures.length);
-  await appendRunsLog(outputRoot, {
-    runId,
-    slugs: providers.map((p) => p.slug),
-    outcome: `${okSlugs.length} OK / ${failedCount} fail`,
-  });
 
   // ── i18n stage ───────────────────────────────────────────────────────────
 
@@ -873,30 +1009,57 @@ export async function run({
 
   // ── post.mjs after i18n (base post already ran per successful slug) ─────
 
+  const i18nPostFailures = new Map();
   if (okSlugs.length > 0 && i18nSelected.length > 0) {
     for (const slug of okSlugs) {
-      const r = await callStage('post', [
-        '--manifest', manifestPath,
-        '--slug-dir', protocolDir(outputRoot, slug),
-      ]);
-      if (r.code !== 0) {
-        process.stderr.write(`[post] ${slug} failed; record.import.json may be missing\n`);
+      const slugDir = protocolDir(outputRoot, slug);
+      const provider = providers.find((item) => item.slug === slug)?.provider || slug;
+      const post = await runCanonicalPostProcessing({
+        runPostProcessing: () => callStage('post', [
+          '--manifest', manifestPath,
+          '--slug-dir', slugDir,
+        ]),
+        slugDir,
+        manifestPath,
+        manifest,
+        slug,
+        provider,
+      });
+      const r = post.result || {};
+      if (!post.ok) {
+        const error = post.error;
+        i18nPostFailures.set(slug, error);
+        process.stderr.write(`[post] ${slug} failed after i18n: ${error}\n`);
         if (r.stderr) process.stderr.write(r.stderr);
+        await invalidateI18nArtifacts(slugDir, { manifest });
+        await rollbackFailedSlug(outputRoot, slug);
       } else {
         logProvider(slug, 'post export done: record.import.json');
       }
     }
   }
 
+  const finalOkSlugs = okSlugs.filter((slug) => !i18nPostFailures.has(slug));
+
   // ── Merge per-slug summary rows + i18n column → summary.tsv ─────────────
 
   const lines = [SUMMARY_HEADER];
   for (const f of rowFiles) {
-    const row = (await readFile(join(summaryRowsDir, f), 'utf8')).replace(/\n+$/, '');
+    let row = (await readFile(join(summaryRowsDir, f), 'utf8')).replace(/\n+$/, '');
     if (!row) continue;
     const slug = row.split('\t')[0];
+    if (i18nPostFailures.has(slug)) {
+      const columns = row.split('\t');
+      columns[1] = 'I18N_POST_FAIL';
+      row = columns.join('\t');
+    }
     let i18nCol = '-';
     if (i18nSelected.length > 0) {
+      if (i18nPostFailures.has(slug)) {
+        i18nCol = `0/${i18nSelected.length}`;
+        lines.push(`${row}\t${i18nCol}`);
+        continue;
+      }
       const i18nDir = join(protocolDir(outputRoot, slug), '_debug', 'i18n');
       let okCount = 0;
       try {
@@ -921,10 +1084,18 @@ export async function run({
     await writeFile(join(slugDir, 'summary.tsv'), `${lines[0]}\n${row}\n`);
   }
 
+  const failedCount = Math.max(0, providers.length - finalOkSlugs.length);
+  await appendRunsLog(outputRoot, {
+    runId,
+    slugs: providers.map((p) => p.slug),
+    outcome: `${finalOkSlugs.length} OK / ${failedCount} fail`,
+  });
+
   // ── Final commit phase for i18n/summary deltas ──────────────────────────
   if (i18nSelected.length > 0) {
-    await commitOkSlugs(outputRoot, okSlugs, runId, {
+    await commitOkSlugs(outputRoot, finalOkSlugs, runId, {
       message: (slug) => `i18n(${slug}): post updates`,
+      normalizationLedgerDir,
     });
   }
 
@@ -941,10 +1112,17 @@ export async function run({
   console.log(`Out browser:   ${outBrowserCommand}`);
 
   if (workerFailures.length > 0) {
+    discardNormalizationLedger = true;
     throw new Error(`${workerFailures.length} provider worker(s) crashed; see ${join(runMetaDir, '.worker-logs')}`);
   }
 
-  return { outputRoot, runId, runDir: runMetaDir, summaryFile, okSlugs };
+  discardNormalizationLedger = true;
+  return { outputRoot, runId, runDir: runMetaDir, summaryFile, okSlugs: finalOkSlugs };
+  } finally {
+    if (!dryRun && discardNormalizationLedger) {
+      await cleanupNormalizationLedgerDir(normalizationLedgerDir);
+    }
+  }
 }
 
 function printPadded(rows) {

@@ -12,6 +12,7 @@ async function seedOut(status = 'draft') {
   await mkdir(join(out, 'pendle'), { recursive: true });
   await writeFile(join(out, 'pendle', 'record.json'), JSON.stringify({
     slug: 'pendle',
+    provider: 'pendle-rootdata',
     status,
     description: 'AMM',
   }) + '\n');
@@ -38,7 +39,8 @@ export const tests = [
         manifestPath,
         validate: async () => ({ ok: true, errors: [] }),
         runPostProcessing: async ({ slugDir }) => {
-          await writeFile(join(slugDir, 'record.import.json'), '{"data":[]}\n');
+          const record = JSON.parse(await readFile(join(slugDir, 'record.json'), 'utf8'));
+          await writeFile(join(slugDir, 'record.import.json'), JSON.stringify({ data: [record] }) + '\n');
           return 0;
         },
         commitAndRebuild: commitOnly,
@@ -48,6 +50,7 @@ export const tests = [
       assert.equal(code, 0);
       const record = JSON.parse(await readFile(join(out, 'pendle', 'record.json'), 'utf8'));
       assert.equal(record.status, 'active');
+      assert.equal(record.provider, 'pendle-rootdata');
       const hist = await log(out, { slug: 'pendle' });
       assert.equal(hist[0].message, 'promote(pendle): draft -> active');
     },

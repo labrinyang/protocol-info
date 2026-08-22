@@ -4,6 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { runOpenAIChatCompletion } from './openai-wrapper.mjs';
+import {
+  cancelResponseBody,
+  fetchPublicResource,
+  readBoundedResponse,
+  responseContentType,
+} from './resource-fetch.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -12,6 +18,7 @@ const DEFAULT_MAX_BYTES = 12 * 1024 * 1024;
 const DEFAULT_MAX_TEXT_CHARS = 30_000;
 const DEFAULT_MAX_LLM_TEXT_CHARS = 45_000;
 const DEFAULT_MAX_PDF_PAGES = 25;
+const DEFAULT_REPORT_TIMEOUT_MS = 30_000;
 
 const AUDIT_REPORT_READING_SCHEMA = {
   type: 'object',
@@ -84,17 +91,6 @@ export function candidateReportUrls(url) {
     if (isHttpUrl(candidate) && !candidates.includes(candidate)) candidates.push(candidate);
   }
   return candidates;
-}
-
-function contentType(headers) {
-  return headers?.get?.('content-type')?.split(';')[0]?.trim().toLowerCase() || '';
-}
-
-function contentLength(headers) {
-  const raw = headers?.get?.('content-length');
-  if (!raw) return null;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
 function compactText(value) {
@@ -194,21 +190,67 @@ function firstTitleLine(text) {
     .find((line) => line.length >= 5 && line.length <= 180) || '';
 }
 
+function reportAbortError(signal, timeoutMs) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  if (signal?.reason != null) return new Error(String(signal.reason));
+  return new Error(`audit report processing timed out after ${timeoutMs}ms`);
+}
+
+async function operationBeforeReportDeadline(operationPromise, signal, timeoutMs) {
+  const operation = Promise.resolve(operationPromise);
+  if (signal.aborted) throw reportAbortError(signal, timeoutMs);
+
+  let onAbort;
+  const aborted = new Promise((_, reject) => {
+    onAbort = () => reject(reportAbortError(signal, timeoutMs));
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  try {
+    return await Promise.race([operation, aborted]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
 export async function extractPdfTextWithPdftotext(bytes, {
   maxPages = DEFAULT_MAX_PDF_PAGES,
+  timeoutMs = DEFAULT_REPORT_TIMEOUT_MS,
+  signal = null,
+  pdftotextBin = 'pdftotext',
+  tempRoot = tmpdir(),
 } = {}) {
-  const dir = await mkdtemp(join(tmpdir(), 'pi-audit-pdf-'));
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('PDF extraction timeout must be a positive safe integer');
+  }
+  if (signal?.aborted) throw reportAbortError(signal, timeoutMs);
+
+  const dir = await mkdtemp(join(tempRoot, 'pi-audit-pdf-'));
   const input = join(dir, 'report.pdf');
   try {
-    await writeFile(input, bytes);
-    const { stdout } = await execFileAsync('pdftotext', [
-      '-f', '1',
-      '-l', String(maxPages),
-      '-layout',
-      input,
-      '-',
-    ], { maxBuffer: 2 * 1024 * 1024 });
-    return stdout;
+    await writeFile(input, bytes, signal ? { signal } : undefined);
+    if (signal?.aborted) throw reportAbortError(signal, timeoutMs);
+    try {
+      const { stdout } = await execFileAsync(pdftotextBin, [
+        '-f', '1',
+        '-l', String(maxPages),
+        '-layout',
+        input,
+        '-',
+      ], {
+        maxBuffer: 2 * 1024 * 1024,
+        timeout: timeoutMs,
+        killSignal: 'SIGKILL',
+        ...(signal ? { signal } : {}),
+      });
+      return stdout;
+    } catch (err) {
+      if (signal?.aborted) throw reportAbortError(signal, timeoutMs);
+      if (err?.killed && err?.signal === 'SIGKILL') {
+        throw new Error(`PDF text extraction timed out after ${timeoutMs}ms`, { cause: err });
+      }
+      throw err;
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -236,52 +278,88 @@ async function fetchReportText(entry, {
   extractPdfText,
   maxBytes,
   maxPdfPages,
+  resolveHostname,
+  pinnedTransport,
+  reportTimeoutMs,
 }) {
+  if (!Number.isSafeInteger(reportTimeoutMs) || reportTimeoutMs <= 0) {
+    throw new Error('audit report timeout must be a positive safe integer');
+  }
   const candidates = candidateReportUrls(entry.reportUrl);
   let lastErr = null;
-  for (const candidateUrl of candidates) {
-    try {
-      const response = await fetchImpl(candidateUrl, {
-        headers: { 'User-Agent': 'protocol-info/2.3 audit-report-extractor' },
-        signal: AbortSignal.timeout?.(30_000),
-      });
-      if (!response?.ok) throw new Error(`HTTP ${response?.status || 'error'}`);
+  const controller = new AbortController();
+  const signal = controller.signal;
+  const deadlineAt = Date.now() + reportTimeoutMs;
+  const timeoutError = new Error(`audit report processing timed out after ${reportTimeoutMs}ms`);
+  const timeout = setTimeout(() => controller.abort(timeoutError), reportTimeoutMs);
+  try {
+    for (const candidateUrl of candidates) {
+      try {
+        const fetched = await fetchPublicResource(candidateUrl, {
+          fetchImpl,
+          resolveHostname,
+          pinnedTransport,
+          protocols: ['https:', 'http:'],
+          requestInit: {
+            headers: { 'User-Agent': 'protocol-info/2.3 audit-report-extractor' },
+            signal,
+          },
+        });
+        const { response } = fetched;
+        if (!response?.ok) {
+          await cancelResponseBody(response, 'audit report status rejected');
+          throw new Error(`HTTP ${response?.status || 'error'}`);
+        }
 
-      const length = contentLength(response.headers);
-      if (length != null && length > maxBytes) throw new Error(`report too large (${length} bytes)`);
+        const bytes = await readBoundedResponse(response, { maxBytes, label: 'report', signal });
+        const type = responseContentType(response);
+        const pdfMagic = bytes.subarray(0, 1024).includes(Buffer.from('%PDF-'));
+        const isPdf = pdfMagic || type === 'application/pdf' || isLikelyPdfUrl(fetched.url) || isLikelyPdfUrl(entry.reportUrl);
+        if (isPdf) {
+          if (!pdfMagic) throw new Error(`report is not a PDF (content-type ${type || 'missing'})`);
+          const remainingMs = deadlineAt - Date.now();
+          if (remainingMs <= 0 || signal.aborted) throw reportAbortError(signal, reportTimeoutMs);
+          const extraction = Promise.resolve().then(() => {
+            if (signal.aborted) throw reportAbortError(signal, reportTimeoutMs);
+            return extractPdfText(bytes, {
+              maxPages: maxPdfPages,
+              signal,
+              timeoutMs: remainingMs,
+            });
+          });
+          return {
+            text: extractPdfText === extractPdfTextWithPdftotext
+              ? await extraction
+              : await operationBeforeReportDeadline(extraction, signal, reportTimeoutMs),
+            contentType: type || 'application/pdf',
+            extraction: 'pdf',
+            bytes: bytes.length,
+            fetchedUrl: fetched.url,
+          };
+        }
 
-      const type = contentType(response.headers);
-      const isPdf = type === 'application/pdf' || isLikelyPdfUrl(candidateUrl) || isLikelyPdfUrl(entry.reportUrl);
-      if (isPdf) {
-        const bytes = Buffer.from(await response.arrayBuffer());
-        if (bytes.length > maxBytes) throw new Error(`PDF too large (${bytes.length} bytes)`);
+        const textType = !type || type.startsWith('text/') || type === 'application/xhtml+xml';
+        if (!textType) throw new Error(`unsupported report content type: ${type}`);
+        const raw = bytes.toString('utf8');
+        const text = type === 'text/html' || raw.includes('<html')
+          ? stripHtml(raw)
+          : compactText(raw);
         return {
-          text: await extractPdfText(bytes, { maxPages: maxPdfPages }),
-          contentType: type || 'application/pdf',
-          extraction: 'pdf',
+          text,
+          contentType: type || 'text/plain',
+          extraction: type === 'text/html' ? 'html' : 'text',
           bytes: bytes.length,
-          fetchedUrl: candidateUrl,
+          fetchedUrl: fetched.url,
         };
+      } catch (err) {
+        if (signal.aborted) throw reportAbortError(signal, reportTimeoutMs);
+        lastErr = err;
       }
-
-      const raw = await response.text();
-      const bytes = Buffer.byteLength(raw);
-      if (bytes > maxBytes) throw new Error(`report too large (${bytes} bytes)`);
-      const text = type === 'text/html' || raw.includes('<html')
-        ? stripHtml(raw)
-        : compactText(raw);
-      return {
-        text,
-        contentType: type || 'text/plain',
-        extraction: type === 'text/html' ? 'html' : 'text',
-        bytes,
-        fetchedUrl: candidateUrl,
-      };
-    } catch (err) {
-      lastErr = err;
     }
+    throw lastErr || new Error('no fetchable report URL');
+  } finally {
+    clearTimeout(timeout);
   }
-  throw lastErr || new Error('no fetchable report URL');
 }
 
 function resolveAuditReportLLMProvider(env = {}) {
@@ -375,6 +453,9 @@ export async function collectAuditReportEvidence({
   maxTextChars = DEFAULT_MAX_TEXT_CHARS,
   maxLLMTextChars = DEFAULT_MAX_LLM_TEXT_CHARS,
   maxPdfPages = DEFAULT_MAX_PDF_PAGES,
+  reportTimeoutMs = DEFAULT_REPORT_TIMEOUT_MS,
+  resolveHostname = fetchImpl === globalThis.fetch ? undefined : null,
+  pinnedTransport = fetchImpl === globalThis.fetch,
 } = {}) {
   const entries = auditReportUrlsFromRecord(record).slice(0, maxReports);
   const reports = [];
@@ -405,6 +486,9 @@ export async function collectAuditReportEvidence({
         extractPdfText,
         maxBytes,
         maxPdfPages,
+        resolveHostname,
+        pinnedTransport,
+        reportTimeoutMs,
       });
       const text = compactText(fetched.text);
       if (!text) throw new Error('no extractable text');

@@ -10,6 +10,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
+import { assertSafeSlug } from './safe-path.mjs';
 
 const GITIGNORE_BODY = `_debug/
 .runs/
@@ -178,6 +179,7 @@ const LOG_SEP = '\x1f'; // ASCII Unit Separator
 const LOG_REC = '\x1e'; // ASCII Record Separator
 
 export async function log(outDir, { slug, limit = 50 }) {
+  assertSafeSlug(slug);
   const format = ['%H', '%ct', '%s', '%(trailers:key=Run-Id,valueonly)'].join(LOG_SEP) + LOG_REC;
   let stdout = '';
   try {
@@ -206,6 +208,7 @@ export async function log(outDir, { slug, limit = 50 }) {
 }
 
 export async function diff(outDir, { slug, fromSha, toSha }) {
+  assertSafeSlug(slug);
   const { stdout } = await git(
     ['diff', fromSha, toSha, '--', `${slug}/`],
     { cwd: outDir }
@@ -214,6 +217,7 @@ export async function diff(outDir, { slug, fromSha, toSha }) {
 }
 
 export async function restore(outDir, { slug, sha }) {
+  assertSafeSlug(slug);
   const pathspec = `${slug}/`;
   await git(['rev-parse', '--verify', `${sha}^{commit}`], { cwd: outDir });
   await git(['rm', '-r', '--quiet', '--ignore-unmatch', '--', pathspec], { cwd: outDir });
@@ -231,6 +235,7 @@ async function hasHead(outDir) {
 }
 
 export async function resetSlugToHead(outDir, { slug }) {
+  assertSafeSlug(slug);
   const pathspec = `${slug}/`;
   if (await hasHead(outDir)) {
     await git(['reset', '--quiet', 'HEAD', '--', pathspec], { cwd: outDir });
@@ -246,6 +251,7 @@ export async function resetSlugToHead(outDir, { slug }) {
 }
 
 export async function isClean(outDir, { slug }) {
+  assertSafeSlug(slug);
   const { stdout } = await git(
     ['status', '--porcelain', '--', `${slug}/`],
     { cwd: outDir }

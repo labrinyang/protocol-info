@@ -1,14 +1,32 @@
 import { strict as assert } from 'node:assert';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   auditReportUrlsFromRecord,
   candidateReportUrls,
-  collectAuditReportEvidence,
+  collectAuditReportEvidence as collectAuditReportEvidenceImpl,
   detectDateHints,
   detectScopeHints,
+  extractPdfTextWithPdftotext,
   mergeAuditReportEvidence,
 } from '../../framework/audit-report-extractor.mjs';
 
-function response({ contentType, body, ok = true, status = 200, contentLength = null }) {
+const publicResolver = async () => [{ address: '93.184.216.34', family: 4 }];
+
+function collectAuditReportEvidence(options) {
+  if (!options.fetchImpl || options.fetchImpl === globalThis.fetch) {
+    return collectAuditReportEvidenceImpl(options);
+  }
+  return collectAuditReportEvidenceImpl({
+    ...options,
+    resolveHostname: options.resolveHostname || publicResolver,
+    pinnedTransport: true,
+  });
+}
+
+function response({ contentType, body, ok = true, status = 200, contentLength = null, location = null }) {
+  const bytes = Buffer.from(String(body));
   return {
     ok,
     status,
@@ -17,11 +35,11 @@ function response({ contentType, body, ok = true, status = 200, contentLength = 
         const key = name.toLowerCase();
         if (key === 'content-type') return contentType;
         if (key === 'content-length') return contentLength;
+        if (key === 'location') return location;
         return null;
       },
     },
-    text: async () => String(body),
-    arrayBuffer: async () => Buffer.from(String(body)).buffer,
+    body: new Response(bytes).body,
   };
 }
 
@@ -69,7 +87,7 @@ export const tests = [
             ],
           },
         },
-        fetchImpl: async () => response({ contentType: 'application/pdf', body: 'pdf-bytes' }),
+        fetchImpl: async () => response({ contentType: 'application/pdf', body: '%PDF-1.4\npdf-bytes' }),
         extractPdfText: async () => `
 Trail of Bits Security Assessment
 Date: May 9, 2024
@@ -85,6 +103,81 @@ This report reviews the protocol smart contracts.
       assert.ok(evidence.reports[0].scope_hints.some((line) => line.includes('Core protocol contracts')));
       assert.match(evidence.reports[0].text_excerpt, /Security Assessment/);
       assert.equal(evidence.reports[0].extraction, 'pdf');
+    },
+  },
+  {
+    name: 'pdftotext extraction hard-kills a hung child and removes its temporary input',
+    fn: async () => {
+      const root = await mkdtemp(join(tmpdir(), 'pi-audit-pdf-timeout-'));
+      const tempRoot = join(root, 'inputs');
+      const pidPath = join(root, 'pid');
+      const pdftotextBin = join(root, 'pdftotext');
+      await mkdir(tempRoot);
+      await writeFile(pdftotextBin, `#!/bin/sh
+printf '%s' "$$" > ${JSON.stringify(pidPath)}
+trap '' TERM
+exec tail -f /dev/null
+`);
+      await chmod(pdftotextBin, 0o755);
+
+      try {
+        const startedAt = Date.now();
+        await assert.rejects(
+          () => extractPdfTextWithPdftotext(Buffer.from('%PDF-1.4\n'), {
+            pdftotextBin,
+            tempRoot,
+            // Leave enough startup budget for a saturated CI runner to enter
+            // the fixture before exercising the hard-kill path.
+            timeoutMs: 1_000,
+          }),
+          /PDF text extraction timed out after 1000ms/,
+        );
+        assert.ok(Date.now() - startedAt < 3_000, 'hung pdftotext should be killed promptly');
+
+        const pid = Number(await readFile(pidPath, 'utf8'));
+        assert.throws(
+          () => process.kill(pid, 0),
+          (err) => err?.code === 'ESRCH',
+          'pdftotext must be gone before extraction rejects',
+        );
+        assert.deepEqual(await readdir(tempRoot), [], 'temporary PDF directory should be removed');
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: 'a hung injected PDF extractor times out without blocking the next report',
+    fn: async () => {
+      let extractionCalls = 0;
+      const startedAt = Date.now();
+      const evidence = await collectAuditReportEvidence({
+        record: {
+          audits: {
+            items: [
+              { auditor: 'Hung', reportUrl: 'https://example.com/hung.pdf' },
+              { auditor: 'Next', reportUrl: 'https://example.com/next.pdf' },
+            ],
+          },
+        },
+        fetchImpl: async () => response({ contentType: 'application/pdf', body: '%PDF-1.4\npdf-bytes' }),
+        extractPdfText: async (_bytes, { signal, timeoutMs }) => {
+          extractionCalls += 1;
+          assert.equal(signal instanceof AbortSignal, true);
+          assert.ok(timeoutMs > 0 && timeoutMs <= 50);
+          if (extractionCalls === 1) return await new Promise(() => {});
+          return 'Next Audit Report\nScope: Next protocol contracts.\n2025-08';
+        },
+        reportTimeoutMs: 50,
+      });
+
+      assert.ok(Date.now() - startedAt < 1_000, 'the next report should not wait for the hung extractor');
+      assert.equal(extractionCalls, 2);
+      assert.equal(evidence.failures.length, 1);
+      assert.equal(evidence.failures[0].auditor, 'Hung');
+      assert.match(evidence.failures[0].error, /timed out after 50ms/);
+      assert.equal(evidence.reports.length, 1);
+      assert.equal(evidence.reports[0].auditor, 'Next');
     },
   },
   {
@@ -107,7 +200,7 @@ This report reviews the protocol smart contracts.
         },
         fetchImpl: async (url) => {
           assert.match(url, /\/raw\/main\/almanak\.pdf$/);
-          return response({ contentType: 'application/pdf', body: 'pdf-bytes' });
+          return response({ contentType: 'application/pdf', body: '%PDF-1.4\npdf-bytes' });
         },
         extractPdfText: async (_bytes, opts) => {
           assert.equal(opts.maxPages, 25);
@@ -266,6 +359,48 @@ This report reviews the protocol smart contracts.
       assert.equal(evidence.reports.length, 0);
       assert.equal(evidence.failures.length, 1);
       assert.match(evidence.failures[0].error, /report too large/);
+    },
+  },
+  {
+    name: 'collectAuditReportEvidence rejects non-document response types',
+    fn: async () => {
+      const evidence = await collectAuditReportEvidence({
+        record: {
+          audits: { items: [{ auditor: 'Binary', reportUrl: 'https://example.com/report.bin' }] },
+        },
+        fetchImpl: async () => response({
+          contentType: 'application/octet-stream',
+          body: '\u0000\u0001not-a-report',
+        }),
+      });
+      assert.equal(evidence.reports.length, 0);
+      assert.equal(evidence.failures.length, 1);
+      assert.match(evidence.failures[0].error, /unsupported report content type/);
+    },
+  },
+  {
+    name: 'collectAuditReportEvidence rejects a redirect to a private service',
+    fn: async () => {
+      let calls = 0;
+      const evidence = await collectAuditReportEvidence({
+        record: {
+          audits: { items: [{ auditor: 'Redirected', reportUrl: 'https://reports.example/audit' }] },
+        },
+        resolveHostname: async () => [{ address: '93.184.216.34', family: 4 }],
+        fetchImpl: async () => {
+          calls += 1;
+          return response({
+            ok: false,
+            status: 302,
+            location: 'http://169.254.169.254/latest/meta-data',
+            body: '',
+          });
+        },
+      });
+      assert.equal(calls, 1);
+      assert.equal(evidence.reports.length, 0);
+      assert.equal(evidence.failures.length, 1);
+      assert.match(evidence.failures[0].error, /non-public address/);
     },
   },
   {

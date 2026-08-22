@@ -85,6 +85,7 @@ export default async function refreshCmd(args, ctx = {}) {
   try {
     await preflightWritableSlug(outputRoot, slug, { forceOverwrite: !!ctx.forceOverwrite });
     const prior = await loadRecordEnvelope(outputRoot, { slug });
+    writeCtx.bindExistingRecord(prior.record);
     const result = await runRefreshSubtask({
       slug,
       subtaskName,
@@ -119,15 +120,19 @@ export default async function refreshCmd(args, ctx = {}) {
       return 1;
     }
 
-    await writeRecordEnvelope(outputRoot, { slug, envelope: normalized });
+    await writeRecordEnvelope(outputRoot, {
+      slug,
+      provider: writeCtx.expectedProvider(),
+      envelope: normalized,
+    });
     rollbackOnError = true;
     const invalidatedI18n = await invalidateI18nForRecordChange(outputRoot, slug, prior.record, normalized.record, manifestPath);
     if (!invalidatedI18n) await seedSidecarsFromFull(join(outputRoot, slug), { manifestPath });
-    const postCode = await runPostProcessing({ slugDir: join(outputRoot, slug), manifestPath });
-    if (postCode !== 0) {
+    const post = await writeCtx.runCanonicalPost(runPostProcessing, join(outputRoot, slug));
+    if (!post.ok) {
       await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
-      stderr.write(`refresh: post-processing exited ${postCode}; rolled back\n`);
-      return postCode;
+      stderr.write(`refresh: ${post.error}; rolled back\n`);
+      return post.code;
     }
 
     await commitRebuild(outputRoot, {

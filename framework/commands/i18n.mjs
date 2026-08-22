@@ -335,14 +335,20 @@ async function runSingleI18n(opts, ctx, deps) {
   let rollbackOnError = false;
   try {
     await preflightWritableSlug(outputRoot, slug, { forceOverwrite: !!ctx.forceOverwrite });
-    const normalized = await writeCtx.normalizeEnvelope(await loadRecordEnvelope(outputRoot, { slug }));
+    const existing = await loadRecordEnvelope(outputRoot, { slug });
+    writeCtx.bindExistingRecord(existing.record);
+    const normalized = await writeCtx.normalizeEnvelope(existing);
     const validation = await validate(normalized.record);
     if (!validation.ok) {
       await writeCtx.cleanupCreatedAssets();
       writeValidationFailure(stderr, 'i18n', validation);
       return 1;
     }
-    await writeRecordEnvelope(outputRoot, { slug, envelope: normalized });
+    await writeRecordEnvelope(outputRoot, {
+      slug,
+      provider: writeCtx.expectedProvider(),
+      envelope: normalized,
+    });
     rollbackOnError = true;
     await seedSidecarsFromFull(slugDir, { manifest });
     const i18nDir = i18nDirFor(slugDir, manifest);
@@ -385,11 +391,11 @@ async function runSingleI18n(opts, ctx, deps) {
       await writeFile(join(i18nDir, 'failures.log'), '');
     }
 
-    const postCode = await runPostProcessing({ slugDir, manifestPath });
-    if (postCode !== 0) {
+    const post = await writeCtx.runCanonicalPost(runPostProcessing, slugDir, { manifest });
+    if (!post.ok) {
       await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
-      stderr.write(`i18n: post-processing exited ${postCode}; rolled back\n`);
-      return postCode;
+      stderr.write(`i18n: ${post.error}; rolled back\n`);
+      return post.code;
     }
     await updateSlugSummaryI18n(slugDir, slug, await summaryI18nColumn(slugDir, manifest), validation);
 

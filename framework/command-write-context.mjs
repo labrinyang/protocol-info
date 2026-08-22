@@ -1,21 +1,50 @@
 import { cleanupCreatedLogoAssets } from './logo-assets.mjs';
 import { normalizeRecordEnvelope } from './record-normalizer.mjs';
+import { recordIdentityError } from './record-state.mjs';
+import { runCanonicalPostProcessing } from './canonical-post.mjs';
 
 export function createWriteCommandContext(outputRoot, { slug, manifestPath, ctx = {} }) {
   const createdLogoAssetPaths = [];
   const logoAssetPathsToCommit = [];
+  let expectedProvider = slug;
 
-  const normalizeEnvelope = ctx.normalizeEnvelope || ((envelope) => normalizeRecordEnvelope(outputRoot, {
-    slug,
-    envelope,
-    manifestPath,
-    normalizerContext: { ...(ctx.normalizerContext || {}), createdLogoAssetPaths, logoAssetPathsToCommit },
-  }));
+  const normalizeEnvelope = (envelope) => {
+    if (ctx.normalizeEnvelope) {
+      return ctx.normalizeEnvelope(envelope, { slug, provider: expectedProvider });
+    }
+    return normalizeRecordEnvelope(outputRoot, {
+      slug,
+      provider: expectedProvider,
+      envelope,
+      manifestPath,
+      normalizerContext: { ...(ctx.normalizerContext || {}), createdLogoAssetPaths, logoAssetPathsToCommit },
+    });
+  };
 
   return {
     createdLogoAssetPaths,
     logoAssetPathsToCommit,
     normalizeEnvelope,
+    bindExistingRecord(record) {
+      const provider = record?.provider ?? slug;
+      const identityError = recordIdentityError(record, { slug, provider, allowMissing: true });
+      if (identityError) throw new Error(identityError);
+      expectedProvider = provider;
+      return provider;
+    },
+    expectedProvider() {
+      return expectedProvider;
+    },
+    runCanonicalPost(runPostProcessing, slugDir, { provider = expectedProvider, manifest = null } = {}) {
+      return runCanonicalPostProcessing({
+        runPostProcessing,
+        slugDir,
+        manifestPath,
+        manifest,
+        slug,
+        provider,
+      });
+    },
     assetPathsToCommit() {
       return [...new Set(logoAssetPathsToCommit)];
     },

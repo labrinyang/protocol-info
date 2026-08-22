@@ -13,6 +13,67 @@ import {
   runIndexDir,
 } from '../../framework/orchestrator.mjs';
 
+function cliArg(args, name) {
+  const index = args.indexOf(`--${name}`);
+  return index === -1 ? null : args[index + 1];
+}
+
+function createLogoLedgerPipeline(outputRoot, state) {
+  return async (name, args) => {
+    const { mkdir, readFile, writeFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const ok = { code: 0, stdout: '', stderr: '' };
+
+    if (name === 'fetch') {
+      if (state.fetchCrash) throw new Error('pre-normalize fetch crash');
+      await writeFile(cliArg(args, 'output'), JSON.stringify({
+        fetcher_status: { rootdata: 'skipped_missing_env', defillama: 'ok' },
+      }));
+      return ok;
+    }
+    if (name === 'r1') {
+      await writeFile(cliArg(args, 'record-out'), JSON.stringify({
+        slug: 'pendle',
+        provider: 'pendle',
+        providerLogoUrl: 'https://uni.onekey-asset.com/static/logo/protocol-logo/pendle.png',
+        name: 'Pendle',
+        description: state.description,
+        members: [],
+        fundingRounds: [],
+        audits: { items: [] },
+      }));
+      await writeFile(cliArg(args, 'findings-out'), '[]');
+      await writeFile(cliArg(args, 'gaps-out'), '[]');
+      await writeFile(cliArg(args, 'handoff-out'), '[]');
+      await writeFile(join(cliArg(args, 'debug-dir'), 'r1-status.json'), JSON.stringify({
+        subtasks: [],
+        failed_subtasks: [],
+      }));
+      return ok;
+    }
+    if (name === 'evidence-diff' || name === 'audit-reports') return ok;
+    if (name === 'r2') return { code: 1, stdout: '', stderr: 'disabled for test' };
+    if (name === 'normalize') {
+      if (state.normalizeFails) return { code: 1, stdout: '', stderr: 'normalize failed before output' };
+      await mkdir(join(outputRoot, 'protocol-logo'), { recursive: true });
+      await writeFile(join(outputRoot, 'protocol-logo', 'pendle.png'), 'committed-logo');
+      await writeFile(cliArg(args, 'created-assets-out'), JSON.stringify(['protocol-logo/pendle.png']));
+      await writeFile(cliArg(args, 'assets-to-commit-out'), JSON.stringify(['protocol-logo/pendle.png']));
+      await writeFile(cliArg(args, 'record-out'), await readFile(cliArg(args, 'record-in'), 'utf8'));
+      await writeFile(cliArg(args, 'changes-out'), await readFile(cliArg(args, 'changes-in'), 'utf8'));
+      await writeFile(cliArg(args, 'gaps-out'), await readFile(cliArg(args, 'gaps-in'), 'utf8'));
+      return ok;
+    }
+    if (name === 'post') {
+      const slugDir = cliArg(args, 'slug-dir');
+      const record = JSON.parse(await readFile(join(slugDir, 'record.json'), 'utf8'));
+      await writeFile(join(slugDir, 'record.import.json'), JSON.stringify({ data: [record] }));
+      return ok;
+    }
+    throw new Error(`unexpected cli ${name}`);
+  };
+}
+
 export const tests = [
   {
     name: 'orchestrator module exports run + runOne',
@@ -97,6 +158,90 @@ export const tests = [
     },
   },
   {
+    name: 'protocolDir rejects traversal and encoded path-like slugs',
+    fn: async () => {
+      assert.throws(() => protocolDir('/tmp/out', '../outside'), /unsafe protocol slug/);
+      assert.throws(() => protocolDir('/tmp/out', '%2e%2e'), /unsafe protocol slug/);
+      assert.throws(() => protocolDir('/tmp/out', 'a\\..\\b'), /unsafe protocol slug/);
+    },
+  },
+  {
+    name: 'run rejects traversal before any provider stage or outside-tree mutation',
+    fn: async () => {
+      const { mkdtemp } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const root = await mkdtemp(join(tmpdir(), 'pi-unsafe-slug-'));
+      const outputRoot = join(root, 'out');
+      let called = false;
+      await assert.rejects(
+        () => run({
+          manifestPath: join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json'),
+          providers: [{ slug: '../outside', provider: '../outside', displayName: 'Outside' }],
+          outputRoot,
+          runId: 'R-unsafe',
+          options: { callCli: async () => { called = true; throw new Error('must not run'); } },
+        }),
+        /unsafe protocol slug/,
+      );
+      assert.equal(called, false);
+      const { existsSync } = await import('node:fs');
+      assert.equal(existsSync(join(root, 'outside')), false);
+    },
+  },
+  {
+    name: 'run rejects a safe-looking slug directory that is a symlink',
+    fn: async () => {
+      const { mkdtemp, mkdir, symlink } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const root = await mkdtemp(join(tmpdir(), 'pi-symlink-slug-'));
+      const outputRoot = join(root, 'out');
+      const outside = join(root, 'outside');
+      await mkdir(outputRoot);
+      await mkdir(outside);
+      await symlink(outside, join(outputRoot, 'pendle'));
+      let called = false;
+      await assert.rejects(
+        () => run({
+          manifestPath: join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json'),
+          providers: [{ slug: 'pendle', provider: 'pendle', displayName: 'Pendle' }],
+          outputRoot,
+          runId: 'R-symlink',
+          options: { callCli: async () => { called = true; throw new Error('must not run'); } },
+        }),
+        /refusing protocol directory symlink/,
+      );
+      assert.equal(called, false);
+    },
+  },
+  {
+    name: 'run rejects a symlink nested inside an otherwise safe slug directory',
+    fn: async () => {
+      const { mkdtemp, mkdir, symlink } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const root = await mkdtemp(join(tmpdir(), 'pi-nested-symlink-slug-'));
+      const outputRoot = join(root, 'out');
+      const outside = join(root, 'outside');
+      await mkdir(join(outputRoot, 'pendle'), { recursive: true });
+      await mkdir(outside);
+      await symlink(outside, join(outputRoot, 'pendle', '_debug'));
+      let called = false;
+      await assert.rejects(
+        () => run({
+          manifestPath: join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json'),
+          providers: [{ slug: 'pendle', provider: 'pendle', displayName: 'Pendle' }],
+          outputRoot,
+          runId: 'R-nested-symlink',
+          options: { callCli: async () => { called = true; throw new Error('must not run'); } },
+        }),
+        /refusing symlink inside protocol directory/,
+      );
+      assert.equal(called, false);
+    },
+  },
+  {
     name: 'runIndexDir lives under .runs/ (gitignored)',
     fn: async () => {
       assert.equal(runIndexDir('/tmp/out', 'R1'), '/tmp/out/.runs/R1');
@@ -171,13 +316,15 @@ export const tests = [
       const copyJson = async (from, to) => {
         await writeFile(to, await readFile(from, 'utf8'));
       };
+      let failI18nPost = false;
+      let postCalls = 0;
       const fakeCallCli = async (name, args) => {
         if (name === 'fetch') {
           await writeFile(arg(args, 'output'), JSON.stringify({ fetcher_status: { rootdata: 'skipped_missing_env', defillama: 'ok' } }));
           return { code: 0, stdout: '', stderr: '' };
         }
         if (name === 'r1') {
-          await writeFile(arg(args, 'record-out'), JSON.stringify({ name: 'Pendle', description: 'AMM', members: [], fundingRounds: [], audits: { items: [] } }));
+          await writeFile(arg(args, 'record-out'), JSON.stringify({ slug: 'pendle', provider: 'pendle', name: 'Pendle', description: 'AMM', members: [], fundingRounds: [], audits: { items: [] } }));
           await writeFile(arg(args, 'findings-out'), '[]');
           await writeFile(arg(args, 'gaps-out'), '[]');
           await writeFile(arg(args, 'handoff-out'), '[]');
@@ -200,6 +347,10 @@ export const tests = [
           return { code: 0, stdout: '[i18n] 1/1 ok; failed: none\n', stderr: '' };
         }
         if (name === 'post') {
+          postCalls += 1;
+          if (failI18nPost && postCalls === 2) {
+            return { code: 0, stdout: '', stderr: '' };
+          }
           const slugDir = arg(args, 'slug-dir');
           const record = JSON.parse(await readFile(join(slugDir, 'record.json'), 'utf8'));
           const translations = {};
@@ -211,7 +362,7 @@ export const tests = [
           } catch {
             // No i18n sidecars: real post.mjs only emits source import JSON.
           }
-          await writeFile(join(slugDir, 'record.import.json'), JSON.stringify({ data: [{ slug: 'pendle', locale: 'en' }] }));
+          await writeFile(join(slugDir, 'record.import.json'), JSON.stringify({ data: [{ slug: 'pendle', provider: 'pendle', locale: 'en' }] }));
           if (Object.keys(translations).length > 0) {
             await writeFile(join(slugDir, 'record.full.json'), JSON.stringify({ ...record, i18n: translations }));
             const meta = JSON.parse(await readFile(join(slugDir, 'meta.json'), 'utf8'));
@@ -249,6 +400,159 @@ export const tests = [
       assert.equal(hist.length, 2);
       assert.equal(hist[0].message, 'i18n(pendle): post updates');
       assert.equal(hist[1].message, 'crawl(pendle): R1+R2 ok');
+
+      const failedDir = await mkdtemp(join(tmpdir(), 'pi-run-i18n-post-fail-'));
+      failI18nPost = true;
+      postCalls = 0;
+      const failed = await run({
+        manifestPath,
+        providers: [{ slug: 'pendle', provider: 'pendle', displayName: 'Pendle' }],
+        outputRoot: failedDir,
+        runId: 'R-i18n-post-fail',
+        parallelism: 1,
+        options: { i18nArg: 'zh_CN', callCli: fakeCallCli, callValidator: fakeValidator },
+      });
+      assert.deepEqual(failed.okSlugs, []);
+      assert.match(await readFile(failed.summaryFile, 'utf8'), /pendle\tI18N_POST_FAIL\t.*\t0\/1/);
+      assert.equal((await log(failedDir, { slug: 'pendle' })).length, 1, 'failed i18n post must not be committed');
+      assert.equal(await isClean(failedDir, { slug: 'pendle' }), true);
+      assert.match(await readFile(join(failedDir, 'pendle', 'record.import.json'), 'utf8'), /"locale":"en"/);
+      assert.match(await readFile(join(failedDir, '.runs.log'), 'utf8'), /0 OK \/ 1 fail/);
+    },
+  },
+  {
+    name: 'run() never replays a stale created-assets ledger after a pre-normalize crash',
+    fn: async () => {
+      const { mkdtemp, mkdir, readFile, writeFile } = await import('node:fs/promises');
+      const { existsSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { isClean } = await import('../../framework/version-store.mjs');
+      const dir = await mkdtemp(join(tmpdir(), 'pi-stale-created-ledger-'));
+      const manifestPath = join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json');
+      const state = { description: 'first', fetchCrash: false, normalizeFails: false };
+      const options = {
+        i18nArg: 'none',
+        callCli: createLogoLedgerPipeline(dir, state),
+        callValidator: async () => ({ code: 0, stdout: 'OK\n', stderr: '' }),
+      };
+
+      await run({
+        manifestPath,
+        providers: [{ slug: 'pendle', provider: 'pendle', displayName: 'Pendle' }],
+        outputRoot: dir,
+        runId: 'R-ledger-success',
+        parallelism: 1,
+        options,
+      });
+      assert.equal(await readFile(join(dir, 'protocol-logo', 'pendle.png'), 'utf8'), 'committed-logo');
+      assert.equal(
+        existsSync(join(dir, '.runs', 'R-ledger-success', '.normalizer-ledgers')),
+        false,
+        'handled success must remove its nonce-scoped normalization ledgers',
+      );
+
+      const legacyDebugDir = join(dir, 'pendle', '_debug');
+      await mkdir(legacyDebugDir, { recursive: true });
+      await writeFile(
+        join(legacyDebugDir, 'normalize.created-logo-assets.json'),
+        JSON.stringify(['protocol-logo/pendle.png']),
+      );
+      state.fetchCrash = true;
+
+      await assert.rejects(
+        () => run({
+          manifestPath,
+          providers: [{ slug: 'pendle', provider: 'pendle', displayName: 'Pendle' }],
+          outputRoot: dir,
+          runId: 'R-ledger-crash',
+          parallelism: 1,
+          options,
+        }),
+        /provider worker\(s\) crashed/,
+      );
+
+      assert.equal(await readFile(join(dir, 'protocol-logo', 'pendle.png'), 'utf8'), 'committed-logo');
+      assert.match(
+        await readFile(join(dir, 'pendle', 'record.json'), 'utf8'),
+        /protocol-logo\/pendle\.png/,
+      );
+      assert.equal(await isClean(dir, { slug: 'pendle' }), true);
+      assert.equal(
+        existsSync(join(dir, '.runs', 'R-ledger-crash', '.normalizer-ledgers')),
+        false,
+        'handled worker failure must remove its nonce-scoped normalization ledgers',
+      );
+    },
+  },
+  {
+    name: 'run() never commits assets from a stale assets-to-commit ledger after normalize fails',
+    fn: async () => {
+      const { mkdtemp, mkdir, readFile, writeFile } = await import('node:fs/promises');
+      const { existsSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const dir = await mkdtemp(join(tmpdir(), 'pi-stale-commit-ledger-'));
+      const manifestPath = join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json');
+      const state = { description: 'first', fetchCrash: false, normalizeFails: false };
+      const options = {
+        i18nArg: 'none',
+        callCli: createLogoLedgerPipeline(dir, state),
+        callValidator: async () => ({ code: 0, stdout: 'OK\n', stderr: '' }),
+      };
+      const git = promisify(execFile);
+
+      await run({
+        manifestPath,
+        providers: [{ slug: 'pendle', provider: 'pendle', displayName: 'Pendle' }],
+        outputRoot: dir,
+        runId: 'R-commit-ledger-success',
+        parallelism: 1,
+        options,
+      });
+
+      const legacyDebugDir = join(dir, 'pendle', '_debug');
+      await mkdir(legacyDebugDir, { recursive: true });
+      await writeFile(join(legacyDebugDir, 'normalize.created-logo-assets.json'), '[]');
+      await writeFile(
+        join(legacyDebugDir, 'normalize.logo-assets-to-commit.json'),
+        JSON.stringify(['protocol-logo/pendle.png']),
+      );
+      await writeFile(join(dir, 'protocol-logo', 'pendle.png'), 'unrelated-dirty-logo');
+      state.description = 'second';
+      state.normalizeFails = true;
+
+      await run({
+        manifestPath,
+        providers: [{ slug: 'pendle', provider: 'pendle', displayName: 'Pendle' }],
+        outputRoot: dir,
+        runId: 'R-commit-ledger-normalize-fail',
+        parallelism: 1,
+        options,
+      });
+
+      assert.equal(
+        await readFile(join(dir, 'protocol-logo', 'pendle.png'), 'utf8'),
+        'unrelated-dirty-logo',
+      );
+      const { stdout: committedLogo } = await git(
+        'git',
+        ['show', 'HEAD:protocol-logo/pendle.png'],
+        { cwd: dir, encoding: 'utf8' },
+      );
+      assert.equal(committedLogo, 'committed-logo');
+      const { stdout: committedPaths } = await git(
+        'git',
+        ['ls-tree', '-r', '--name-only', 'HEAD'],
+        { cwd: dir, encoding: 'utf8' },
+      );
+      assert.doesNotMatch(committedPaths, /(?:^|\n)\.runs\//);
+      assert.equal(
+        existsSync(join(dir, '.runs', 'R-commit-ledger-normalize-fail', '.normalizer-ledgers')),
+        false,
+      );
     },
   },
   {
@@ -265,7 +569,7 @@ export const tests = [
       await ensureRepo(dir);
       await mkdir(slugDir, { recursive: true });
       await writeFile(join(slugDir, 'record.json'), JSON.stringify({ name: 'Pendle', description: 'old' }));
-      await writeFile(join(slugDir, 'record.import.json'), JSON.stringify({ data: [{ slug: 'pendle', description: 'old zh' }] }));
+      await writeFile(join(slugDir, 'record.import.json'), JSON.stringify({ data: [{ slug: 'pendle', provider: 'pendle', description: 'old zh' }] }));
       await writeFile(join(slugDir, 'record.full.json'), JSON.stringify({ name: 'Pendle', i18n: { zh_CN: { description: 'old zh' } } }));
       await writeFile(join(slugDir, 'meta.json'), JSON.stringify({ status: 'OK', i18n: { locales_ok: ['zh_CN'] } }, null, 2));
       await commit(dir, { paths: ['pendle/'], message: 'seed translated artifacts', runId: 'seed' });
@@ -285,7 +589,7 @@ export const tests = [
           return { code: 0, stdout: '', stderr: '' };
         }
         if (name === 'r1') {
-          await writeFile(arg(args, 'record-out'), JSON.stringify({ name: 'Pendle', description: 'new', members: [], fundingRounds: [], audits: { items: [] } }));
+          await writeFile(arg(args, 'record-out'), JSON.stringify({ slug: 'pendle', provider: 'pendle', name: 'Pendle', description: 'new', members: [], fundingRounds: [], audits: { items: [] } }));
           await writeFile(arg(args, 'findings-out'), '[]');
           await writeFile(arg(args, 'gaps-out'), '[]');
           await writeFile(arg(args, 'handoff-out'), '[]');
@@ -313,7 +617,7 @@ export const tests = [
           } catch {
             // No i18n sidecars: real post.mjs only emits source import JSON.
           }
-          await writeFile(join(postSlugDir, 'record.import.json'), JSON.stringify({ data: [{ slug: 'pendle', description: record.description }] }));
+          await writeFile(join(postSlugDir, 'record.import.json'), JSON.stringify({ data: [{ slug: 'pendle', provider: 'pendle', description: record.description }] }));
           if (Object.keys(translations).length > 0) {
             await writeFile(join(postSlugDir, 'record.full.json'), JSON.stringify({ ...record, i18n: translations }));
             const meta = JSON.parse(await readFile(join(postSlugDir, 'meta.json'), 'utf8'));
@@ -368,6 +672,8 @@ export const tests = [
       const { isClean, log } = await import('../../framework/version-store.mjs');
       const dir = await mkdtemp(join(tmpdir(), 'pi-run-fail-'));
       const manifestPath = join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json');
+      await mkdir(join(dir, 'audit-logo'), { recursive: true });
+      await writeFile(join(dir, 'audit-logo', 'openzeppelin.png'), 'pre-existing-logo');
       const arg = (args, name) => {
         const i = args.indexOf(`--${name}`);
         return i === -1 ? null : args[i + 1];
@@ -378,7 +684,7 @@ export const tests = [
           return { code: 0, stdout: '', stderr: '' };
         }
         if (name === 'r1') {
-          await writeFile(arg(args, 'record-out'), JSON.stringify({ bad: true }));
+          await writeFile(arg(args, 'record-out'), JSON.stringify({ slug: 'pendle', provider: 'pendle', bad: true }));
           await writeFile(arg(args, 'findings-out'), '[]');
           await writeFile(arg(args, 'gaps-out'), '[]');
           await writeFile(arg(args, 'handoff-out'), '[]');
@@ -389,9 +695,11 @@ export const tests = [
         if (name === 'audit-reports') return { code: 0, stdout: '', stderr: '[audit-reports] extracted=0 failed=0\n' };
         if (name === 'r2') return { code: 1, stdout: '', stderr: 'skip r2 in test' };
         if (name === 'normalize') {
-          await mkdir(join(dir, 'protocol-logo'), { recursive: true });
-          await writeFile(join(dir, 'protocol-logo', 'pendle.png'), 'failed-logo');
-          await writeFile(arg(args, 'created-assets-out'), JSON.stringify(['protocol-logo/pendle.png']));
+          await writeFile(join(dir, 'audit-logo', 'openzeppelin.png'), 'replacement-logo');
+          await writeFile(arg(args, 'created-assets-out'), JSON.stringify([{
+            relPath: 'audit-logo/openzeppelin.png',
+            restoreBase64: Buffer.from('pre-existing-logo').toString('base64'),
+          }]));
           await writeFile(arg(args, 'record-out'), await readFile(arg(args, 'record-in'), 'utf8'));
           await writeFile(arg(args, 'changes-out'), await readFile(arg(args, 'changes-in'), 'utf8'));
           await writeFile(arg(args, 'gaps-out'), await readFile(arg(args, 'gaps-in'), 'utf8'));
@@ -411,8 +719,114 @@ export const tests = [
       });
 
       assert.equal(existsSync(join(dir, 'pendle', 'record.json')), false);
-      assert.equal(existsSync(join(dir, 'protocol-logo', 'pendle.png')), false);
+      assert.equal(await readFile(join(dir, 'audit-logo', 'openzeppelin.png'), 'utf8'), 'pre-existing-logo');
       assert.equal(await isClean(dir, { slug: 'pendle' }), true);
+      assert.deepEqual(await log(dir, { slug: 'pendle' }), []);
+    },
+  },
+  {
+    name: 'run() reports a missing canonical export even when post exits zero and does not commit',
+    fn: async () => {
+      const { mkdtemp, readFile, writeFile } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { existsSync } = await import('node:fs');
+      const { log } = await import('../../framework/version-store.mjs');
+      const dir = await mkdtemp(join(tmpdir(), 'pi-run-post-fail-'));
+      const manifestPath = join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json');
+      const arg = (args, name) => {
+        const i = args.indexOf(`--${name}`);
+        return i === -1 ? null : args[i + 1];
+      };
+      const fakeCallCli = async (name, args) => {
+        if (name === 'fetch') {
+          await writeFile(arg(args, 'output'), JSON.stringify({ fetcher_status: { rootdata: 'skipped_missing_env' } }));
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        if (name === 'r1') {
+          await writeFile(arg(args, 'record-out'), JSON.stringify({
+            slug: 'pendle', provider: 'pendle', displayName: 'Pendle', members: [], fundingRounds: [], audits: { items: [] },
+          }));
+          await writeFile(arg(args, 'findings-out'), '[]');
+          await writeFile(arg(args, 'gaps-out'), '[]');
+          await writeFile(arg(args, 'handoff-out'), '[]');
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        if (name === 'audit-reports' || name === 'evidence-diff') return { code: 0, stdout: '', stderr: '' };
+        if (name === 'r2') return { code: 1, stdout: '', stderr: 'disabled for test' };
+        if (name === 'normalize') {
+          await writeFile(arg(args, 'record-out'), await readFile(arg(args, 'record-in'), 'utf8'));
+          await writeFile(arg(args, 'changes-out'), '[]');
+          await writeFile(arg(args, 'gaps-out'), '[]');
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        if (name === 'post') return { code: 0, stdout: '', stderr: '' };
+        throw new Error(`unexpected cli ${name}`);
+      };
+
+      const result = await run({
+        manifestPath,
+        providers: [{ slug: 'pendle', provider: 'pendle', displayName: 'Pendle' }],
+        outputRoot: dir,
+        runId: 'R-post-fail',
+        options: { i18nArg: 'none', callCli: fakeCallCli, callValidator: async () => ({ code: 0, stdout: 'OK\n', stderr: '' }) },
+      });
+
+      assert.deepEqual(result.okSlugs, []);
+      assert.match(await readFile(result.summaryFile, 'utf8'), /pendle\tPOST_FAIL\t/);
+      assert.equal(existsSync(join(dir, 'pendle', 'record.json')), false);
+      assert.deepEqual(await log(dir, { slug: 'pendle' }), []);
+    },
+  },
+  {
+    name: 'run() rejects model output whose slug or provider identity changes',
+    fn: async () => {
+      const { mkdtemp, readFile, writeFile } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { existsSync } = await import('node:fs');
+      const { log } = await import('../../framework/version-store.mjs');
+      const dir = await mkdtemp(join(tmpdir(), 'pi-run-identity-fail-'));
+      const manifestPath = join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json');
+      const arg = (args, name) => {
+        const i = args.indexOf(`--${name}`);
+        return i === -1 ? null : args[i + 1];
+      };
+      let laterStageCalled = false;
+      const result = await run({
+        manifestPath,
+        providers: [{ slug: 'pendle', provider: 'pendle', displayName: 'Pendle' }],
+        outputRoot: dir,
+        runId: 'R-identity-fail',
+        options: {
+          i18nArg: 'none',
+          callCli: async (name, args) => {
+            if (name === 'fetch') {
+              await writeFile(arg(args, 'output'), JSON.stringify({ fetcher_status: { rootdata: 'skipped_missing_env' } }));
+              return { code: 0, stdout: '', stderr: '' };
+            }
+            if (name === 'r1') {
+              await writeFile(arg(args, 'record-out'), JSON.stringify({
+                slug: 'attacker-selected',
+                provider: 'attacker-selected',
+                displayName: 'Pendle',
+              }));
+              await writeFile(arg(args, 'findings-out'), '[]');
+              await writeFile(arg(args, 'gaps-out'), '[]');
+              await writeFile(arg(args, 'handoff-out'), '[]');
+              return { code: 0, stdout: '', stderr: '' };
+            }
+            laterStageCalled = true;
+            throw new Error(`unexpected cli ${name}`);
+          },
+        },
+      });
+
+      assert.equal(laterStageCalled, false);
+      assert.deepEqual(result.okSlugs, []);
+      assert.match(await readFile(result.summaryFile, 'utf8'), /pendle\tIDENTITY_FAIL\t/);
+      assert.equal(existsSync(join(dir, 'attacker-selected')), false);
+      assert.equal(existsSync(join(dir, 'pendle', 'record.json')), false);
       assert.deepEqual(await log(dir, { slug: 'pendle' }), []);
     },
   },

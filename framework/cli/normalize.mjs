@@ -2,13 +2,24 @@
 // Reads R2-merged record + evidence + accumulated changes/gaps; appends
 // deterministic normalizer changes; writes new record/changes/gaps files.
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { loadManifest } from '../manifest-loader.mjs';
 import { runNormalizers } from '../normalizer-stage.mjs';
 
 function arg(name, def) {
   const i = process.argv.indexOf(`--${name}`);
   return i === -1 ? def : process.argv[i + 1];
+}
+
+async function writeJsonAtomically(path, value) {
+  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporaryPath, JSON.stringify(value, null, 2));
+    await rename(temporaryPath, path);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
 }
 
 const manifestPath = arg('manifest');
@@ -51,14 +62,25 @@ if (gapsIn) {
 
 const createdLogoAssetPaths = [];
 const logoAssetPathsToCommit = [];
+if (createdAssetsOut) await writeJsonAtomically(createdAssetsOut, []);
+if (assetsToCommitOut) await writeJsonAtomically(assetsToCommitOut, []);
+const registerLogoAssetMutation = createdAssetsOut
+  ? async (mutation) => {
+      createdLogoAssetPaths.push(mutation);
+      await writeJsonAtomically(createdAssetsOut, createdLogoAssetPaths);
+    }
+  : null;
 const result = await runNormalizers({
   normalizers: manifest._abs.normalizers || [],
   record, evidence, manifest, incomingChanges, incomingGaps,
   outputRoot, slugDir, env: process.env, createdLogoAssetPaths, logoAssetPathsToCommit,
+  registerLogoAssetMutation,
 });
 
 await writeFile(recordOut, JSON.stringify(result.record, null, 2));
 if (changesOut) await writeFile(changesOut, JSON.stringify(result.changes, null, 2));
 if (gapsOut) await writeFile(gapsOut, JSON.stringify(result.gaps, null, 2));
-if (createdAssetsOut) await writeFile(createdAssetsOut, JSON.stringify(createdLogoAssetPaths, null, 2));
-if (assetsToCommitOut) await writeFile(assetsToCommitOut, JSON.stringify([...new Set(logoAssetPathsToCommit)], null, 2));
+if (createdAssetsOut) await writeJsonAtomically(createdAssetsOut, createdLogoAssetPaths);
+if (assetsToCommitOut) {
+  await writeJsonAtomically(assetsToCommitOut, [...new Set(logoAssetPathsToCommit)]);
+}

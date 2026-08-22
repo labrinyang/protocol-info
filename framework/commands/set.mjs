@@ -63,6 +63,7 @@ export default async function setCmd(args, ctx = {}) {
   try {
     await preflightWritableSlug(outputRoot, slug, { forceOverwrite: !!ctx.forceOverwrite });
     const envelope = await loadRecordEnvelope(outputRoot, { slug });
+    writeCtx.bindExistingRecord(envelope.record);
     setAt(envelope.record, jsonpath, value);
     const normalized = await writeCtx.normalizeEnvelope(envelope);
 
@@ -73,15 +74,19 @@ export default async function setCmd(args, ctx = {}) {
       return 1;
     }
 
-    await writeRecordEnvelope(outputRoot, { slug, envelope: normalized });
+    await writeRecordEnvelope(outputRoot, {
+      slug,
+      provider: writeCtx.expectedProvider(),
+      envelope: normalized,
+    });
     rollbackOnError = true;
     const invalidatedI18n = await invalidateI18nForPath(outputRoot, slug, jsonpath, manifestPath);
     if (!invalidatedI18n) await seedSidecarsFromFull(join(outputRoot, slug), { manifestPath });
-    const postCode = await runPostProcessing({ slugDir: join(outputRoot, slug), manifestPath });
-    if (postCode !== 0) {
+    const post = await writeCtx.runCanonicalPost(runPostProcessing, join(outputRoot, slug));
+    if (!post.ok) {
       await rollbackSlugAndCleanup(outputRoot, slug, writeCtx.createdLogoAssetPaths);
-      stderr.write(`set: post-processing exited ${postCode}; rolled back\n`);
-      return postCode;
+      stderr.write(`set: ${post.error}; rolled back\n`);
+      return post.code;
     }
 
     await commitRebuild(outputRoot, {

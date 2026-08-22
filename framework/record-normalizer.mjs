@@ -1,19 +1,22 @@
 import { join } from 'node:path';
 import { loadManifest } from './manifest-loader.mjs';
 import { runNormalizers } from './normalizer-stage.mjs';
-import { readJsonDefault } from './record-state.mjs';
+import { bindRecordIdentity, readJsonDefault } from './record-state.mjs';
+import { assertSafeSlugLocation, safeSlugDir } from './safe-path.mjs';
 
 export async function normalizeRecordEnvelope(
   outputRoot,
-  { slug, envelope, manifestPath, normalizerContext = {} },
+  { slug, provider = slug, envelope, manifestPath, normalizerContext = {} },
 ) {
   const manifest = await loadManifest(manifestPath);
-  const slugDir = join(outputRoot, slug);
+  await assertSafeSlugLocation(outputRoot, slug);
+  const slugDir = safeSlugDir(outputRoot, slug);
+  const record = bindRecordIdentity(envelope?.record, { slug, provider });
   const evidence = await readJsonDefault(join(slugDir, '_debug', 'rootdata.json'), {});
   const context = { env: process.env, ...normalizerContext };
   const result = await runNormalizers({
     normalizers: manifest._abs.normalizers || [],
-    record: envelope.record,
+    record,
     evidence,
     manifest,
     incomingChanges: envelope.changes || [],
@@ -22,9 +25,10 @@ export async function normalizeRecordEnvelope(
     slugDir,
     ...context,
   });
+  const normalizedRecord = bindRecordIdentity(result.record, { slug, provider });
   return {
     ...envelope,
-    record: result.record,
+    record: normalizedRecord,
     changes: result.changes,
     gaps: result.gaps,
   };

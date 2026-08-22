@@ -4,9 +4,23 @@
 // JSON fields to the CDN paths that mirror those folders.
 
 import { existsSync } from 'node:fs';
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { cdnLogoUrl, parseCdnLogoPath } from '../../../framework/logo-assets.mjs';
+import {
+  cdnLogoUrl,
+  createLogoAssetGeneration,
+  logoAssetDigest,
+  parseCdnLogoPath,
+  readLogoAssetGeneration,
+  withLogoAssetLock,
+  writeLogoAssetGeneration,
+} from '../../../framework/logo-assets.mjs';
+import {
+  cancelResponseBody,
+  fetchPublicResource,
+  readBoundedResponse,
+  responseContentType,
+} from '../../../framework/resource-fetch.mjs';
 import { extractProviderLogoUrl, search as defaultSearchRootData } from '../fetchers/rootdata.mjs';
 import { unavatarSourcesForMember } from './rootdata-avatar.mjs';
 
@@ -19,6 +33,8 @@ export const LOGO_FOLDERS = Object.freeze({
 const PBS_TWIMG_RE = /(?:^|\.)pbs\.twimg\.com$/i;
 const UNAVATAR_RE = /(?:^|\.)unavatar\.io$/i;
 const VALID_EXTS = ['png', 'jpg', 'jpeg', 'webp', 'svg'];
+export const MAX_LOGO_ASSET_BYTES = 5 * 1024 * 1024;
+export const MAX_LOGO_DOWNLOAD_MS = 30_000;
 const EXT_BY_CONTENT_TYPE = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
@@ -148,6 +164,22 @@ function extensionFromContentType(contentType) {
   return EXT_BY_CONTENT_TYPE[normalized] || null;
 }
 
+function hasImageSignature(bytes, ext) {
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0) return false;
+  if (ext === 'png') return bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  if (ext === 'jpg') return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  if (ext === 'webp') {
+    return bytes.length >= 12
+      && bytes.subarray(0, 4).toString('ascii') === 'RIFF'
+      && bytes.subarray(8, 12).toString('ascii') === 'WEBP';
+  }
+  if (ext === 'svg') {
+    const prefix = bytes.subarray(0, 4096).toString('utf8').replace(/^\uFEFF/, '');
+    return /<svg(?:\s|>)/i.test(prefix) && !/<html(?:\s|>)/i.test(prefix);
+  }
+  return false;
+}
+
 function existingAsset(outputRoot, folder, nameBase, preferredExt = null) {
   const exts = preferredExt ? [preferredExt] : VALID_EXTS.map((ext) => ext === 'jpeg' ? 'jpg' : ext);
   for (const ext of [...new Set(exts)]) {
@@ -180,22 +212,109 @@ function fetchOptionsForSource(sourceUrl, env = {}) {
   return { headers: { 'x-api-key': apiKey } };
 }
 
+async function logoFolderSafety(outputRoot, folder) {
+  const folderPath = join(outputRoot, folder);
+  try {
+    const info = await lstat(folderPath);
+    if (info.isSymbolicLink()) return `unsafe_asset_folder_symlink:${folder}`;
+    if (!info.isDirectory()) return `unsafe_asset_folder_type:${folder}`;
+  } catch (err) {
+    if (err?.code !== 'ENOENT') return `asset_folder_check_failed:${err.message}`;
+  }
+  return null;
+}
+
+async function logoFileSafety(filePath) {
+  try {
+    const info = await lstat(filePath);
+    if (info.isSymbolicLink()) return 'unsafe_asset_file_symlink';
+    if (!info.isFile()) return 'unsafe_asset_file_type';
+  } catch (err) {
+    if (err?.code !== 'ENOENT') return `asset_file_check_failed:${err.message}`;
+  }
+  return null;
+}
+
+async function claimExistingLogoAssetLocked({
+  outputRoot,
+  relPath,
+  registerMutation,
+}) {
+  const filePath = join(outputRoot, relPath);
+  const unsafeFile = await logoFileSafety(filePath);
+  if (unsafeFile) throw new Error(unsafeFile);
+
+  let bytes;
+  try {
+    bytes = await readFile(filePath);
+  } catch (err) {
+    if (err?.code === 'ENOENT') return null;
+    throw err;
+  }
+
+  const previousGeneration = await readLogoAssetGeneration(outputRoot, relPath);
+  const generation = createLogoAssetGeneration();
+  const mutation = {
+    relPath,
+    generation,
+    previousGeneration,
+    writtenSha256: logoAssetDigest(bytes),
+    preserveOnRollback: true,
+  };
+  if (typeof registerMutation === 'function') await registerMutation(mutation);
+  await writeLogoAssetGeneration(outputRoot, relPath, generation);
+  return {
+    relPath,
+    reused: true,
+    mutationRegistered: typeof registerMutation === 'function',
+    mutation,
+  };
+}
+
+function claimExistingLogoAsset(options) {
+  return withLogoAssetLock(options.outputRoot, options.relPath, () => (
+    claimExistingLogoAssetLocked(options)
+  ));
+}
+
+function rejectAssetWrite(error) {
+  if (error?.kind === 'logo_asset_lock_failed') throw error;
+  return { url: null, reason: `asset_write_failed:${error.message}` };
+}
+
 export async function rehostLogoAsset({
   sourceUrl,
   outputRoot,
   folder,
   nameBase,
   fetchImage = globalThis.fetch,
+  resolveHostname = fetchImage === globalThis.fetch ? undefined : null,
+  pinnedTransport = fetchImage === globalThis.fetch,
   env = {},
   reuseExisting = true,
+  maxBytes = MAX_LOGO_ASSET_BYTES,
+  timeoutMs = MAX_LOGO_DOWNLOAD_MS,
+  registerMutation = null,
 }) {
   if (!sourceUrl) return { url: null, reason: 'empty' };
   if (!outputRoot) return { url: sourceUrl, reason: 'output_root_missing' };
 
+  let unsafeFolder = await logoFolderSafety(outputRoot, folder);
+  if (unsafeFolder) return { url: null, reason: unsafeFolder };
+
   const cdnRel = cdnPathForFolder(sourceUrl, folder);
   if (cdnRel) {
     if (existsSync(join(outputRoot, cdnRel))) {
-      return { url: sourceUrl, relPath: cdnRel, reused: true };
+      try {
+        const claimed = await claimExistingLogoAsset({
+          outputRoot,
+          relPath: cdnRel,
+          registerMutation,
+        });
+        if (claimed) return { url: sourceUrl, ...claimed };
+      } catch (err) {
+        return rejectAssetWrite(err);
+      }
     }
     // If a prior JSON record already points at our CDN but the local file is
     // missing, try to fetch that CDN URL into the matching local path.
@@ -208,31 +327,144 @@ export async function rehostLogoAsset({
 
   const extHint = extensionFromUrl(sourceUrl);
   const preexisting = reuseExisting ? existingAsset(outputRoot, folder, nameBase, extHint) : null;
-  if (preexisting) return { ...preexisting, reused: true };
+  if (preexisting) {
+    try {
+      const claimed = await claimExistingLogoAsset({
+        outputRoot,
+        relPath: preexisting.relPath,
+        registerMutation,
+      });
+      if (claimed) return { ...preexisting, ...claimed };
+    } catch (err) {
+      return rejectAssetWrite(err);
+    }
+  }
 
-  let response;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    return { url: null, reason: 'invalid_download_timeout' };
+  }
+
+  let response = null;
+  let timeoutHandle;
+  const abortController = new AbortController();
+  const timeoutError = new Error(`logo download timed out after ${timeoutMs}ms`);
+  const deadline = new Promise((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      abortController.abort(timeoutError);
+      reject(timeoutError);
+    }, timeoutMs);
+  });
+  const beforeDeadline = (operation) => Promise.race([operation, deadline]);
+  let bytes;
+  let contentType;
+  let contentExt;
   try {
     const fetchOptions = fetchOptionsForSource(sourceUrl, env);
-    response = fetchOptions ? await fetchImage(sourceUrl, fetchOptions) : await fetchImage(sourceUrl);
+    ({ response } = await beforeDeadline(fetchPublicResource(sourceUrl, {
+      fetchImpl: fetchImage,
+      resolveHostname,
+      pinnedTransport,
+      protocols: ['https:'],
+      requestInit: { ...(fetchOptions || {}), signal: abortController.signal },
+    })));
+    if (!response?.ok) {
+      await cancelResponseBody(response, 'logo response status rejected');
+      return { url: null, reason: `http_${response?.status || 'error'}` };
+    }
+
+    contentType = responseContentType(response);
+    contentExt = extensionFromContentType(contentType);
+    if (!contentExt) {
+      await cancelResponseBody(response, 'logo content type rejected');
+      return { url: null, reason: `unsupported_content_type:${contentType || 'missing'}` };
+    }
+    bytes = await readBoundedResponse(response, {
+      maxBytes,
+      label: 'logo asset',
+      signal: abortController.signal,
+    });
+    if (!hasImageSignature(bytes, contentExt)) {
+      return { url: null, reason: `invalid_image_bytes:${contentType}` };
+    }
   } catch (err) {
-    return { url: null, reason: `fetch_failed:${err.message}` };
-  }
-  if (!response?.ok) {
-    return { url: null, reason: `http_${response?.status || 'error'}` };
+    await cancelResponseBody(response, err?.message || 'logo download rejected');
+    const prefix = response ? 'body_rejected' : 'fetch_failed';
+    return { url: null, reason: `${prefix}:${err.message}` };
+  } finally {
+    clearTimeout(timeoutHandle);
   }
 
-  const contentType = response.headers?.get?.('content-type') || '';
-  const ext = extHint || extensionFromContentType(contentType) || 'png';
+  const ext = contentExt;
   const filename = cdnRel ? basename(cdnRel) : `${nameBase}.${ext}`;
   const relPath = `${folder}/${filename}`;
   const filePath = join(outputRoot, relPath);
 
-  if (reuseExisting && existsSync(filePath)) return { url: cdnLogoUrl(folder, filename), relPath, reused: true };
+  let writeResult;
+  try {
+    writeResult = await withLogoAssetLock(outputRoot, relPath, async () => {
+      if (existsSync(filePath)) {
+        const unsafeFile = await logoFileSafety(filePath);
+        if (unsafeFile) throw new Error(unsafeFile);
+        if (reuseExisting) {
+          const claimed = await claimExistingLogoAssetLocked({
+            outputRoot,
+            relPath,
+            registerMutation,
+          });
+          if (claimed) return claimed;
+        }
+      }
 
-  const bytes = Buffer.from(await response.arrayBuffer());
-  await mkdir(join(outputRoot, folder), { recursive: true });
-  await writeFile(filePath, bytes);
-  return { url: cdnLogoUrl(folder, filename), relPath, created: true };
+      let previousBytes = null;
+      if (existsSync(filePath)) previousBytes = await readFile(filePath);
+      const previousGeneration = previousBytes === null
+        ? null
+        : await readLogoAssetGeneration(outputRoot, relPath);
+      const generation = createLogoAssetGeneration();
+      const mutation = {
+        relPath,
+        generation,
+        previousGeneration,
+        writtenSha256: logoAssetDigest(bytes),
+        ...(previousBytes === null ? {} : { restoreBase64: previousBytes.toString('base64') }),
+      };
+      if (typeof registerMutation === 'function') await registerMutation(mutation);
+      await mkdir(join(outputRoot, folder), { recursive: true });
+      unsafeFolder = await logoFolderSafety(outputRoot, folder);
+      if (unsafeFolder) throw new Error(unsafeFolder);
+      const stagedPath = `${filePath}.${generation}.tmp`;
+      try {
+        await writeFile(stagedPath, bytes, { flag: 'wx' });
+        await writeLogoAssetGeneration(outputRoot, relPath, generation);
+        await rename(stagedPath, filePath);
+      } catch (err) {
+        await rm(stagedPath, { force: true });
+        if (await readLogoAssetGeneration(outputRoot, relPath) === generation) {
+          await writeLogoAssetGeneration(outputRoot, relPath, previousGeneration);
+        }
+        throw err;
+      } finally {
+        await rm(stagedPath, { force: true });
+      }
+      return { mutation, previousBytes };
+    });
+  } catch (err) {
+    return rejectAssetWrite(err);
+  }
+  if (writeResult.reused) {
+    return { url: cdnLogoUrl(folder, filename), ...writeResult };
+  }
+
+  const { mutation, previousBytes } = writeResult;
+  return {
+    url: cdnLogoUrl(folder, filename),
+    relPath,
+    created: previousBytes === null,
+    replaced: previousBytes !== null,
+    mutationRegistered: typeof registerMutation === 'function',
+    mutation,
+    ...(previousBytes === null ? {} : { restoreBase64: previousBytes.toString('base64') }),
+  };
 }
 
 function sourceFromRootData(evidence) {
@@ -463,11 +695,14 @@ export default async function normalize({
   evidence,
   outputRoot,
   fetchImage = globalThis.fetch,
+  resolveHostname = fetchImage === globalThis.fetch ? undefined : null,
+  pinnedTransport = fetchImage === globalThis.fetch,
   searchRootData = defaultSearchRootData,
   env = {},
   logger = null,
   createdLogoAssetPaths = null,
   logoAssetPathsToCommit = null,
+  registerLogoAssetMutation = null,
 }) {
   let out = reorderProviderLogo(clone(record));
   const changes = [];
@@ -477,8 +712,9 @@ export default async function normalize({
   const auditCache = await buildAuditLogoCache(outputRoot);
 
   const trackCreated = (result) => {
-    if (result?.created && result.relPath && Array.isArray(createdLogoAssetPaths)) {
-      createdLogoAssetPaths.push(result.relPath);
+    if (result?.mutationRegistered) return;
+    if (result?.mutation && Array.isArray(createdLogoAssetPaths)) {
+      createdLogoAssetPaths.push(result.mutation);
     }
   };
   const trackForCommit = (result, before, after) => {
@@ -510,7 +746,10 @@ export default async function normalize({
         folder: LOGO_FOLDERS.provider,
         nameBase: logoName([slug]),
         fetchImage,
+        resolveHostname,
+        pinnedTransport,
         env,
+        registerMutation: registerLogoAssetMutation,
       });
       trackCreated(result);
       if (result.url) {
@@ -556,7 +795,10 @@ export default async function normalize({
       folder: LOGO_FOLDERS.member,
       nameBase: logoName([slug, member.memberName]),
       fetchImage,
+      resolveHostname,
+      pinnedTransport,
       env,
+      registerMutation: registerLogoAssetMutation,
     });
     const failedPrimaryReason = result.url ? null : result.reason;
     let fallbackSource = null;
@@ -571,7 +813,10 @@ export default async function normalize({
           folder: LOGO_FOLDERS.member,
           nameBase: logoName([slug, member.memberName]),
           fetchImage,
+          resolveHostname,
+          pinnedTransport,
           env,
+          registerMutation: registerLogoAssetMutation,
         });
         if (fallbackResult.url) {
           result = fallbackResult;
@@ -638,7 +883,10 @@ export default async function normalize({
         folder: LOGO_FOLDERS.audit,
         nameBase: logoName([item.auditor || 'auditor']),
         fetchImage,
+        resolveHostname,
+        pinnedTransport,
         env,
+        registerMutation: registerLogoAssetMutation,
         reuseExisting: !(candidate.source === 'record:auditorLogoUrl' && !cdnPathForFolder(candidate.url, LOGO_FOLDERS.audit)),
       });
       if (candidateResult.url) {
@@ -658,7 +906,10 @@ export default async function normalize({
           folder: LOGO_FOLDERS.audit,
           nameBase: logoName([item.auditor || 'auditor']),
           fetchImage,
+          resolveHostname,
+          pinnedTransport,
           env,
+          registerMutation: registerLogoAssetMutation,
         });
         if (candidateResult.url) {
           result = candidateResult;

@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { ensureRepo, commit, isClean, log } from '../../framework/version-store.mjs';
-import { preflightWritableSlug, rollbackSlug, commitAndRebuild } from '../../framework/slug-transaction.mjs';
+import {
+  preflightWritableSlug,
+  rollbackSlug,
+  rollbackSlugAndCleanup,
+  commitAndRebuild,
+} from '../../framework/slug-transaction.mjs';
 
 async function seedOut() {
   const out = await mkdtemp(join(tmpdir(), 'pi-tx-'));
@@ -60,6 +65,40 @@ export const tests = [
       assert.equal(existsSync(join(out, 'pendle', 'meta.json')), false);
       assert.equal(existsSync(join(out, 'pendle', '_debug', 'failure.log')), true);
       assert.equal(await isClean(out, { slug: 'pendle' }), true);
+    },
+  },
+  {
+    name: 'rollbackSlugAndCleanup restores canonical state even when asset cleanup fails',
+    fn: async () => {
+      const out = await seedOut();
+      await writeFile(join(out, 'pendle', 'record.json'), '{"v":2}\n');
+      await assert.rejects(
+        () => rollbackSlugAndCleanup(out, 'pendle', [], {
+          cleanup: async () => { throw new Error('asset cleanup failed'); },
+        }),
+        /asset cleanup failed/,
+      );
+      assert.equal((await readFile(join(out, 'pendle', 'record.json'), 'utf8')).trim(), '{"v":1}');
+      assert.equal(await isClean(out, { slug: 'pendle' }), true);
+    },
+  },
+  {
+    name: 'rollbackSlugAndCleanup preserves rollback and cleanup errors together',
+    fn: async () => {
+      await assert.rejects(
+        () => rollbackSlugAndCleanup('/tmp/not-used', 'pendle', [], {
+          rollback: async () => { throw new Error('canonical rollback failed'); },
+          cleanup: async () => { throw new Error('asset cleanup failed'); },
+        }),
+        (err) => {
+          assert.equal(err instanceof AggregateError, true);
+          assert.deepEqual(err.errors.map((entry) => entry.message), [
+            'canonical rollback failed',
+            'asset cleanup failed',
+          ]);
+          return true;
+        },
+      );
     },
   },
   {

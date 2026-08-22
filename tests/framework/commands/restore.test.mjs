@@ -5,16 +5,23 @@ import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { ensureRepo, commit, isClean, log } from '../../../framework/version-store.mjs';
 
+const manifestPath = join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json');
+
+async function writeCanonicalImport(slugDir) {
+  const record = JSON.parse(await readFile(join(slugDir, 'record.json'), 'utf8'));
+  await writeFile(join(slugDir, 'record.import.json'), JSON.stringify({ data: [record] }) + '\n');
+}
+
 async function seedOut() {
   const out = await mkdtemp(join(tmpdir(), 'pi-restore-cmd-'));
   await ensureRepo(out);
   await mkdir(join(out, 'pendle'), { recursive: true });
-  await writeFile(join(out, 'pendle', 'record.json'), '{"name":"V1","description":"old"}\n');
+  await writeFile(join(out, 'pendle', 'record.json'), '{"slug":"pendle","provider":"pendle-rootdata","name":"V1","description":"old"}\n');
   await writeFile(join(out, 'pendle', 'findings.json'), '[]\n');
   await writeFile(join(out, 'pendle', 'changes.json'), '[]\n');
   await writeFile(join(out, 'pendle', 'gaps.json'), '[]\n');
   const sha1 = await commit(out, { paths: ['pendle/'], message: 'crawl(pendle): v1', runId: 'R1' });
-  await writeFile(join(out, 'pendle', 'record.json'), '{"name":"V2","description":"old"}\n');
+  await writeFile(join(out, 'pendle', 'record.json'), '{"slug":"pendle","provider":"pendle-rootdata","name":"V2","description":"old"}\n');
   await commit(out, { paths: ['pendle/'], message: 'crawl(pendle): v2', runId: 'R2' });
   return { out, sha1 };
 }
@@ -23,12 +30,12 @@ async function seedOutWithDescriptionChange() {
   const out = await mkdtemp(join(tmpdir(), 'pi-restore-cmd-'));
   await ensureRepo(out);
   await mkdir(join(out, 'pendle'), { recursive: true });
-  await writeFile(join(out, 'pendle', 'record.json'), '{"name":"V1","description":"older"}\n');
+  await writeFile(join(out, 'pendle', 'record.json'), '{"slug":"pendle","provider":"pendle-rootdata","name":"V1","description":"older"}\n');
   await writeFile(join(out, 'pendle', 'findings.json'), '[]\n');
   await writeFile(join(out, 'pendle', 'changes.json'), '[]\n');
   await writeFile(join(out, 'pendle', 'gaps.json'), '[]\n');
   const sha1 = await commit(out, { paths: ['pendle/'], message: 'crawl(pendle): v1', runId: 'R1' });
-  await writeFile(join(out, 'pendle', 'record.json'), '{"name":"V2","description":"old"}\n');
+  await writeFile(join(out, 'pendle', 'record.json'), '{"slug":"pendle","provider":"pendle-rootdata","name":"V2","description":"old"}\n');
   await commit(out, { paths: ['pendle/'], message: 'crawl(pendle): v2', runId: 'R2' });
   return { out, sha1 };
 }
@@ -60,10 +67,10 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/restore.mjs')).default;
       const code = await cmd(['pendle', sha1], {
         outputRoot: out,
-        manifestPath: 'manifest.json',
+        manifestPath,
         validate: async () => ({ ok: true, errors: [] }),
         runPostProcessing: async ({ slugDir }) => {
-          await writeFile(join(slugDir, 'record.import.json'), '{"ok":true}\n');
+          await writeCanonicalImport(slugDir);
           return 0;
         },
         commitAndRebuild: commitOnly,
@@ -73,6 +80,7 @@ export const tests = [
       assert.equal(code, 0);
       const record = JSON.parse(await readFile(join(out, 'pendle', 'record.json'), 'utf8'));
       assert.equal(record.name, 'V1');
+      assert.equal(record.provider, 'pendle-rootdata');
       const hist = await log(out, { slug: 'pendle' });
       assert.equal(hist.length, 3);
       assert.match(hist[0].message, /^restore\(pendle\) /);
@@ -86,7 +94,7 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/restore.mjs')).default;
       const code = await cmd(['pendle', sha1], {
         outputRoot: out,
-        manifestPath: 'manifest.json',
+        manifestPath,
         validate: async () => ({ ok: false, errors: ['schema tightened'] }),
         runPostProcessing: async () => {
           throw new Error('post should not run');
@@ -110,12 +118,12 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/restore.mjs')).default;
       const code = await cmd(['pendle', sha1], {
         outputRoot: out,
-        manifestPath: join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json'),
+        manifestPath,
         validate: async () => ({ ok: true, errors: [] }),
         runPostProcessing: async ({ slugDir }) => {
           assert.equal(existsSync(join(slugDir, '_debug', 'i18n', 'zh_CN.json')), true);
           await writeFile(join(slugDir, 'record.full.json'), '{"description":"old","i18n":{"zh_CN":{"description":"old zh"}}}\n');
-          await writeFile(join(slugDir, 'record.import.json'), '{"ok":true}\n');
+          await writeCanonicalImport(slugDir);
           return 0;
         },
         commitAndRebuild: commitOnly,
@@ -136,12 +144,12 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/restore.mjs')).default;
       const code = await cmd(['pendle', sha1], {
         outputRoot: out,
-        manifestPath: join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json'),
+        manifestPath,
         validate: async () => ({ ok: true, errors: [] }),
         runPostProcessing: async ({ slugDir }) => {
           assert.equal(existsSync(join(slugDir, '_debug', 'i18n', 'zh_CN.json')), false);
           assert.equal(existsSync(join(slugDir, 'record.full.json')), false);
-          await writeFile(join(slugDir, 'record.import.json'), '{"ok":true}\n');
+          await writeCanonicalImport(slugDir);
           return 0;
         },
         commitAndRebuild: commitOnly,
@@ -160,7 +168,7 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/restore.mjs')).default;
       const code = await cmd(['pendle', sha1], {
         outputRoot: out,
-        manifestPath: 'manifest.json',
+        manifestPath,
         validate: async () => ({ ok: true, errors: [] }),
         runPostProcessing: async () => 1,
         commitAndRebuild: commitOnly,

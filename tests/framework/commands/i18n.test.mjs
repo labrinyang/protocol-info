@@ -7,11 +7,18 @@ import { ensureRepo, commit, isClean, log } from '../../../framework/version-sto
 
 const manifestPath = join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json');
 
+async function writeCanonicalImport(slugDir) {
+  const record = JSON.parse(await readFile(join(slugDir, 'record.json'), 'utf8'));
+  await writeFile(join(slugDir, 'record.import.json'), JSON.stringify({ data: [record] }) + '\n');
+}
+
 async function seedOut() {
   const out = await mkdtemp(join(tmpdir(), 'pi-i18n-cmd-'));
   await ensureRepo(out);
   await mkdir(join(out, 'pendle'), { recursive: true });
   await writeFile(join(out, 'pendle', 'record.json'), JSON.stringify({
+    slug: 'pendle',
+    provider: 'pendle-rootdata',
     name: 'Pendle',
     description: 'AMM',
   }) + '\n');
@@ -91,7 +98,7 @@ export const tests = [
             ja_JP: JSON.parse(await readFile(join(slugDir, '_debug', 'i18n', 'ja_JP.json'), 'utf8')),
             zh_CN: JSON.parse(await readFile(join(slugDir, '_debug', 'i18n', 'zh_CN.json'), 'utf8')),
           } }));
-          await writeFile(join(slugDir, 'record.import.json'), '{"records":[]}\n');
+          await writeCanonicalImport(slugDir);
           await writeFile(join(slugDir, 'meta.json'), '{"i18n":{"locales_ok":["ja_JP","zh_CN"]}}\n');
           return 0;
         },
@@ -100,10 +107,12 @@ export const tests = [
         stderr: { write: () => {} },
       });
       assert.equal(code, 0);
+      const writtenRecord = JSON.parse(await readFile(join(out, 'pendle', 'record.json'), 'utf8'));
+      assert.equal(writtenRecord.provider, 'pendle-rootdata');
       assert.deepEqual(calls, [['i18n', ['zh_CN']], ['post']]);
       assert.match(await readFile(join(out, 'pendle', 'record.full.json'), 'utf8'), /zh_CN/);
       assert.match(await readFile(join(out, 'pendle', 'record.full.json'), 'utf8'), /ja_JP/);
-      assert.match(await readFile(join(out, 'pendle', 'record.import.json'), 'utf8'), /records/);
+      assert.match(await readFile(join(out, 'pendle', 'record.import.json'), 'utf8'), /"data"/);
       const hist = await log(out, { slug: 'pendle' });
       assert.equal(hist.length, 2);
       assert.equal(hist[0].message, 'i18n(pendle): add zh_CN');
@@ -142,7 +151,7 @@ export const tests = [
             }
           }
           await writeFile(join(slugDir, 'record.full.json'), JSON.stringify({ description: 'AMM', i18n: translations }));
-          await writeFile(join(slugDir, 'record.import.json'), '{"records":[]}\n');
+          await writeCanonicalImport(slugDir);
           await writeFile(join(slugDir, 'meta.json'), '{"i18n":{"locales_ok":["ja_JP","zh_CN"]}}\n');
           return 0;
         },
@@ -181,7 +190,7 @@ export const tests = [
             description: 'AMM',
             i18n: { ja_JP: JSON.parse(await readFile(join(slugDir, '_debug', 'i18n', 'ja_JP.json'), 'utf8')) },
           }));
-          await writeFile(join(slugDir, 'record.import.json'), '{"records":[]}\n');
+          await writeCanonicalImport(slugDir);
           await writeFile(join(slugDir, 'meta.json'), '{"i18n":{"locales_ok":["ja_JP"]}}\n');
           return 0;
         },
@@ -236,7 +245,7 @@ export const tests = [
         runPostProcessing: async ({ slugDir }) => {
           const translation = JSON.parse(await readFile(join(slugDir, '_debug', 'i18n', 'zh_CN.json'), 'utf8'));
           await writeFile(join(slugDir, 'record.full.json'), JSON.stringify({ i18n: { zh_CN: translation } }));
-          await writeFile(join(slugDir, 'record.import.json'), '{"data":[]}\n');
+          await writeCanonicalImport(slugDir);
           await writeFile(join(slugDir, 'meta.json'), '{"i18n":{"locales_ok":["zh_CN"]}}\n');
           return 0;
         },
@@ -294,7 +303,7 @@ export const tests = [
         runPostProcessing: async ({ slugDir }) => {
           calls.push('post');
           await writeFile(join(slugDir, 'record.full.json'), '{"i18n":{"zh_CN":{"members":[{"oneLiner":"构建市场。"}]}}}\n');
-          await writeFile(join(slugDir, 'record.import.json'), '{"data":[]}\n');
+          await writeCanonicalImport(slugDir);
           await writeFile(join(slugDir, 'meta.json'), '{"i18n":{"locales_ok":["zh_CN"]}}\n');
           return 0;
         },
@@ -330,7 +339,7 @@ export const tests = [
             description: 'AMM',
             i18n: { zh_CN: JSON.parse(await readFile(join(slugDir, '_debug', 'i18n', 'zh_CN.json'), 'utf8')) },
           }));
-          await writeFile(join(slugDir, 'record.import.json'), '{"records":[]}\n');
+          await writeCanonicalImport(slugDir);
           await writeFile(join(slugDir, 'meta.json'), '{"i18n":{"locales_ok":["zh_CN"]}}\n');
           return 0;
         },
@@ -367,7 +376,7 @@ export const tests = [
         },
         runPostProcessing: async ({ slugDir }) => {
           await writeFile(join(slugDir, 'record.full.json'), '{"i18n":{"zh_CN":{"description":"zh"}}}\n');
-          await writeFile(join(slugDir, 'record.import.json'), '{"data":[]}\n');
+          await writeCanonicalImport(slugDir);
           await writeFile(join(slugDir, 'meta.json'), '{"i18n":{"locales_ok":["zh_CN"]}}\n');
           return 0;
         },

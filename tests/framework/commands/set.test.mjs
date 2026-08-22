@@ -5,11 +5,21 @@ import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { ensureRepo, commit, isClean, log } from '../../../framework/version-store.mjs';
 
+const manifestPath = join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json');
+const publicResolver = async () => [{ address: '93.184.216.34', family: 4 }];
+
+async function writeCanonicalImport(slugDir) {
+  const record = JSON.parse(await readFile(join(slugDir, 'record.json'), 'utf8'));
+  await writeFile(join(slugDir, 'record.import.json'), JSON.stringify({ data: [record] }) + '\n');
+}
+
 async function seedOut() {
   const out = await mkdtemp(join(tmpdir(), 'pi-set-'));
   await ensureRepo(out);
   await mkdir(join(out, 'pendle'), { recursive: true });
   await writeFile(join(out, 'pendle', 'record.json'), JSON.stringify({
+    slug: 'pendle',
+    provider: 'pendle-rootdata',
     name: 'Pendle',
     description: 'old',
     members: [],
@@ -42,11 +52,11 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/set.mjs')).default;
       const code = await cmd(['pendle', 'description', '"new"'], {
         outputRoot: out,
-        manifestPath: 'manifest.json',
+        manifestPath,
         validate: async () => ({ ok: true, errors: [] }),
         runPostProcessing: async ({ slugDir }) => {
           postCalled = true;
-          await writeFile(join(slugDir, 'record.import.json'), '{"ok":true}\n');
+          await writeCanonicalImport(slugDir);
           return 0;
         },
         commitAndRebuild: commitOnly,
@@ -57,10 +67,39 @@ export const tests = [
       assert.equal(postCalled, true);
       const record = JSON.parse(await readFile(join(out, 'pendle', 'record.json'), 'utf8'));
       assert.equal(record.description, 'new');
+      assert.equal(record.provider, 'pendle-rootdata');
       const hist = await log(out, { slug: 'pendle' });
       assert.equal(hist.length, 2);
       assert.equal(hist[0].message, 'set(pendle) description');
       assert.equal(await isClean(out, { slug: 'pendle' }), true);
+    },
+  },
+  {
+    name: 'set rejects a normalizer attempt to change the bound provider alias',
+    fn: async () => {
+      const out = await seedOut();
+      const stderr = [];
+      const cmd = (await import('../../../framework/commands/set.mjs')).default;
+      const code = await cmd(['pendle', 'description', '"new"'], {
+        outputRoot: out,
+        manifestPath,
+        validate: async () => ({ ok: true, errors: [] }),
+        runPostProcessing: async () => {
+          throw new Error('post should not run');
+        },
+        commitAndRebuild: commitOnly,
+        normalizeEnvelope: async (envelope) => ({
+          ...envelope,
+          record: { ...envelope.record, provider: 'attacker-selected' },
+        }),
+        stderr: { write: (message) => stderr.push(message) },
+      });
+      assert.equal(code, 1);
+      assert.match(stderr.join(''), /record\.provider identity mismatch/);
+      const record = JSON.parse(await readFile(join(out, 'pendle', 'record.json'), 'utf8'));
+      assert.equal(record.provider, 'pendle-rootdata');
+      assert.equal(record.description, 'old');
+      assert.equal((await log(out, { slug: 'pendle' })).length, 1);
     },
   },
   {
@@ -70,7 +109,7 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/set.mjs')).default;
       const code = await cmd(['pendle', 'description', '42'], {
         outputRoot: out,
-        manifestPath: 'manifest.json',
+        manifestPath,
         validate: async () => ({ ok: false, errors: ['$.description: expected string'] }),
         runPostProcessing: async () => {
           throw new Error('post should not run');
@@ -94,7 +133,7 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/set.mjs')).default;
       const code = await cmd(['pendle', 'description', '"new"'], {
         outputRoot: out,
-        manifestPath: 'manifest.json',
+        manifestPath,
         validate: async () => {
           throw new Error('validate should not run');
         },
@@ -117,7 +156,7 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/set.mjs')).default;
       const code = await cmd(['pendle', 'description', '"new"'], {
         outputRoot: out,
-        manifestPath: 'manifest.json',
+        manifestPath,
         validate: async () => ({ ok: true, errors: [] }),
         runPostProcessing: async () => 1,
         commitAndRebuild: commitOnly,
@@ -125,6 +164,29 @@ export const tests = [
         stderr: { write: () => {} },
       });
       assert.equal(code, 1);
+      const record = JSON.parse(await readFile(join(out, 'pendle', 'record.json'), 'utf8'));
+      assert.equal(record.description, 'old');
+      assert.equal((await log(out, { slug: 'pendle' })).length, 1);
+      assert.equal(await isClean(out, { slug: 'pendle' }), true);
+    },
+  },
+  {
+    name: 'set rolls back when post exits zero without a valid canonical import',
+    fn: async () => {
+      const out = await seedOut();
+      const stderr = [];
+      const cmd = (await import('../../../framework/commands/set.mjs')).default;
+      const code = await cmd(['pendle', 'description', '"new"'], {
+        outputRoot: out,
+        manifestPath,
+        validate: async () => ({ ok: true, errors: [] }),
+        runPostProcessing: async () => 0,
+        commitAndRebuild: commitOnly,
+        normalizeEnvelope: normalizeNoop,
+        stderr: { write: (message) => stderr.push(message) },
+      });
+      assert.equal(code, 1);
+      assert.match(stderr.join(''), /canonical import was not written/);
       const record = JSON.parse(await readFile(join(out, 'pendle', 'record.json'), 'utf8'));
       assert.equal(record.description, 'old');
       assert.equal((await log(out, { slug: 'pendle' })).length, 1);
@@ -144,14 +206,14 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/set.mjs')).default;
       const code = await cmd(['pendle', 'description', '"new"'], {
         outputRoot: out,
-        manifestPath: join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json'),
+        manifestPath,
         validate: async () => ({ ok: true, errors: [] }),
         runPostProcessing: async ({ slugDir }) => {
           assert.equal(existsSync(join(slugDir, '_debug', 'i18n', 'zh_CN.json')), false);
           assert.equal(existsSync(join(slugDir, 'record.full.json')), false);
           const meta = JSON.parse(await readFile(join(slugDir, 'meta.json'), 'utf8'));
           assert.equal(meta.i18n, undefined);
-          await writeFile(join(slugDir, 'record.import.json'), '{"ok":true}\n');
+          await writeCanonicalImport(slugDir);
           return 0;
         },
         commitAndRebuild: commitOnly,
@@ -178,14 +240,14 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/set.mjs')).default;
       const code = await cmd(['pendle', 'status', '"active"'], {
         outputRoot: out,
-        manifestPath: join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json'),
+        manifestPath,
         validate: async () => ({ ok: true, errors: [] }),
         runPostProcessing: async ({ slugDir }) => {
           assert.equal(existsSync(join(slugDir, '_debug', 'i18n', 'zh_CN.json')), true);
           assert.equal(existsSync(join(slugDir, 'record.full.json')), true);
           const meta = JSON.parse(await readFile(join(slugDir, 'meta.json'), 'utf8'));
           assert.deepEqual(meta.i18n, { locales_ok: ['zh_CN'] });
-          await writeFile(join(slugDir, 'record.import.json'), '{"ok":true}\n');
+          await writeCanonicalImport(slugDir);
           return 0;
         },
         commitAndRebuild: commitOnly,
@@ -213,14 +275,14 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/set.mjs')).default;
       const code = await cmd(['pendle', 'status', '"active"'], {
         outputRoot: out,
-        manifestPath: join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json'),
+        manifestPath,
         validate: async () => ({ ok: true, errors: [] }),
         runPostProcessing: async ({ slugDir }) => {
           const sidecar = JSON.parse(await readFile(join(slugDir, '_debug', 'i18n', 'zh_CN.json'), 'utf8'));
           assert.equal(sidecar.description, 'old zh');
           const record = JSON.parse(await readFile(join(slugDir, 'record.json'), 'utf8'));
           await writeFile(join(slugDir, 'record.full.json'), JSON.stringify({ ...record, i18n: { zh_CN: sidecar } }) + '\n');
-          await writeFile(join(slugDir, 'record.import.json'), '{"ok":true}\n');
+          await writeCanonicalImport(slugDir);
           return 0;
         },
         commitAndRebuild: commitOnly,
@@ -257,13 +319,18 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/set.mjs')).default;
       const code = await cmd(['pendle', 'providerLogoUrl', '"https://example.com/pendle.png"'], {
         outputRoot: out,
-        manifestPath: join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json'),
+        manifestPath,
         normalizerContext: {
+          resolveHostname: publicResolver,
+          pinnedTransport: true,
           fetchImage: async () => ({
             ok: true,
             status: 200,
             headers: { get: () => 'image/png' },
-            arrayBuffer: async () => Buffer.from('logo'),
+            body: new Response(Buffer.concat([
+              Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+              Buffer.from('logo'),
+            ])).body,
           }),
         },
         validate: async () => ({ ok: false, errors: ['schema failure after normalize'] }),
@@ -304,18 +371,23 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/set.mjs')).default;
       const code = await cmd(['pendle', 'providerLogoUrl', '"https://example.com/pendle.png"'], {
         outputRoot: out,
-        manifestPath: join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json'),
+        manifestPath,
         normalizerContext: {
+          resolveHostname: publicResolver,
+          pinnedTransport: true,
           fetchImage: async () => ({
             ok: true,
             status: 200,
             headers: { get: () => 'image/png' },
-            arrayBuffer: async () => Buffer.from('logo'),
+            body: new Response(Buffer.concat([
+              Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+              Buffer.from('logo'),
+            ])).body,
           }),
         },
         validate: async () => ({ ok: true, errors: [] }),
         runPostProcessing: async ({ slugDir }) => {
-          await writeFile(join(slugDir, 'record.import.json'), '{"ok":true}\n');
+          await writeCanonicalImport(slugDir);
           return 0;
         },
         commitAndRebuild: async (outputRoot, opts) => {

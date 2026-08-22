@@ -35,6 +35,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { run, slugify } from './orchestrator.mjs';
 import { rootDataApiKeysFromEnv, hasRootDataApiKeys } from '../consumers/protocol-info/fetchers/rootdata.mjs';
+import { assertSafeSlug, assertSafeSlugLocation } from './safe-path.mjs';
 
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_DIR = dirname(FRAMEWORK_DIR);
@@ -249,17 +250,40 @@ export async function dispatchWorkflowCommand(argv, {
 } = {}) {
   const parsed = parseWorkflowArgv(argv, commandMap);
   if (!parsed) return null;
+  const commandContext = {
+    outputRoot: defaultOutputRoot(),
+    manifestPath: DEFAULT_MANIFEST,
+    ...parsed.context,
+    ...context,
+  };
+  for (const slug of workflowSlugArgs(parsed.name, parsed.args)) {
+    assertSafeSlug(slug);
+    await assertSafeSlugLocation(commandContext.outputRoot, slug);
+  }
   const mod = await commandMap[parsed.name]();
   const fn = mod.default;
   if (typeof fn !== 'function') {
     throw new Error(`workflow command ${parsed.name} has no default export`);
   }
-  return await fn(parsed.args, {
-    outputRoot: defaultOutputRoot(),
-    manifestPath: DEFAULT_MANIFEST,
-    ...parsed.context,
-    ...context,
-  });
+  return await fn(parsed.args, commandContext);
+}
+
+function workflowSlugArgs(name, args) {
+  if (name === 'export-imports') return [];
+  if (name !== 'i18n' || !args.includes('--batch')) {
+    return args[0] && !args[0].startsWith('-') ? [args[0]] : [];
+  }
+  const slugs = [];
+  const valueFlags = new Set(['--locales', '--fields', '--parallel-slugs', '--i18n-parallel', '--parallel']);
+  for (let i = 0; i < args.length; i += 1) {
+    if (valueFlags.has(args[i])) {
+      i += 1;
+      continue;
+    }
+    if (args[i].startsWith('-')) continue;
+    slugs.push(args[i]);
+  }
+  return slugs;
 }
 
 export function parseWorkflowArgv(argv, commandMap = WORKFLOW_COMMANDS) {
@@ -370,6 +394,7 @@ export function parseArgv(argv) {
   function flush() {
     if (!cur.dn) return;
     const slug = cur.slug || slugify(cur.dn);
+    assertSafeSlug(slug);
     const provider = {
       slug,
       provider: slug,

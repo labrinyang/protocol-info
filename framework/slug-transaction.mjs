@@ -16,15 +16,31 @@ export async function rollbackSlug(outputRoot, slug) {
   await resetSlugToHead(outputRoot, { slug });
 }
 
-export async function rollbackSlugAndCleanup(outputRoot, slug, createdLogoAssetPaths = []) {
-  let rollbackError = null;
+export async function rollbackSlugAndCleanup(
+  outputRoot,
+  slug,
+  createdLogoAssetPaths = [],
+  { rollback = rollbackSlug, cleanup = cleanupCreatedLogoAssets } = {},
+) {
+  const errors = [];
   try {
-    await rollbackSlug(outputRoot, slug);
+    await rollback(outputRoot, slug);
   } catch (err) {
-    rollbackError = err;
+    errors.push(err);
   }
-  await cleanupCreatedLogoAssets(outputRoot, createdLogoAssetPaths);
-  if (rollbackError) throw rollbackError;
+  try {
+    await cleanup(outputRoot, createdLogoAssetPaths);
+  } catch (err) {
+    errors.push(err);
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    const details = errors.map((err) => err?.message || String(err)).join('; ');
+    throw new AggregateError(
+      errors,
+      `failed to roll back ${slug} and clean up shared logo assets: ${details}`,
+    );
+  }
 }
 
 export async function commitAndRebuild(

@@ -5,11 +5,20 @@ import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { ensureRepo, commit, isClean, log } from '../../../framework/version-store.mjs';
 
+const manifestPath = join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json');
+
+async function writeCanonicalImport(slugDir) {
+  const record = JSON.parse(await readFile(join(slugDir, 'record.json'), 'utf8'));
+  await writeFile(join(slugDir, 'record.import.json'), JSON.stringify({ data: [record] }) + '\n');
+}
+
 async function seedOut() {
   const out = await mkdtemp(join(tmpdir(), 'pi-refresh-cmd-'));
   await ensureRepo(out);
   await mkdir(join(out, 'pendle'), { recursive: true });
   await writeFile(join(out, 'pendle', 'record.json'), JSON.stringify({
+    slug: 'pendle',
+    provider: 'pendle-rootdata',
     name: 'Pendle',
     description: 'old',
     status: 'active',
@@ -51,7 +60,7 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/refresh.mjs')).default;
       const code = await cmd(['pendle', 'funding'], {
         outputRoot: out,
-        manifestPath: 'manifest.json',
+        manifestPath,
         runRefreshSubtask: async ({ slug, subtaskName, existingRecord }) => {
           assert.equal(slug, 'pendle');
           assert.equal(subtaskName, 'funding');
@@ -71,7 +80,7 @@ export const tests = [
         },
         validate: async () => ({ ok: true, errors: [] }),
         runPostProcessing: async ({ slugDir }) => {
-          await writeFile(join(slugDir, 'record.import.json'), '{"ok":true}\n');
+          await writeCanonicalImport(slugDir);
           return 0;
         },
         commitAndRebuild: commitOnly,
@@ -80,6 +89,7 @@ export const tests = [
       });
       assert.equal(code, 0);
       const record = JSON.parse(await readFile(join(out, 'pendle', 'record.json'), 'utf8'));
+      assert.equal(record.provider, 'pendle-rootdata');
       assert.equal(record.name, 'Pendle');
       assert.equal(record.fundingRounds.length, 2);
       assert.equal(record.record, undefined, 'must write merged.record, not merge wrapper');
@@ -97,7 +107,7 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/refresh.mjs')).default;
       const code = await cmd(['pendle', 'funding'], {
         outputRoot: out,
-        manifestPath: 'manifest.json',
+        manifestPath,
         runRefreshSubtask: async () => ({
           ok: true,
           slice: { fundingRounds: [{ round: 'Series A', amount: '$5M' }] },
@@ -106,7 +116,10 @@ export const tests = [
           gaps: [],
         }),
         validate: async () => ({ ok: true, errors: [] }),
-        runPostProcessing: async () => 0,
+        runPostProcessing: async ({ slugDir }) => {
+          await writeCanonicalImport(slugDir);
+          return 0;
+        },
         commitAndRebuild: commitOnly,
         normalizeEnvelope: normalizeNoop,
         stderr: { write: () => {} },
@@ -126,7 +139,7 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/refresh.mjs')).default;
       const code = await cmd(['pendle', 'funding'], {
         outputRoot: out,
-        manifestPath: join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json'),
+        manifestPath,
         runRefreshSubtask: async () => ({
           ok: true,
           slice: {
@@ -143,7 +156,7 @@ export const tests = [
         runPostProcessing: async ({ slugDir }) => {
           assert.equal(existsSync(join(slugDir, '_debug', 'i18n', 'zh_CN.json')), true);
           assert.equal(existsSync(join(slugDir, 'record.full.json')), true);
-          await writeFile(join(slugDir, 'record.import.json'), '{"ok":true}\n');
+          await writeCanonicalImport(slugDir);
           return 0;
         },
         commitAndRebuild: commitOnly,
@@ -164,7 +177,7 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/refresh.mjs')).default;
       const code = await cmd(['pendle', 'metadata'], {
         outputRoot: out,
-        manifestPath: join(process.cwd(), 'consumers', 'protocol-info', 'manifest.json'),
+        manifestPath,
         runRefreshSubtask: async () => ({
           ok: true,
           slice: { description: 'new' },
@@ -176,7 +189,7 @@ export const tests = [
         runPostProcessing: async ({ slugDir }) => {
           assert.equal(existsSync(join(slugDir, '_debug', 'i18n', 'zh_CN.json')), false);
           assert.equal(existsSync(join(slugDir, 'record.full.json')), false);
-          await writeFile(join(slugDir, 'record.import.json'), '{"ok":true}\n');
+          await writeCanonicalImport(slugDir);
           return 0;
         },
         commitAndRebuild: commitOnly,
@@ -195,7 +208,7 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/refresh.mjs')).default;
       const code = await cmd(['pendle', 'metadata'], {
         outputRoot: out,
-        manifestPath: 'manifest.json',
+        manifestPath,
         runRefreshSubtask: async () => ({
           ok: true,
           slice: { status: 'draft' },
@@ -205,7 +218,7 @@ export const tests = [
         }),
         validate: async () => ({ ok: true, errors: [] }),
         runPostProcessing: async ({ slugDir }) => {
-          await writeFile(join(slugDir, 'record.import.json'), '{"ok":true}\n');
+          await writeCanonicalImport(slugDir);
           return 0;
         },
         commitAndRebuild: commitOnly,
@@ -225,7 +238,7 @@ export const tests = [
       const cmd = (await import('../../../framework/commands/refresh.mjs')).default;
       const code = await cmd(['pendle', 'funding'], {
         outputRoot: out,
-        manifestPath: 'manifest.json',
+        manifestPath,
         runRefreshSubtask: async () => ({
           ok: true,
           slice: { fundingRounds: [{ bad: true }] },

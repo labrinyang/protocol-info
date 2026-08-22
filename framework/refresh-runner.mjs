@@ -5,6 +5,7 @@ import { loadManifest, selectEvidence } from './manifest-loader.mjs';
 import { runSubtask as defaultRunSubtask } from './subtask-runner.mjs';
 import { collectAuditReportEvidence, mergeAuditReportEvidence } from './audit-report-extractor.mjs';
 import { resolveLLMProvider } from './llm-router.mjs';
+import { safeSlugDir } from './safe-path.mjs';
 
 const FRAMEWORK_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -50,7 +51,7 @@ export async function runRefreshSubtask({
   const userTemplate = await readFile(promptAbs, 'utf8');
   const findingsSchema = JSON.parse(await readFile(join(FRAMEWORK_DIR, 'schemas/findings.schema.json'), 'utf8'));
   const gapsSchema = JSON.parse(await readFile(join(FRAMEWORK_DIR, 'schemas/gaps.schema.json'), 'utf8'));
-  let rootdata = await readJsonDefault(join(outputRoot, slug, '_debug', 'rootdata.json'), {});
+  let rootdata = await readJsonDefault(join(safeSlugDir(outputRoot, slug), '_debug', 'rootdata.json'), {});
   if (subtaskName === 'audits') {
     const auditReports = await collectAuditReports({ record: existingRecord, env });
     rootdata = mergeAuditReportEvidence(rootdata, auditReports);
